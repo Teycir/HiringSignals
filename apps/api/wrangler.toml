@@ -1,0 +1,41 @@
+name = "hiring-signals-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-26"
+account_id = "c62f54368e3f6a1f503afa434771b7e4"
+compatibility_flags = ["nodejs_compat"]
+
+# --- D1: canonical relational store (companies, sources, jobs, signals) ---
+[[d1_databases]]
+binding = "DB"
+database_name = "hiring-signals"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# --- KV: cached facets + rate-limit counters ---
+[[kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# --- R2: raw source-response archive + export artifacts ---
+[[r2_buckets]]
+binding = "RAW_ARCHIVE"
+bucket_name = "hiring-signals-raw"
+
+# --- Queues: decouples the cron scheduler from per-source fetching (see spec 5.2/13.1) ---
+[[queues.producers]]
+binding = "INGEST_QUEUE"
+queue = "hiring-signals-ingest"
+
+[[queues.consumers]]
+queue = "hiring-signals-ingest"
+max_batch_size = 10
+max_batch_timeout = 30
+
+# Cron only finds due sources and enqueues messages -- it must never fetch
+# provider endpoints itself (spec 5.2). Real per-source cadence lives in
+# sources.poll_interval_minutes, computed from the free-tier budget formula.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+# Non-secret config only. Secrets go through `wrangler secret put`.
+ENVIRONMENT = "development"

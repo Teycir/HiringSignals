@@ -1,0 +1,27 @@
+{
+  "name": "@hiring-signals/api",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "db:migrations:apply:local": "wrangler d1 migrations apply hiring-signals --local",
+    "db:migrations:apply:remote": "wrangler d1 migrations apply hiring-signals --remote"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "zod": "^3.24.1",
+    "@hiring-signals/domain": "workspace:*",
+    "@hiring-signals/adapters": "workspace:*",
+    "@hiring-signals/db": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250127.0",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.114.0",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "hiring-signals",
+  "private": true,
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:e2e": "pnpm -r --if-present run test:e2e",
+    "build": "pnpm -r --if-present run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  }
+}
