@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../bindings";
+import {
+  createD1Client,
+  getCompanyBySlug,
+  getRecentSignalsForCompany,
+  searchCompanies,
+} from "@hiring-signals/db";
 
 const companiesQuerySchema = z.object({
   q: z.string().min(2).optional(),
@@ -10,25 +16,40 @@ const companiesQuerySchema = z.object({
 export const companiesRoute = new Hono<AppEnv>();
 
 // Autocomplete / filter facets (spec 9.2, 10.4 typeahead).
-companiesRoute.get("/", (c) => {
+companiesRoute.get("/", async (c) => {
   const parsed = companiesQuerySchema.parse(c.req.query());
+  const client = createD1Client(c.env.DB);
+  const results = await searchCompanies(client, parsed);
+
   return c.json({
-    data: [],
+    data: results,
     meta: { requestId: c.get("requestId"), appliedFilters: parsed },
   });
 });
 
 // Company detail + recent signals (spec 9.2, company page in 10.5 trend block).
-companiesRoute.get("/:slug", (c) => {
+companiesRoute.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
-  return c.json(
-    {
-      error: {
-        code: "NOT_FOUND",
-        message: `Company ${slug} not found.`,
-        requestId: c.get("requestId"),
+  const client = createD1Client(c.env.DB);
+  const company = await getCompanyBySlug(client, slug);
+
+  if (!company) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Company ${slug} not found.`,
+          requestId: c.get("requestId"),
+        },
       },
-    },
-    404,
-  );
+      404,
+    );
+  }
+
+  const recentSignals = await getRecentSignalsForCompany(client, company.id);
+
+  return c.json({
+    data: { ...company, recentSignals },
+    meta: { requestId: c.get("requestId") },
+  });
 });

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../bindings";
+import { createD1Client, getSignalDetail, listSignals } from "@hiring-signals/db";
 
 // Query schema mirrors spec 9.3. Enforced here even though Phase 0 has no
 // D1-backed data yet, so the contract is real from the start.
@@ -21,32 +22,51 @@ const signalsQuerySchema = z.object({
 
 export const signalsRoute = new Hono<AppEnv>();
 
-signalsRoute.get("/", (c) => {
+signalsRoute.get("/", async (c) => {
   const parsed = signalsQuerySchema.parse(c.req.query());
+  const client = createD1Client(c.env.DB);
 
-  // Phase 1 wires this to packages/db against D1 (spec 8, 9.3).
+  const result = await listSignals(client, {
+    roles: parsed.roles?.split(",").map((r) => r.trim()).filter(Boolean),
+    company: parsed.company,
+    locationMode: parsed.locationMode,
+    country: parsed.country,
+    source: parsed.source,
+    signalType: parsed.signalType,
+    minScore: parsed.minScore,
+    observedSince: parsed.observedSince,
+    sort: parsed.sort,
+    cursor: parsed.cursor,
+    limit: parsed.limit,
+  });
+
   return c.json({
-    data: [],
+    data: result.items,
     meta: {
       requestId: c.get("requestId"),
       appliedFilters: parsed,
-      nextCursor: null,
+      nextCursor: result.nextCursor,
     },
   });
 });
 
-signalsRoute.get("/:signalId", (c) => {
+signalsRoute.get("/:signalId", async (c) => {
   const signalId = c.req.param("signalId");
+  const client = createD1Client(c.env.DB);
+  const detail = await getSignalDetail(client, signalId);
 
-  // Phase 1: load signal + signal_evidence rows (spec 8.2, 10.5).
-  return c.json(
-    {
-      error: {
-        code: "NOT_FOUND",
-        message: `Signal ${signalId} not found.`,
-        requestId: c.get("requestId"),
+  if (!detail) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Signal ${signalId} not found.`,
+          requestId: c.get("requestId"),
+        },
       },
-    },
-    404,
-  );
+      404,
+    );
+  }
+
+  return c.json({ data: detail, meta: { requestId: c.get("requestId") } });
 });
