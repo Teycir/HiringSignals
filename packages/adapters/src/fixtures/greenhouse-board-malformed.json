@@ -1,0 +1,8 @@
+{
+  "jobs": [
+    {
+      "id": 999,
+      "title": "Missing absolute_url triggers schema failure"
+    }
+  ]
+}
