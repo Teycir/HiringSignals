@@ -1,18 +1,14 @@
+import { inferLocationMode as _inferLocationMode } from "../../../lib/text/location-mode";
 import type { LocationMode } from "@hiring-signals/domain";
 
-/**
- * Shared, deterministic location-mode inference used by every adapter's
- * normalize() (spec 5.3). Adapters pass whatever free-text location field
- * their provider exposes; this never guesses "onsite" from absence alone,
- * since a missing field is unknown, not a claim (spec 5.3: "treat missing
- * dates as unknown, not as current" applies to location too).
- */
-const REMOTE_PATTERN = /\bremote\b/i;
-const HYBRID_PATTERN = /\bhybrid\b/i;
-
+// Thin re-export/delegate: domain types own LocationMode (the source of
+// truth for enum values); lib/text/location-mode.ts owns the generic
+// inference function. This file is kept so adapter callers can import from
+// "@hiring-signals/adapters" -- not from the repo-local lib/ folder -- and
+// because the domain LocationMode type happens to be a superset that
+// matches the lib's inferred string union exactly. If the taxonomy ever
+// diverges, change the cast here, not in lib/.
 export function inferLocationMode(raw: string | null | undefined): LocationMode {
-  if (!raw || raw.trim().length === 0) return "unknown";
-  if (HYBRID_PATTERN.test(raw)) return "hybrid";
-  if (REMOTE_PATTERN.test(raw)) return "remote";
-  return "onsite";
+  return _inferLocationMode(raw) as LocationMode;
 }
+export type { LocationMode };
