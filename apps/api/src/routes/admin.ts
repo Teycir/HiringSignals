@@ -1,23 +1,12 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
+import { atsProviderSchema } from "@hiring-signals/domain";
 import type { AppEnv } from "../bindings";
 
 const addSourceSchema = z.object({
   companySlug: z.string().min(1),
-  provider: z.enum([
-    "greenhouse",
-    "lever",
-    "ashby",
-    "smartrecruiters",
-    "workable",
-    "recruitee",
-    "personio",
-    "teamtailor",
-    "jazzhr",
-    "breezy",
-    "bamboohr",
-  ]),
+  provider: atsProviderSchema,
   boardToken: z.string().min(1),
   publicUrl: z.string().url(),
   pollIntervalMinutes: z.number().int().min(1).optional(),
@@ -43,7 +32,10 @@ adminRoute.use("*", async (c, next) => {
 adminRoute.post("/sources", async (c) => {
   const body = addSourceSchema.parse(await c.req.json());
   // Phase 1: insert into `sources` (spec 8.2) after validating the company exists.
-  return c.json({ data: { accepted: true, source: body }, meta: { requestId: c.get("requestId") } }, 201);
+  return c.json(
+    { data: { accepted: true, source: body }, meta: { requestId: c.get("requestId") } },
+    201,
+  );
 });
 
 adminRoute.patch("/sources/:id", async (c) => {

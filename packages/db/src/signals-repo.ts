@@ -1,5 +1,19 @@
+import { roleCategorySchema, signalStatusSchema, signalTypeSchema } from "@hiring-signals/domain";
 import type { RoleCategory, SignalStatus, SignalType } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+
+/**
+ * Thrown when a cursor is malformed or was issued for a different `sort`
+ * than the current request. Framework-agnostic on purpose -- packages/db
+ * must not depend on hono. Callers (apps/api routes) catch this and map it
+ * to a 400, the same way they already map ZodError (see error-handler.ts).
+ */
+export class InvalidCursorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidCursorError";
+  }
+}
 
 /** Raw D1 row shape (snake_case) for the `signals` table joined to company. */
 export interface SignalRow {
@@ -37,15 +51,46 @@ export interface SignalListItem {
   summary: string;
 }
 
+/**
+ * Thrown when a DB row has a value outside the domain enum for a column
+ * typed as one of RoleCategory/SignalType/SignalStatus at the API boundary
+ * (stale write, manual edit, taxonomy changed since the row was written).
+ * Distinct from application errors so callers/logs can tell "bad data"
+ * apart from "bad request".
+ */
+export class CorruptSignalRowError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CorruptSignalRowError";
+  }
+}
+
 function toListItem(row: SignalRow): SignalListItem {
+  const roleCategory = roleCategorySchema.safeParse(row.role_category);
+  if (!roleCategory.success) {
+    throw new CorruptSignalRowError(
+      `Signal ${row.id} has invalid role_category="${row.role_category}".`,
+    );
+  }
+  const signalType = signalTypeSchema.safeParse(row.signal_type);
+  if (!signalType.success) {
+    throw new CorruptSignalRowError(
+      `Signal ${row.id} has invalid signal_type="${row.signal_type}".`,
+    );
+  }
+  const status = signalStatusSchema.safeParse(row.status);
+  if (!status.success) {
+    throw new CorruptSignalRowError(`Signal ${row.id} has invalid status="${row.status}".`);
+  }
+
   return {
     id: row.id,
     companyId: row.company_id,
     companySlug: row.company_slug,
     companyDisplayName: row.company_display_name,
-    roleCategory: row.role_category as RoleCategory,
-    signalType: row.signal_type as SignalType,
-    status: row.status as SignalStatus,
+    roleCategory: roleCategory.data,
+    signalType: signalType.data,
+    status: status.data,
     score: row.score,
     scoreVersion: row.score_version,
     firstDetectedAt: row.first_detected_at,
@@ -57,22 +102,84 @@ function toListItem(row: SignalRow): SignalListItem {
 }
 
 /**
- * Opaque cursor: base64 of `${score}:${lastDetectedAt}:${id}` for score_desc
- * sort (the default and only sort implemented so far). Using the tuple
- * keeps pagination stable even when many signals share the same score.
+ * Opaque cursor: base64-encoded JSON carrying the sort mode plus the
+ * columns needed to resume that specific ORDER BY. JSON (not a manually
+ * joined/split string) because company_display_name is free text and can
+ * contain the delimiter, so naive `split(":")` would silently corrupt the
+ * cursor for company names containing a colon.
+ *
+ * The sort mode travels with the cursor so a request that changes `sort`
+ * between pages is detected (see decodeCursor) rather than being paginated
+ * with a comparison shaped for the wrong ORDER BY.
  */
-function encodeCursor(row: Pick<SignalRow, "score" | "last_detected_at" | "id">): string {
-  return btoa(`${row.score}:${row.last_detected_at}:${row.id}`);
+interface DecodedCursor {
+  sort: ListSignalsParams["sort"];
+  score: number;
+  lastDetectedAt: string;
+  companyDisplayName: string;
+  id: string;
 }
 
-function decodeCursor(cursor: string): { score: number; lastDetectedAt: string; id: string } {
-  const [score, lastDetectedAt, id] = atob(cursor).split(":");
-  return { score: Number(score), lastDetectedAt: lastDetectedAt ?? "", id: id ?? "" };
+/**
+ * btoa/atob operate on binary strings (one code unit per byte) and choke
+ * with InvalidCharacterError on any UTF-8 company name outside Latin1
+ * (accents, CJK, emoji). We UTF-8 encode first via TextEncoder/TextDecoder,
+ * then base64-encode the resulting bytes, so any company name round-trips.
+ *
+ * Standard base64 also emits `+`, `/`, `=`, which are unsafe inside a query
+ * string (`+` decodes to space; `/` and `=` can be mangled by proxies/CDNs).
+ * We use the URL-safe alphabet (`-`/`_`, no padding) so the cursor survives
+ * being placed in `?cursor=...` and echoed back on the next request.
+ */
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/");
+  const withPadding = padded + "=".repeat((4 - (padded.length % 4)) % 4);
+  const binary = atob(withPadding);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function encodeCursor(
+  sort: ListSignalsParams["sort"],
+  row: Pick<SignalRow, "score" | "last_detected_at" | "id" | "company_display_name">,
+): string {
+  const payload: DecodedCursor = {
+    sort,
+    score: row.score,
+    lastDetectedAt: row.last_detected_at,
+    companyDisplayName: row.company_display_name,
+    id: row.id,
+  };
+  return toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+}
+
+/** Throws if the cursor is malformed or was issued for a different sort. */
+function decodeCursor(cursor: string, expectedSort: ListSignalsParams["sort"]): DecodedCursor {
+  let decoded: DecodedCursor;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(fromBase64Url(cursor))) as DecodedCursor;
+  } catch {
+    throw new InvalidCursorError("Invalid cursor: not decodable.");
+  }
+  if (decoded.sort !== expectedSort) {
+    throw new InvalidCursorError(
+      `Invalid cursor: was issued for sort=${decoded.sort}, but request has sort=${expectedSort}.`,
+    );
+  }
+  return decoded;
 }
 
 export interface ListSignalsParams {
   roles?: string[];
   company?: string;
+  q?: string;
   locationMode?: string;
   country?: string;
   source?: string;
@@ -112,9 +219,57 @@ export async function listSignals(
     where.push("c.slug = ?");
     args.push(params.company);
   }
+  // Free-text search across headline/summary/company name. `%`/`_` are
+  // LIKE wildcards, so escape any occurring in user input with ESCAPE '\'
+  // -- otherwise a query like "50%_off" would silently behave as a
+  // wildcard pattern instead of a literal substring match.
+  if (params.q) {
+    const escaped = params.q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    where.push(
+      `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`,
+    );
+    const pattern = `%${escaped}%`;
+    args.push(pattern, pattern, pattern);
+  }
+  // location_mode/country_code live on `jobs`, not `signals`. A signal can
+  // have multiple signal_evidence rows pointing at different jobs, so this
+  // must be EXISTS (not a JOIN) or matching signals would be duplicated
+  // once per matching evidence/job row.
   if (params.locationMode) {
-    // location_mode lives on jobs via signal_evidence in the full model;
-    // Phase 1 keeps this as a placeholder no-op until evidence joins land.
+    where.push(
+      `EXISTS (
+         SELECT 1 FROM signal_evidence se
+         JOIN jobs j ON j.id = se.job_id
+         WHERE se.signal_id = s.id AND j.location_mode = ?
+       )`,
+    );
+    args.push(params.locationMode);
+  }
+  if (params.country) {
+    where.push(
+      `EXISTS (
+         SELECT 1 FROM signal_evidence se
+         JOIN jobs j ON j.id = se.job_id
+         WHERE se.signal_id = s.id AND j.country_code = ?
+       )`,
+    );
+    args.push(params.country);
+  }
+  // provider (e.g. "greenhouse") lives on `sources`, reached from `jobs`
+  // via signal_evidence, same EXISTS pattern as locationMode/country above.
+  // NOTE: was previously accepted into ListSignalsParams/the route schema
+  // but never applied anywhere -- a second silent no-op alongside the
+  // locationMode one, found while fixing that.
+  if (params.source) {
+    where.push(
+      `EXISTS (
+         SELECT 1 FROM signal_evidence se
+         JOIN jobs j ON j.id = se.job_id
+         JOIN sources src ON src.id = j.source_id
+         WHERE se.signal_id = s.id AND src.provider = ?
+       )`,
+    );
+    args.push(params.source);
   }
   if (params.signalType) {
     where.push("s.signal_type = ?");
@@ -128,10 +283,22 @@ export async function listSignals(
   where.push("s.last_detected_at >= ?");
   args.push(observedSince);
 
+  // Each branch's comparison operators/columns must mirror that sort's
+  // ORDER BY exactly below, or pagination silently duplicates/skips rows.
   if (params.cursor) {
-    const { score, lastDetectedAt, id } = decodeCursor(params.cursor);
-    where.push("(s.score < ? OR (s.score = ? AND s.last_detected_at < ?) OR (s.score = ? AND s.last_detected_at = ? AND s.id < ?))");
-    args.push(score, score, lastDetectedAt, score, lastDetectedAt, id);
+    const cur = decodeCursor(params.cursor, params.sort);
+    if (params.sort === "newest") {
+      where.push("(s.last_detected_at < ? OR (s.last_detected_at = ? AND s.id < ?))");
+      args.push(cur.lastDetectedAt, cur.lastDetectedAt, cur.id);
+    } else if (params.sort === "company_asc") {
+      where.push("(c.display_name > ? OR (c.display_name = ? AND s.id < ?))");
+      args.push(cur.companyDisplayName, cur.companyDisplayName, cur.id);
+    } else {
+      where.push(
+        "(s.score < ? OR (s.score = ? AND s.last_detected_at < ?) OR (s.score = ? AND s.last_detected_at = ? AND s.id < ?))",
+      );
+      args.push(cur.score, cur.score, cur.lastDetectedAt, cur.score, cur.lastDetectedAt, cur.id);
+    }
   }
 
   const orderBy =
@@ -147,11 +314,34 @@ export async function listSignals(
 
   const hasMore = rows.length > params.limit;
   const page = hasMore ? rows.slice(0, params.limit) : rows;
-  const last = page[page.length - 1];
+
+  // Option A (per-row degrade, review re-review P1): one corrupt DB row
+  // (stale enum value, manual edit, taxonomy changed mid-flight) must not
+  // poison the entire page -- especially the first page, which would make
+  // the whole endpoint appear down. Skip bad rows with a structured log
+  // and re-anchor nextCursor to the LAST *VALID* row so pagination doesn't
+  // silently skip the block after a bad entry.
+  const items: SignalListItem[] = [];
+  let lastValid: SignalRow | undefined;
+  for (const row of page) {
+    try {
+      items.push(toListItem(row));
+      lastValid = row;
+    } catch (err) {
+      if (err instanceof CorruptSignalRowError) {
+        console.error("corrupt_signal_row_skipped", {
+          signalId: row.id,
+          reason: err.message,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
 
   return {
-    items: page.map(toListItem),
-    nextCursor: hasMore && last ? encodeCursor(last) : null,
+    items,
+    nextCursor: hasMore && lastValid ? encodeCursor(params.sort, lastValid) : null,
   };
 }
 
@@ -187,14 +377,61 @@ export async function getSignalDetail(
     [signalId],
   );
 
+  // Same per-row degrade as listSignals for the header row -- on the detail
+  // page this is less catastrophic than on list (only one signal is broken),
+  // but we still want structured logs + a decision that doesn't leave the
+  // page blank. We fall back to a best-effort "header + evidence" using
+  // raw DB strings for the enum fields, with an explicit marker field, so
+  // the UI can render a warning banner instead of 404/500.
+  let header: SignalListItem;
+  try {
+    header = toListItem(row);
+  } catch (err) {
+    if (err instanceof CorruptSignalRowError) {
+      console.error("corrupt_signal_detail_fallback", {
+        signalId: row.id,
+        reason: err.message,
+      });
+      header = {
+        id: row.id,
+        companyId: row.company_id,
+        companySlug: row.company_slug,
+        companyDisplayName: row.company_display_name,
+        roleCategory: row.role_category as RoleCategory,
+        signalType: row.signal_type as SignalType,
+        status: row.status as SignalStatus,
+        score: row.score,
+        scoreVersion: row.score_version,
+        firstDetectedAt: row.first_detected_at,
+        lastDetectedAt: row.last_detected_at,
+        expiresAt: row.expires_at,
+        headline: row.headline,
+        summary: row.summary,
+      };
+    } else {
+      throw err;
+    }
+  }
+
   return {
-    ...toListItem(row),
-    evidence: evidenceRows.map((e) => ({
-      id: e.id,
-      jobId: e.job_id,
-      evidenceType: e.evidence_type,
-      observedAt: e.observed_at,
-      payload: JSON.parse(e.payload_json),
-    })),
+    ...header,
+    evidence: evidenceRows.map((e) => {
+      // A single truncated/corrupt payload_json (partial write, old schema
+      // version, manual edit) must not 500 the whole detail endpoint --
+      // degrade that one evidence row to a null payload instead.
+      let payload: unknown;
+      try {
+        payload = JSON.parse(e.payload_json);
+      } catch {
+        payload = null;
+      }
+      return {
+        id: e.id,
+        jobId: e.job_id,
+        evidenceType: e.evidence_type,
+        observedAt: e.observed_at,
+        payload,
+      };
+    }),
   };
 }
