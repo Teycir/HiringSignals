@@ -18,26 +18,26 @@ export interface Facets {
  * TTL, invalidated after successful ingestion batches (spec 15).
  */
 export async function getFacets(client: D1Client): Promise<Facets> {
-  const [roleRows, sourceRows, locationRows] = await client.batch<
-    { value: string; count: number }
-  >([
-    {
-      sql: `SELECT role_category AS value, COUNT(*) AS count
+  const [roleRows, sourceRows, locationRows] = await client.batch<{ value: string; count: number }>(
+    [
+      {
+        sql: `SELECT role_category AS value, COUNT(*) AS count
             FROM signals WHERE status = 'active'
             GROUP BY role_category ORDER BY count DESC`,
-    },
-    {
-      sql: `SELECT s.provider AS value, COUNT(*) AS count
+      },
+      {
+        sql: `SELECT s.provider AS value, COUNT(*) AS count
             FROM jobs j JOIN sources s ON s.id = j.source_id
             WHERE j.status = 'active'
             GROUP BY s.provider ORDER BY count DESC`,
-    },
-    {
-      sql: `SELECT location_mode AS value, COUNT(*) AS count
+      },
+      {
+        sql: `SELECT location_mode AS value, COUNT(*) AS count
             FROM jobs WHERE status = 'active'
             GROUP BY location_mode ORDER BY count DESC`,
-    },
-  ]);
+      },
+    ],
+  );
 
   return {
     roles: roleRows ?? [],

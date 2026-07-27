@@ -13,9 +13,6 @@ import type { Bindings } from "../bindings";
  * Phase 1 implements the actual D1 query + enqueue loop + deterministic
  * jitter derived from source_id (spec 5.2).
  */
-export async function handleScheduled(
-  _event: ScheduledEvent,
-  _env: Bindings,
-): Promise<void> {
+export async function handleScheduled(_event: ScheduledEvent, _env: Bindings): Promise<void> {
   // TODO(Phase 1): SELECT due sources from D1, enqueue INGEST_QUEUE messages.
 }

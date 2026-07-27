@@ -11,10 +11,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^3.24.1",
-    "@hiring-signals/domain": "workspace:*"
+    "@hiring-signals/domain": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
+    "eslint": "^10.8.0",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }

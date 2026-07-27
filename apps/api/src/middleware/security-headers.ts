@@ -19,10 +19,7 @@ export function securityHeaders(): MiddlewareHandler {
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
     c.header("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
-    c.header(
-      "Content-Security-Policy",
-      "default-src 'none'; frame-ancestors 'none'",
-    );
+    c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
 
     if (c.req.method === "OPTIONS") {
       c.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
