@@ -1,0 +1,82 @@
+# Hiring Signals Intelligence
+
+## Project Summary
+Hiring Signals Intelligence is a web dashboard that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
+
+## Tech Stack
+- **Frontend**: Next.js 16, TypeScript 5.x, Tailwind CSS
+- **Backend**: Cloudflare Workers with Hono framework
+- **Database**: Cloudflare D1 (SQLite)
+- **Package Manager**: pnpm workspace
+- **Deployment**: Cloudflare Pages (UI) + Cloudflare Workers (API)
+
+## Architecture
+```
+apps/web/        Next.js 16 UI -> Cloudflare Pages
+apps/api/        Cloudflare Worker API + scheduled ingestion (Hono)
+packages/domain/ Zod schemas, shared types, role/provider taxonomies
+packages/adapters/ AtsAdapter interface; per-provider implementations
+packages/db/     D1 client + repository functions
+packages/ui/     Optional shared UI primitives
+infrastructure/  D1 migrations + deploy scripts
+```
+
+## Current Status
+**Phase 0 complete, Phase 1 (D1 + read paths) in progress**
+
+**Done:**
+- pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base
+- Next.js 16 + Tailwind + TS scaffold with API client wired to Worker API
+- Hono Worker with middleware chain, cron scheduler stub, queue-consumer stub
+- Role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas
+- Full D1 schema (companies, sources, source_runs, jobs, job_observations, signals, signal_evidence + indexes)
+- Parameterized D1 client wrapper with signals/companies/facets repositories
+- API routes querying D1 for real (GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets)
+
+**Not yet done:**
+- Running migration against actual D1 database (needs real database_id in wrangler.toml)
+- Per-provider adapter implementations
+- Wiring cron scheduler + queue consumer to real D1 queries
+- Auth (Cloudflare Access)
+- locationMode/country filters on GET /api/v1/signals
+- Brutalist design tokens / dashboard UI
+
+## Key Features
+- **Role-level signals**: New matching roles, reopened roles, still active roles
+- **Company-level signals**: Hiring bursts, demand acceleration, multi-location expansion
+- **Evidence trails**: Source platform, canonical public URL, source job identifier, timestamps
+- **Filtering**: By role, location, and company
+- **Export**: CSV export of filtered signal list
+- **Scheduled ingestion**: Cloudflare Worker cron triggers with adaptive cadence per provider
+
+## Non-goals for v1
+- No collection of private profiles or personal data
+- No bypassing logins, CAPTCHAs, rate limits, robots directives
+- No general-purpose HTML scraping (official ATS APIs only)
+- No push notifications, email digests, or webhook alerting
+- No automated sending of cold email or LinkedIn messages
+- No claims about confirmed projects, budgets, or purchasing decisions
+
+## Development Commands
+```bash
+pnpm install
+pnpm --filter @hiring-signals/web dev     # Next.js dev server
+pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
+pnpm lint                                  # Lint all packages
+pnpm typecheck                            # Type check all packages
+pnpm build                                # Build all packages
+```
+
+## Specification
+Full build specification available in `hiring-signals-spec.md` at repo root.
+
+## License
+MIT License - Copyright (c) 2026 Teycir Ben Soltane
+
+## Related Projects
+- **Butler**: Persistent coordination and memory layer for AI coding agents
+- **SkillsGuard**: Security audit tool for AI agent skill packages
+- **BurpAPISecuritySuite**: Burp Suite extension for API security testing
+- **Mcpwn**: Automated security scanner for Model Context Protocol servers
+- **Timeseal**: Time-locked encryption vault with Dead Man's Switch
+- **Sanctum**: Zero-trust encrypted vault with cryptographic plausible deniability

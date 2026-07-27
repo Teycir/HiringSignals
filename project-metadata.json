@@ -1,0 +1,218 @@
+{
+  "name": "Hiring Signals Intelligence",
+  "description": "Web dashboard that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers",
+  "version": "0.0.0",
+  "author": "Teycir Ben Soltane",
+  "license": "MIT",
+  "type": "monorepo",
+  "packageManager": "pnpm@11.17.0",
+  "nodeVersion": ">=24.18.0",
+  "primaryLanguage": "TypeScript",
+  "framework": "Next.js 16",
+  "backendFramework": "Hono",
+  "database": "Cloudflare D1 (SQLite)",
+  "deployment": {
+    "frontend": "Cloudflare Pages",
+    "backend": "Cloudflare Workers"
+  },
+  "architecture": {
+    "apps/web": "Next.js 16 UI -> Cloudflare Pages",
+    "apps/api": "Cloudflare Worker API + scheduled ingestion (Hono)",
+    "packages/domain": "Zod schemas, shared types, role/provider taxonomies",
+    "packages/adapters": "AtsAdapter interface; per-provider implementations",
+    "packages/db": "D1 client + repository functions",
+    "packages/ui": "Optional shared UI primitives",
+    "infrastructure": "D1 migrations + deploy scripts"
+  },
+  "status": {
+    "phase": "Phase 1",
+    "phaseDescription": "D1 + read paths in progress",
+    "completed": [
+      "pnpm workspace setup",
+      "strict TypeScript base config",
+      "Prettier and shared ESLint base",
+      "Next.js 16 + Tailwind + TS scaffold",
+      "API client wired to Worker API",
+      "Hono Worker with middleware chain",
+      "cron scheduler stub and queue-consumer stub",
+      "role taxonomy and ATS provider enum",
+      "NormalizedJob/Signal/IngestMessage Zod schemas",
+      "full D1 schema with indexes",
+      "parameterized D1 client wrapper",
+      "signals/companies/facets repositories",
+      "API routes querying D1 for real",
+      "locationMode/country/source EXISTS filters on GET /api/v1/signals",
+      "opaque cursor pagination (score_desc/newest/company_asc) on GET /api/v1/signals",
+      "URL-safe UTF-8 cursor encoding (fixes InvalidCharacterError on non-ASCII company names)",
+      "signal_evidence(signal_id), signal_evidence(job_id), jobs(status,location_mode,country_code) indexes (migration 0002)",
+      "observedSince ISO-8601 datetime validation on GET /api/v1/signals",
+      "q free-text search (headline/summary/company name) on GET /api/v1/signals",
+      "try/catch around JSON.parse(payload_json) in getSignalDetail (degrades per-row, not 500)",
+      "toListItem enum validation via domain zod schemas (CorruptSignalRowError on bad data)",
+      "packages/domain eslint aligned to ^10.8.0 (matches root/db/api/adapters)",
+      "LIKE wildcard escaping in searchCompanies q filter (same class of bug as signals q, found during self-audit)",
+      "remote Cloudflare D1 database provisioned (hiring-signals, region EEUR) and migrations 0001+0002 applied and verified",
+      "remote KV namespace provisioned (CACHE) and wired in wrangler.toml",
+      "remote Queue provisioned (hiring-signals-ingest, producer+consumer) and wired in wrangler.toml",
+      "wrangler deploy --dry-run passes with all bindings resolved (DB/CACHE/INGEST_QUEUE/ENVIRONMENT)",
+      "R2 removed from the architecture entirely (was requiring Cloudflare billing/credit card) -- raw source-payload archive + export artifacts now live in CACHE KV under TTL-based keys (apps/api/src/services/raw-payload-store.ts), spec/README/AGENTS.md updated to match",
+      "migration 0003: renamed source_runs.raw_payload_r2_key -> raw_payload_key, applied and verified on local + remote D1"
+    ],
+    "pending": [
+      "per-provider adapter implementations",
+      "wiring cron scheduler + queue consumer to real D1 queries",
+      "Cloudflare Access authentication",
+      "brutalist design tokens / dashboard UI",
+      "apps/web still on eslint-config-next -> eslint 9 chain (eslint-config-next hasn't caught up to eslint 10 yet; unrelated to domain fix)"
+    ]
+  },
+  "features": {
+    "signals": {
+      "roleLevel": ["new matching roles", "reopened roles", "still active roles"],
+      "companyLevel": ["hiring bursts", "demand acceleration", "multi-location expansion"]
+    },
+    "evidence": {
+      "fields": [
+        "source platform",
+        "canonical public URL",
+        "source job identifier",
+        "timestamps",
+        "title",
+        "location",
+        "department"
+      ]
+    },
+    "filtering": ["by role", "by location", "by company"],
+    "export": "CSV export of filtered signal list",
+    "ingestion": "Cloudflare Worker cron triggers with adaptive cadence per provider"
+  },
+  "nonGoals": [
+    "no collection of private profiles or personal data",
+    "no bypassing logins, CAPTCHAs, rate limits, robots directives",
+    "no general-purpose HTML scraping (official ATS APIs only)",
+    "no push notifications, email digests, or webhook alerting",
+    "no automated sending of cold email or LinkedIn messages",
+    "no claims about confirmed projects, budgets, or purchasing decisions"
+  ],
+  "commands": {
+    "install": "pnpm install",
+    "dev": {
+      "web": "pnpm --filter @hiring-signals/web dev",
+      "api": "pnpm --filter @hiring-signals/api dev"
+    },
+    "lint": "pnpm lint",
+    "typecheck": "pnpm typecheck",
+    "build": "pnpm build",
+    "format": "pnpm format"
+  },
+  "specification": "hiring-signals-spec.md",
+  "relatedProjects": {
+    "aiAgentCoordination": [
+      {
+        "name": "Butler",
+        "description": "Persistent coordination and memory layer for AI coding agents"
+      },
+      {
+        "name": "SkillsGuard",
+        "description": "Security audit tool for AI agent skill packages"
+      }
+    ],
+    "securityTools": [
+      {
+        "name": "BurpAPISecuritySuite",
+        "description": "Burp Suite extension for API security testing"
+      },
+      {
+        "name": "Mcpwn",
+        "description": "Automated security scanner for Model Context Protocol servers"
+      },
+      {
+        "name": "DiffCatcher",
+        "description": "Git repo discovery, diff capture, code element extraction"
+      },
+      {
+        "name": "HoneypotScan",
+        "description": "Honeypot detection service for security research"
+      },
+      {
+        "name": "CheckAPI",
+        "description": "LLM API key validator for multiple providers"
+      },
+      {
+        "name": "SeekYou",
+        "description": "Host intelligence aggregator — unified OSINT"
+      }
+    ],
+    "mcpSecurityServers": [
+      {
+        "name": "burp-mcp-server",
+        "description": "MCP server for Burp Suite Professional"
+      },
+      {
+        "name": "nuclei-mcp",
+        "description": "MCP server for Nuclei"
+      },
+      {
+        "name": "nmap-mcp",
+        "description": "MCP server for Nmap"
+      },
+      {
+        "name": "frida-mcp",
+        "description": "MCP server for Frida"
+      }
+    ],
+    "privacyAndEncryption": [
+      {
+        "name": "Timeseal",
+        "description": "Time-locked encryption vault with Dead Man's Switch"
+      },
+      {
+        "name": "Sanctum",
+        "description": "Zero-trust encrypted vault with cryptographic plausible deniability"
+      },
+      {
+        "name": "GhostChat",
+        "description": "True P2P encrypted chat via WebRTC"
+      },
+      {
+        "name": "xmrproof",
+        "description": "Monero payment verification, 100% client-side"
+      },
+      {
+        "name": "GhostReceipt",
+        "description": "Anonymous receipt generation with zero-knowledge proofs"
+      }
+    ]
+  },
+  "tags": [
+    "job-board",
+    "hiring-intelligence",
+    "ats",
+    "job-seeker",
+    "cloudflare-workers",
+    "nextjs",
+    "typescript",
+    "dashboard",
+    "job-monitoring",
+    "recruitment"
+  ],
+  "aiAgentDiscovery": {
+    "primaryUseCase": "Job discovery and hiring intelligence platform",
+    "targetAudience": "Job seekers, IT specialists, recruitment researchers",
+    "keyDifferentiators": [
+      "Direct ATS API integration",
+      "Real-time signal detection",
+      "Evidence-based job verification",
+      "Minimal brutalist design",
+      "Pull-only delivery model"
+    ],
+    "implementationPatterns": [
+      "Monorepo with pnpm workspaces",
+      "TypeScript strict mode",
+      "Zod schema validation",
+      "Cloudflare edge computing",
+      "Scheduled cron-based ingestion",
+      "Per-provider health isolation"
+    ]
+  }
+}

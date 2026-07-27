@@ -24,19 +24,19 @@ The application converts public job-board changes into a role-level feed: "this 
 
 ### 1.2 Target users
 
-| User | Job to be done | Priority |
-|---|---|---:|
-| Job seeker (IT specialist) | See genuine, matching, still-open postings as soon as possible after they go live, with enough evidence to trust and act on them | P0 |
-| Job seeker, passive | Maintain saved role/location filters and periodically check a dashboard without needing to actively job-search daily | P0 |
-| Administrator (may be the same person) | Manage source coverage, retention, and system health so ingestion keeps running without manual correction | P1 |
+| User                                   | Job to be done                                                                                                                   | Priority |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------: |
+| Job seeker (IT specialist)             | See genuine, matching, still-open postings as soon as possible after they go live, with enough evidence to trust and act on them |       P0 |
+| Job seeker, passive                    | Maintain saved role/location filters and periodically check a dashboard without needing to actively job-search daily             |       P0 |
+| Administrator (may be the same person) | Manage source coverage, retention, and system health so ingestion keeps running without manual correction                        |       P1 |
 
-*B2B sales/recruiting use of company-level signals is retained as a secondary, lower-priority audience (see §1.4) — it reuses the same ingestion pipeline but is not the product's design center.*
+_B2B sales/recruiting use of company-level signals is retained as a secondary, lower-priority audience (see §1.4) — it reuses the same ingestion pipeline but is not the product's design center._
 
 ### 1.3 Non-goals for v1
 
 - No collection of private profiles, contact data, or personal data from social networks.
 - No bypassing logins, CAPTCHAs, rate limits, robots directives, or anti-bot controls — speed is pursued through polling frequency and source breadth, never through evasive fetching. A source that requires evasion is disabled, not defeated.
-- No general-purpose HTML scraping of arbitrary career pages. Coverage growth is spent on adding more *official, documented ATS APIs*, not on scraping fragile rendered pages — scraping is the more brittle path and works directly against the "set and forget, nothing breaks" requirement.
+- No general-purpose HTML scraping of arbitrary career pages. Coverage growth is spent on adding more _official, documented ATS APIs_, not on scraping fragile rendered pages — scraping is the more brittle path and works directly against the "set and forget, nothing breaks" requirement.
 - No push notifications, email digests, or webhook alerting in v1. The dashboard is pull-only; see the delivery model above.
 - No automated sending of cold email, LinkedIn messages, or enrichment of individuals.
 - No claims that a job posting represents a confirmed project, budget, or purchasing decision.
@@ -111,8 +111,8 @@ Browser
   │
   └── HTTPS ──> Cloudflare Worker API /api/*
                   ├── D1: canonical data, snapshots, signals, users
-                  ├── KV: cached filter metadata and rate-limit counters
-                  ├── R2: raw source-response archives / export artifacts
+                  ├── KV: cached filter metadata, rate-limit counters,
+                  │      and TTL-based raw source-response archive
                   ├── Queues: ingestion jobs and retry isolation
                   └── Cron Trigger: schedules discovery / reconciliation
 ```
@@ -166,19 +166,18 @@ hiring-signals/
 
 ### 3.4 Technology choices
 
-| Area | Choice | Reason |
-|---|---|---|
-| UI | Next.js 16, App Router, TypeScript | Requested framework; strong routing and component model |
-| Styling | Tailwind CSS, CSS variables | Fast implementation of deliberate visual tokens |
-| Component state | URL search parameters + React state | Filters are shareable and back-button safe |
-| Validation | Zod | Validate all API boundaries and source payloads |
-| API | Cloudflare Worker + Hono or native `fetch` | Lightweight, Workers-native, typed middleware |
-| Primary database | Cloudflare D1 | Relational joins and filtering fit signals/jobs well |
-| Object storage | Cloudflare R2 | Store raw payloads for audit/debug without bloating D1 |
-| Async work | Cloudflare Queues | Decouple scheduler from source fetching/retries |
-| Cache / counters | Cloudflare KV | Filter metadata cache and rate-limit state |
-| Auth | Cloudflare Access initially, app auth later | Fast internal protection without exposing a custom auth system |
-| Observability | Workers Analytics Engine + structured logs | Query ingestion quality and operational failures |
+| Area                           | Choice                                      | Reason                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| UI                             | Next.js 16, App Router, TypeScript          | Requested framework; strong routing and component model                                                                                                |
+| Styling                        | Tailwind CSS, CSS variables                 | Fast implementation of deliberate visual tokens                                                                                                        |
+| Component state                | URL search parameters + React state         | Filters are shareable and back-button safe                                                                                                             |
+| Validation                     | Zod                                         | Validate all API boundaries and source payloads                                                                                                        |
+| API                            | Cloudflare Worker + Hono or native `fetch`  | Lightweight, Workers-native, typed middleware                                                                                                          |
+| Primary database               | Cloudflare D1                               | Relational joins and filtering fit signals/jobs well                                                                                                   |
+| Async work                     | Cloudflare Queues                           | Decouple scheduler from source fetching/retries                                                                                                        |
+| Cache / counters / raw archive | Cloudflare KV                               | Filter metadata cache, rate-limit state, and TTL-based raw payload archive (no R2 -- avoids requiring Cloudflare billing/a credit card on the account) |
+| Auth                           | Cloudflare Access initially, app auth later | Fast internal protection without exposing a custom auth system                                                                                         |
+| Observability                  | Workers Analytics Engine + structured logs  | Query ingestion quality and operational failures                                                                                                       |
 
 ---
 
@@ -186,22 +185,22 @@ hiring-signals/
 
 ### 4.1 Approved source categories
 
-All P0 sources are official, documented ATS APIs. Breadth of coverage is pursued aggressively — every adapter below is P0, not staged across releases — because more official APIs means more chances to see a posting first. What is not negotiable is *how* each source is collected: public, unauthenticated, documented endpoints only. Scraping rendered HTML is never in scope, at any phase, regardless of how much coverage it would add (see §1.3) — it is the one move that would trade real reliability for speed, which is the trade this product refuses to make.
+All P0 sources are official, documented ATS APIs. Breadth of coverage is pursued aggressively — every adapter below is P0, not staged across releases — because more official APIs means more chances to see a posting first. What is not negotiable is _how_ each source is collected: public, unauthenticated, documented endpoints only. Scraping rendered HTML is never in scope, at any phase, regardless of how much coverage it would add (see §1.3) — it is the one move that would trade real reliability for speed, which is the trade this product refuses to make.
 
-| Adapter | Typical public endpoint pattern | Collection method | MVP status |
-|---|---|---|---:|
-| Greenhouse | `boards-api.greenhouse.io/v1/boards/{token}/jobs` | Public board API | P0 |
-| Lever | `api.lever.co/v0/postings/{site}?mode=json` | Public posting feed | P0 |
-| Ashby | `api.ashbyhq.com/posting-api/job-board/{board}` | Public job-board API | P0 |
-| SmartRecruiters | Public postings API | API adapter | P0 |
-| Workable | Public jobs API | API adapter | P0 |
-| Recruitee | Public careers API | API adapter | P0 |
-| Personio | Public job postings API (where offered) | API adapter | P0 |
-| Teamtailor | Public job feed API | API adapter | P0 |
-| JazzHR | Public board API (where offered) | API adapter | P0 |
-| Breezy HR | Public job board API | API adapter | P0 |
-| BambooHR (careers) | Public careers-page JSON feed (where offered as a documented endpoint, not scraped HTML) | API adapter | P0 |
-| Any additional provider with a stable, documented, public JSON/REST job-listing API | To be confirmed per-provider at implementation time | API adapter | Add on demand, same contract |
+| Adapter                                                                             | Typical public endpoint pattern                                                          | Collection method    |                   MVP status |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- | ---------------------------: |
+| Greenhouse                                                                          | `boards-api.greenhouse.io/v1/boards/{token}/jobs`                                        | Public board API     |                           P0 |
+| Lever                                                                               | `api.lever.co/v0/postings/{site}?mode=json`                                              | Public posting feed  |                           P0 |
+| Ashby                                                                               | `api.ashbyhq.com/posting-api/job-board/{board}`                                          | Public job-board API |                           P0 |
+| SmartRecruiters                                                                     | Public postings API                                                                      | API adapter          |                           P0 |
+| Workable                                                                            | Public jobs API                                                                          | API adapter          |                           P0 |
+| Recruitee                                                                           | Public careers API                                                                       | API adapter          |                           P0 |
+| Personio                                                                            | Public job postings API (where offered)                                                  | API adapter          |                           P0 |
+| Teamtailor                                                                          | Public job feed API                                                                      | API adapter          |                           P0 |
+| JazzHR                                                                              | Public board API (where offered)                                                         | API adapter          |                           P0 |
+| Breezy HR                                                                           | Public job board API                                                                     | API adapter          |                           P0 |
+| BambooHR (careers)                                                                  | Public careers-page JSON feed (where offered as a documented endpoint, not scraped HTML) | API adapter          |                           P0 |
+| Any additional provider with a stable, documented, public JSON/REST job-listing API | To be confirmed per-provider at implementation time                                      | API adapter          | Add on demand, same contract |
 
 Adding a new provider is a small, well-scoped unit of work precisely because every adapter obeys the same contract (§5.3): confirm the endpoint is public and documented, write the Zod schema for its payload shape, write the normalizer, write fixture tests. There is no legal-review gate blocking onboarding a new official API adapter in v1 — the trade-off in §1.3/§2.1 accepts that posture deliberately in exchange for speed of coverage. The technical courtesies in §4.3 (rate limits, `User-Agent`, backoff) remain mandatory regardless — they are what keeps a source from banning the product, which is a robustness requirement, not a legal one.
 
@@ -253,13 +252,13 @@ This avoids unreliable company matching and prevents indiscriminate web collecti
 
 No API credential belongs in browser code, static environment variables, Git history, logs, screenshots, or error responses.
 
-| Value | Storage | Exposure |
-|---|---|---|
-| Worker secrets, webhook signing keys, CRM OAuth secrets | Cloudflare Worker secrets | Server only |
-| Database/KV/R2/Queue bindings | `wrangler.toml` binding references | Worker runtime only |
-| Cloudflare Access config | Cloudflare dashboard / Worker environment | Server only |
-| `NEXT_PUBLIC_API_BASE_URL` | Pages environment variable | Public by design; URL only |
-| Feature flags with no sensitive value | Pages public build env or Worker config | May be public |
+| Value                                                   | Storage                                   | Exposure                   |
+| ------------------------------------------------------- | ----------------------------------------- | -------------------------- |
+| Worker secrets, webhook signing keys, CRM OAuth secrets | Cloudflare Worker secrets                 | Server only                |
+| Database/KV/Queue bindings                              | `wrangler.toml` binding references        | Worker runtime only        |
+| Cloudflare Access config                                | Cloudflare dashboard / Worker environment | Server only                |
+| `NEXT_PUBLIC_API_BASE_URL`                              | Pages environment variable                | Public by design; URL only |
+| Feature flags with no sensitive value                   | Pages public build env or Worker config   | May be public              |
 
 Use `wrangler secret put NAME` for secrets. Use `.dev.vars` only locally and add it to `.gitignore`. Validate server environment values at Worker startup with Zod, but never return validation detail containing secret names/values to clients.
 
@@ -286,14 +285,14 @@ Cron event
 
 The whole point of this rework is detection latency, so cadence should be as tight as possible — but "as tight as possible" has a hard ceiling on the Workers Free plan, and blowing through it (Error 1027 on requests, hard failures on Queues/D1 once the daily allowance is spent) is exactly the kind of silent breakage the "set and forget" requirement rules out. The cadence is therefore derived from the account's actual free-tier limits, verified against Cloudflare's published limits (last confirmed **July 2026**; re-check `developers.cloudflare.com/workers/platform/limits` and the D1/Queues limits pages before relying on these numbers, since Cloudflare revises them):
 
-| Resource | Free-tier daily allowance | What consumes it here |
-|---|---|---|
-| Workers requests | $100{,}000$/day | Cron fires + Queue consumer invocations + every dashboard page view/API call |
-| Queues operations | $10{,}000$/day (send + receive + delete combined) | One enqueue + one dequeue per source-fetch attempt, plus retries |
-| D1 rows written | $100{,}000$/day | Job upserts, observation inserts, signal inserts |
-| D1 rows read | $5{,}000{,}000$/day | Dashboard queries — not the binding constraint here |
-| Cron Triggers | $3$ per Worker, $5$ per account, $1$-minute minimum granularity | The scheduler itself; cheap regardless of frequency since it only enqueues, it doesn't fetch |
-| Subrequests per invocation | $50$/invocation (Free) | Caps how many boards one Queue consumer invocation can fetch before it must stop and let the next message batch continue |
+| Resource                   | Free-tier daily allowance                                       | What consumes it here                                                                                                    |
+| -------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Workers requests           | $100{,}000$/day                                                 | Cron fires + Queue consumer invocations + every dashboard page view/API call                                             |
+| Queues operations          | $10{,}000$/day (send + receive + delete combined)               | One enqueue + one dequeue per source-fetch attempt, plus retries                                                         |
+| D1 rows written            | $100{,}000$/day                                                 | Job upserts, observation inserts, signal inserts                                                                         |
+| D1 rows read               | $5{,}000{,}000$/day                                             | Dashboard queries — not the binding constraint here                                                                      |
+| Cron Triggers              | $3$ per Worker, $5$ per account, $1$-minute minimum granularity | The scheduler itself; cheap regardless of frequency since it only enqueues, it doesn't fetch                             |
+| Subrequests per invocation | $50$/invocation (Free)                                          | Caps how many boards one Queue consumer invocation can fetch before it must stop and let the next message batch continue |
 
 **The binding constraint is Queues, not the cron granularity.** A 1-minute cron is affordable on its own (1,440 fires/day, each a cheap "find due sources" query); what's expensive is what each fire causes downstream. Each source poll costs roughly 2 Queue operations (one enqueue, one dequeue; retries add more). Keeping a safety margin at 70% of the daily Queues allowance ($7{,}000$ ops/day, leaving headroom for retries, manual admin-triggered polls, and the daily health check) gives:
 
@@ -304,11 +303,11 @@ $$
 where $N_{\text{sources}}$ is the number of enabled sources and $T$ is the per-source polling interval in minutes. Concretely:
 
 | Enabled sources | Minimum safe interval (formula) | Recommended default |
-|---:|---:|---:|
-| 50 | ~21 min | **30 min** |
-| 150 | ~62 min | **90 min** |
-| 300 | ~123 min | **2 hours** |
-| 600 | ~247 min | **4 hours** |
+| --------------: | ------------------------------: | ------------------: |
+|              50 |                         ~21 min |          **30 min** |
+|             150 |                         ~62 min |          **90 min** |
+|             300 |                        ~123 min |         **2 hours** |
+|             600 |                        ~247 min |         **4 hours** |
 
 Rules that follow from this:
 
@@ -328,7 +327,18 @@ Every provider adapter must implement the same pure, testable contract:
 
 ```ts
 export interface AtsAdapter {
-  provider: "greenhouse" | "lever" | "ashby" | "smartrecruiters" | "workable" | "recruitee" | "personio" | "teamtailor" | "jazzhr" | "breezy" | "bamboohr";
+  provider:
+    | "greenhouse"
+    | "lever"
+    | "ashby"
+    | "smartrecruiters"
+    | "workable"
+    | "recruitee"
+    | "personio"
+    | "teamtailor"
+    | "jazzhr"
+    | "breezy"
+    | "bamboohr";
   fetchBoard(input: SourceConfig, ctx: FetchContext): Promise<AdapterFetchResult>;
   normalize(raw: unknown, source: SourceConfig): NormalizedJob[];
 }
@@ -361,15 +371,15 @@ Requirements:
 
 A listing state is based on repeated observations, not a single missing fetch.
 
-| Condition | Result |
-|---|---|
-| Job seen for first time | `active`, emit `new_job` candidate |
-| Job seen and hash changed | update record, create `job_changed` audit event |
-| Job absent from one successful source run | increment missing count; remain active |
-| Job absent from $2$ consecutive successful runs | mark `possibly_closed` |
-| Job absent from $4$ consecutive successful runs or $14$ days | mark `closed` |
-| Job returns after closure | mark `active`, emit `reopened_job` candidate |
-| Source run fails | do not alter missing counts |
+| Condition                                                    | Result                                          |
+| ------------------------------------------------------------ | ----------------------------------------------- |
+| Job seen for first time                                      | `active`, emit `new_job` candidate              |
+| Job seen and hash changed                                    | update record, create `job_changed` audit event |
+| Job absent from one successful source run                    | increment missing count; remain active          |
+| Job absent from $2$ consecutive successful runs              | mark `possibly_closed`                          |
+| Job absent from $4$ consecutive successful runs or $14$ days | mark `closed`                                   |
+| Job returns after closure                                    | mark `active`, emit `reopened_job` candidate    |
+| Source run fails                                             | do not alter missing counts                     |
 
 The exact thresholds must be configuration, not hard-coded. The UI must not show a “closed” assertion when source availability is uncertain.
 
@@ -441,14 +451,14 @@ Never discard source text. A remote role should not be assumed globally remote; 
 
 ### 7.1 Signal types
 
-| Type | Trigger | User-facing statement |
-|---|---|---|
-| `new_job` | Matching job first observed | “New matching role observed” |
-| `reopened_job` | Closed job becomes active | “Role reopened” |
-| `hiring_burst` | At least $3$ new matching jobs within $14$ days | “Cluster of new matching roles” |
-| `role_acceleration` | Recent role volume materially exceeds baseline | “Hiring pace above recent baseline” |
-| `multi_location` | Matching roles active in at least $3$ distinct locations | “Role family active across locations” |
-| `persistent_demand` | Same category remains active over $30$ days | “Sustained public demand” |
+| Type                | Trigger                                                  | User-facing statement                 |
+| ------------------- | -------------------------------------------------------- | ------------------------------------- |
+| `new_job`           | Matching job first observed                              | “New matching role observed”          |
+| `reopened_job`      | Closed job becomes active                                | “Role reopened”                       |
+| `hiring_burst`      | At least $3$ new matching jobs within $14$ days          | “Cluster of new matching roles”       |
+| `role_acceleration` | Recent role volume materially exceeds baseline           | “Hiring pace above recent baseline”   |
+| `multi_location`    | Matching roles active in at least $3$ distinct locations | “Role family active across locations” |
+| `persistent_demand` | Same category remains active over $30$ days              | “Sustained public demand”             |
 
 ### 7.2 Score design
 
@@ -505,12 +515,11 @@ Prevent the dashboard from counting the same opening repeatedly.
 
 ### 8.1 Storage responsibilities
 
-| Store | Contents |
-|---|---|
-| D1 | normalized relational data, source runs, jobs, observations, signals, users |
-| R2 | compressed raw source responses, export files, optional diagnostic artifacts |
-| KV | cached role/company facets, short-lived response cache, rate-limit counters |
-| Queue | source-fetch work, optional export generation jobs |
+| Store | Contents                                                                                                                                       |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1    | normalized relational data, source runs, jobs, observations, signals, users                                                                    |
+| KV    | cached role/company facets, short-lived response cache, rate-limit counters, TTL-based raw source-response archive, TTL-based export artifacts |
+| Queue | source-fetch work, optional export generation jobs                                                                                             |
 
 ### 8.2 D1 schema outline
 
@@ -590,7 +599,7 @@ CREATE TABLE source_runs (
   jobs_normalized INTEGER,
   error_code TEXT,
   error_message_safe TEXT,
-  raw_payload_r2_key TEXT,
+  raw_payload_key TEXT,
   duration_ms INTEGER
 );
 
@@ -630,10 +639,10 @@ CREATE INDEX idx_source_due
 
 - Job observations: retain $180$ days initially.
 - Source-run metrics: retain $180$ days.
-- Raw payloads in R2: retain $30$ days, then lifecycle-delete.
+- Raw payloads in KV: retain $30$ days via `expirationTtl`, then auto-expire (see apps/api/src/services/raw-payload-store.ts).
 - Closed job records: retain $365$ days to support reopening and trend baselines.
 - Signals: retain $365$ days; inactive signals remain queryable in history but are excluded from the default feed.
-- Export artifacts: expire after $24$ hours.
+- Export artifacts: expire after $24$ hours (KV `expirationTtl`).
 
 Retention settings must be centralized, documented, and automated with scheduled cleanup.
 
@@ -674,18 +683,18 @@ Error envelope:
 
 ### 9.2 Endpoints
 
-| Method | Route | Purpose |
-|---|---|---|
-| `GET` | `/api/v1/signals` | Paginated, filtered feed |
-| `GET` | `/api/v1/signals/:signalId` | Signal detail and evidence |
-| `GET` | `/api/v1/companies` | Company autocomplete / filter facets |
-| `GET` | `/api/v1/companies/:slug` | Company detail and recent signals |
-| `GET` | `/api/v1/facets` | Role, company, source, location counts |
-| `GET` | `/api/v1/export/signals.csv` | Server-generated CSV of current authorized query |
-| `POST` | `/api/v1/admin/sources` | Add a curated source |
-| `PATCH` | `/api/v1/admin/sources/:id` | Enable, disable, or modify schedule |
-| `POST` | `/api/v1/admin/ingestion/run` | Manually enqueue an approved source |
-| `GET` | `/api/v1/admin/health` | Source and ingestion-health summary |
+| Method  | Route                         | Purpose                                          |
+| ------- | ----------------------------- | ------------------------------------------------ |
+| `GET`   | `/api/v1/signals`             | Paginated, filtered feed                         |
+| `GET`   | `/api/v1/signals/:signalId`   | Signal detail and evidence                       |
+| `GET`   | `/api/v1/companies`           | Company autocomplete / filter facets             |
+| `GET`   | `/api/v1/companies/:slug`     | Company detail and recent signals                |
+| `GET`   | `/api/v1/facets`              | Role, company, source, location counts           |
+| `GET`   | `/api/v1/export/signals.csv`  | Server-generated CSV of current authorized query |
+| `POST`  | `/api/v1/admin/sources`       | Add a curated source                             |
+| `PATCH` | `/api/v1/admin/sources/:id`   | Enable, disable, or modify schedule              |
+| `POST`  | `/api/v1/admin/ingestion/run` | Manually enqueue an approved source              |
+| `GET`   | `/api/v1/admin/health`        | Source and ingestion-health summary              |
 
 ### 9.3 Signal list query
 
@@ -697,20 +706,20 @@ GET /api/v1/signals?roles=cybersecurity,cloud_platform_devops_sre&company=acme&m
 
 Allowed fields:
 
-| Parameter | Type | Notes |
-|---|---|---|
-| `roles` | comma-delimited enum | Primary role categories |
-| `company` | string | Slug, exact ID, or server-side autocomplete selection |
-| `q` | string | Company-name search; minimum $2$ characters |
-| `locationMode` | enum | `remote`, `hybrid`, `onsite`, `unknown` |
-| `country` | ISO code | Optional |
-| `source` | provider enum | Optional |
-| `signalType` | enum | Optional |
-| `minScore` | integer $0$–$100$ | Default $0$ |
-| `observedSince` | ISO date | Default last $30$ days |
-| `sort` | enum | `score_desc`, `newest`, `company_asc` |
-| `cursor` | opaque string | Pagination cursor |
-| `limit` | integer $1$–$100$ | Default $50$ |
+| Parameter       | Type                 | Notes                                                 |
+| --------------- | -------------------- | ----------------------------------------------------- |
+| `roles`         | comma-delimited enum | Primary role categories                               |
+| `company`       | string               | Slug, exact ID, or server-side autocomplete selection |
+| `q`             | string               | Company-name search; minimum $2$ characters           |
+| `locationMode`  | enum                 | `remote`, `hybrid`, `onsite`, `unknown`               |
+| `country`       | ISO code             | Optional                                              |
+| `source`        | provider enum        | Optional                                              |
+| `signalType`    | enum                 | Optional                                              |
+| `minScore`      | integer $0$–$100$    | Default $0$                                           |
+| `observedSince` | ISO date             | Default last $30$ days                                |
+| `sort`          | enum                 | `score_desc`, `newest`, `company_asc`                 |
+| `cursor`        | opaque string        | Pagination cursor                                     |
+| `limit`         | integer $1$–$100$    | Default $50$                                          |
 
 The API must build parameterized SQL. Never concatenate raw query text into SQL.
 
@@ -720,13 +729,13 @@ The API must build parameterized SQL. Never concatenate raw query text into SQL.
 
 ### 10.1 Route map
 
-| Route | Purpose |
-|---|---|
-| `/` | Landing/dashboard redirect or overview |
-| `/signals` | Main dense signal feed |
-| `/signals/[signalId]` | Deep-linkable signal evidence view |
-| `/companies/[slug]` | Company-level timeline and active roles |
-| `/admin` | Protected ingestion/source management |
+| Route                 | Purpose                                 |
+| --------------------- | --------------------------------------- |
+| `/`                   | Landing/dashboard redirect or overview  |
+| `/signals`            | Main dense signal feed                  |
+| `/signals/[signalId]` | Deep-linkable signal evidence view      |
+| `/companies/[slug]`   | Company-level timeline and active roles |
+| `/admin`              | Protected ingestion/source management   |
 
 ### 10.2 Main dashboard layout
 
@@ -814,14 +823,14 @@ A direct route plus optional side panel on wide screens. Must include:
 
 ### 10.6 Empty, loading, and error states
 
-| State | Required copy / behavior |
-|---|---|
-| First load | Skeleton rows preserve dense layout |
-| No filters match | “NO SIGNALS MATCH THIS QUERY.” plus `RESET FILTERS` CTA |
-| No data yet | Explain the monitored-source scope, not “no hiring exists” |
-| Source stale | Show “Source last confirmed $X$ ago” in detail |
-| API error | Compact error panel with retry, no raw stack trace |
-| Unauthorized | Direct to the organization’s access/login flow |
+| State            | Required copy / behavior                                   |
+| ---------------- | ---------------------------------------------------------- |
+| First load       | Skeleton rows preserve dense layout                        |
+| No filters match | “NO SIGNALS MATCH THIS QUERY.” plus `RESET FILTERS` CTA    |
+| No data yet      | Explain the monitored-source scope, not “no hiring exists” |
+| Source stale     | Show “Source last confirmed $X$ ago” in detail             |
+| API error        | Compact error panel with retry, no raw stack trace         |
+| Unauthorized     | Direct to the organization’s access/login flow             |
 
 ---
 
@@ -863,16 +872,16 @@ The sole accent must be checked for contrast when used with black text. Use it a
 
 ### 11.4 Component rules
 
-| Component | Specification |
-|---|---|
-| Button | Rectangular, black border, bold uppercase; primary has chartreuse fill; hover inverts foreground/background |
-| Input | White, $2$ px black border, square corners, explicit label above |
-| Checkbox | Native or visibly custom but keyboard-operable; selected uses chartreuse |
-| Card / row | White background, black separators, no shadow, $12$–$16$ px internal padding |
-| Score block | Monospace, black fill / white text for normal; chartreuse fill / black text for score $\geq 80$ |
-| Tag | Prefer plain text labels with separators; no rounded pills |
-| Table | Strong column headers, horizontal overflow on narrow screens, sticky header when useful |
-| Link | Underline by default or clear arrow suffix; external links show `↗` |
+| Component   | Specification                                                                                               |
+| ----------- | ----------------------------------------------------------------------------------------------------------- |
+| Button      | Rectangular, black border, bold uppercase; primary has chartreuse fill; hover inverts foreground/background |
+| Input       | White, $2$ px black border, square corners, explicit label above                                            |
+| Checkbox    | Native or visibly custom but keyboard-operable; selected uses chartreuse                                    |
+| Card / row  | White background, black separators, no shadow, $12$–$16$ px internal padding                                |
+| Score block | Monospace, black fill / white text for normal; chartreuse fill / black text for score $\geq 80$             |
+| Tag         | Prefer plain text labels with separators; no rounded pills                                                  |
+| Table       | Strong column headers, horizontal overflow on narrow screens, sticky header when useful                     |
+| Link        | Underline by default or clear arrow suffix; external links show `↗`                                         |
 
 ### 11.5 Accessibility
 
@@ -966,10 +975,6 @@ database_id = "<non-secret-id>"
 binding = "CACHE"
 id = "<non-secret-id>"
 
-[[r2_buckets]]
-binding = "RAW_ARCHIVE"
-bucket_name = "hiring-signals-raw"
-
 [[queues.producers]]
 binding = "INGEST_QUEUE"
 queue = "hiring-signals-ingest"
@@ -983,7 +988,7 @@ max_batch_timeout = 30
 crons = ["*/15 * * * *"]
 ```
 
-Note: this cron only runs the "find due sources and enqueue" step (§5.1) — it fires every 15 minutes cheaply because it does a lightweight D1 query and enqueues nothing on ticks where no source is due yet. The actual per-source polling frequency is the `pollIntervalMinutes` value on each source record, computed per §5.2, not this cron's own tick rate. Keeping the two decoupled is what lets the scheduler be responsive (checks every 15 min so a source becoming due doesn't wait long) without the *Queues* budget being spent on ticks that find nothing due.
+Note: this cron only runs the "find due sources and enqueue" step (§5.1) — it fires every 15 minutes cheaply because it does a lightweight D1 query and enqueues nothing on ticks where no source is due yet. The actual per-source polling frequency is the `pollIntervalMinutes` value on each source record, computed per §5.2, not this cron's own tick rate. Keeping the two decoupled is what lets the scheduler be responsive (checks every 15 min so a source becoming due doesn't wait long) without the _Queues_ budget being spent on ticks that find nothing due.
 
 Use the active Cloudflare configuration format at implementation time. Do not commit secrets to this file.
 
@@ -1018,14 +1023,14 @@ The consumer must be idempotent. A retry for the same `$sourceId + runId$` must 
 
 ### 13.4 Failure handling
 
-| Failure | Response |
-|---|---|
-| $429$ / `Retry-After` | Requeue after indicated/conservative delay; record rate-limit event |
-| transient $5xx$ / timeout | Retry with capped exponential backoff |
-| $4xx$ configuration issue | Mark source degraded; no automatic hammering |
-| schema mismatch | Store safe diagnostic, mark adapter warning, alert admin |
-| anti-bot / CAPTCHA | Disable source automatically and notify admin |
-| D1/R2 temporary error | Retry queue message; preserve idempotency |
+| Failure                   | Response                                                            |
+| ------------------------- | ------------------------------------------------------------------- |
+| $429$ / `Retry-After`     | Requeue after indicated/conservative delay; record rate-limit event |
+| transient $5xx$ / timeout | Retry with capped exponential backoff                               |
+| $4xx$ configuration issue | Mark source degraded; no automatic hammering                        |
+| schema mismatch           | Store safe diagnostic, mark adapter warning, alert admin            |
+| anti-bot / CAPTCHA        | Disable source automatically and notify admin                       |
+| D1/KV temporary error     | Retry queue message; preserve idempotency                           |
 
 Maximum retry count should be configured, e.g. $5$. After exhaustion, send to a dead-letter queue or persistent failure table with a human-review workflow.
 
@@ -1065,18 +1070,18 @@ Do not label companies as “actively buying,” “in market,” or “budget a
 
 ## 15. Performance and reliability targets
 
-| Metric | Target |
-|---|---:|
-| Static dashboard shell delivery | CDN-served from Pages |
-| Main signal API, cached facet response | $p95 < 250$ ms in target region |
-| Main signal API, uncached query | $p95 < 800$ ms for $50$ results |
-| First dashboard payload | $\leq 50$ signal rows |
+| Metric                                                      |                                                                                                                                                                                                           Target |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
+| Static dashboard shell delivery                             |                                                                                                                                                                                            CDN-served from Pages |
+| Main signal API, cached facet response                      |                                                                                                                                                                                  $p95 < 250$ ms in target region |
+| Main signal API, uncached query                             |                                                                                                                                                                                  $p95 < 800$ ms for $50$ results |
+| First dashboard payload                                     |                                                                                                                                                                                            $\leq 50$ signal rows |
 | **Detection latency** (posting live → visible in dashboard) | $p50 \leq$ effective per-source `pollIntervalMinutes` (§5.2); this is the primary metric for this product's stated optimization goal and should be tracked explicitly, not inferred from ingestion success alone |
-| **Free-tier budget headroom** | Queues ops and D1 writes stay $\leq 85\%$ of daily allowance at all times; cadence auto-widens before breach (§5.2) |
-| Source ingestion success rate | $\geq 98\%$ excluding intentionally disabled sources |
-| Duplicate job rate | $< 1\%$ of normalized active jobs |
-| Source staleness alert | trigger after $24$ hours beyond expected cadence |
-| Error budget | define after baseline; alert on $> 2\%$ API $5xx$ over $15$ minutes |
+| **Free-tier budget headroom**                               |                                                                                              Queues ops and D1 writes stay $\leq 85\%$ of daily allowance at all times; cadence auto-widens before breach (§5.2) |
+| Source ingestion success rate                               |                                                                                                                                                             $\geq 98\%$ excluding intentionally disabled sources |
+| Duplicate job rate                                          |                                                                                                                                                                                $< 1\%$ of normalized active jobs |
+| Source staleness alert                                      |                                                                                                                                                                 trigger after $24$ hours beyond expected cadence |
+| Error budget                                                |                                                                                                                                              define after baseline; alert on $> 2\%$ API $5xx$ over $15$ minutes |
 
 Implementation tactics:
 
@@ -1114,7 +1119,7 @@ Never include access tokens, cookies, full raw payloads, or browser PII in logs.
 Show a compact operational table:
 
 | Source | Company | Provider | Last success | Next poll | Jobs | Failures | Status |
-|---|---|---|---|---|---:|---:|---|
+| ------ | ------- | -------- | ------------ | --------- | ---: | -------: | ------ |
 
 Status definitions:
 
@@ -1188,12 +1193,12 @@ Require code review for source adapters, migrations, security headers, and score
 
 ### 18.1 Environments
 
-| Environment | Purpose | Data |
-|---|---|---|
-| Local | Developer iteration | Fixtures or isolated development D1 |
-| Preview | Pull-request UI/API validation | Synthetic or scrubbed sample data |
-| Staging | Integration and manual QA | Separate source registry, limited approved sources |
-| Production | User-facing system | Production D1/R2/KV/Queue and secrets |
+| Environment | Purpose                        | Data                                               |
+| ----------- | ------------------------------ | -------------------------------------------------- |
+| Local       | Developer iteration            | Fixtures or isolated development D1                |
+| Preview     | Pull-request UI/API validation | Synthetic or scrubbed sample data                  |
+| Staging     | Integration and manual QA      | Separate source registry, limited approved sources |
+| Production  | User-facing system             | Production D1/KV/Queue and secrets                 |
 
 Never point preview deployments at production secrets or production write bindings.
 
@@ -1282,7 +1287,7 @@ Never point preview deployments at production secrets or production write bindin
 1. Add remaining P0 adapters (SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR) using the same contract.
 2. Add company-level acceleration/burst signals (secondary context) and formula versioning.
 3. Add Cloudflare Access and admin role checks.
-4. Add source-health dashboard, structured logging, alerting *to the admin/operator* (not user-facing push — see delivery model in the header), and retention cleanup.
+4. Add source-health dashboard, structured logging, alerting _to the admin/operator_ (not user-facing push — see delivery model in the header), and retention cleanup.
 5. Add CI preview, integration tests, and production deployment runbook.
 6. Wire the detection-latency metric (§15) into the health page: track time between a job's `first_seen_at` and the source run that produced it, so cadence-tuning decisions are based on measured latency, not assumption.
 
