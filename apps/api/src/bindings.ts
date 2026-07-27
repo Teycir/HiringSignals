@@ -5,7 +5,6 @@
 export interface Bindings {
   DB: D1Database;
   CACHE: KVNamespace;
-  RAW_ARCHIVE: R2Bucket;
   INGEST_QUEUE: Queue;
   ENVIRONMENT: "development" | "staging" | "production";
 }

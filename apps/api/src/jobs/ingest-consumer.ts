@@ -6,7 +6,8 @@ import type { IngestMessage } from "@hiring-signals/domain";
  * Queue consumer (spec 5.1/13.3). For one source:
  *   fetch -> validate (adapter Zod schema) -> normalize -> upsert jobs
  *   -> insert observations -> compute lifecycle/signal transitions
- *   -> write raw payload pointer + source_run metrics
+ *   -> archive raw payload via services/raw-payload-store (KV, not R2)
+ *      + write source_run metrics
  *
  * Must be idempotent per (sourceId, runId): a retry must not create
  * duplicate observations or duplicate signals (spec 13.3).
@@ -22,8 +23,10 @@ export async function handleIngestMessage(
 
   try {
     // TODO(Phase 1): look up source config, call the matching AtsAdapter,
-    // validate + normalize, then persist via packages/db.
-    console.log("ingest_stub", { sourceId, runId, attempt });
+    // validate + normalize, persist via packages/db, and call
+    // storeRawPayload(env.CACHE, sourceId, runId, rawBody) to archive the
+    // raw response (see services/raw-payload-store.ts).
+    console.warn("ingest_stub", { sourceId, runId, attempt });
     message.ack();
   } catch (err) {
     console.error("ingest_failed", {

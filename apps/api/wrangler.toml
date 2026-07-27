@@ -8,17 +8,15 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "hiring-signals"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "1b1d1f22-62de-4e59-95f5-e852c1a0c445"
+migrations_dir = "../../infrastructure/d1/migrations"
 
-# --- KV: cached facets + rate-limit counters ---
+# --- KV: cached facets + rate-limit counters + raw source-payload archive
+# (see src/services/raw-payload-store.ts; TTL-based via expirationTtl, no
+# separate R2 bucket -- avoids requiring billing/a credit card) ---
 [[kv_namespaces]]
 binding = "CACHE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-
-# --- R2: raw source-response archive + export artifacts ---
-[[r2_buckets]]
-binding = "RAW_ARCHIVE"
-bucket_name = "hiring-signals-raw"
+id = "eed9bc4587124ff8b55ee274a0a2c66e"
 
 # --- Queues: decouples the cron scheduler from per-source fetching (see spec 5.2/13.1) ---
 [[queues.producers]]
