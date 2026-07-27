@@ -1,4 +1,5 @@
 import type { D1Client } from "./d1-client";
+import { escapeLikePattern } from "../../../lib/d1/like-pattern";
 
 export interface CompanyRow {
   id: string;
@@ -39,8 +40,7 @@ export async function searchCompanies(
     // `%`/`_` are LIKE wildcards -- escape any occurring in user input
     // with ESCAPE '\' so e.g. "R&D_Labs" matches the literal string
     // instead of "R&D" + any single char + "Labs".
-    const escaped = params.q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
-    const pattern = `%${escaped}%`;
+    const pattern = `%${escapeLikePattern(params.q)}%`;
     const rows = await client.all<CompanyRow>(
       `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at
        FROM companies WHERE display_name LIKE ? ESCAPE '\\' OR slug LIKE ? ESCAPE '\\'

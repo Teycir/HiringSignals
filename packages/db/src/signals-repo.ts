@@ -1,12 +1,21 @@
 import { roleCategorySchema, signalStatusSchema, signalTypeSchema } from "@hiring-signals/domain";
 import type { RoleCategory, SignalStatus, SignalType } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+import { escapeLikePattern } from "../../../lib/d1/like-pattern";
+import { decodeJsonFromBase64Url, encodeJsonToBase64Url } from "../../../lib/text/base64url";
 
 /**
  * Thrown when a cursor is malformed or was issued for a different `sort`
  * than the current request. Framework-agnostic on purpose -- packages/db
  * must not depend on hono. Callers (apps/api routes) catch this and map it
  * to a 400, the same way they already map ZodError (see error-handler.ts).
+ *
+ * NOTE: the generic cursor helper at ../../../lib/pagination/cursor.ts has
+ * its own identically-named InvalidCursorError. We intentionally keep this
+ * copy so signals-repo's public export stays instanceof-compatible for
+ * callers that import `{ InvalidCursorError } from "@hiring-signals/db"`.
+ * The exception messages are intentionally worded identically; the only
+ * difference is the tag field we check (`sort` here, generic `mode` there).
  */
 export class InvalidCursorError extends Error {
   constructor(message: string) {
@@ -121,31 +130,11 @@ interface DecodedCursor {
 }
 
 /**
- * btoa/atob operate on binary strings (one code unit per byte) and choke
- * with InvalidCharacterError on any UTF-8 company name outside Latin1
- * (accents, CJK, emoji). We UTF-8 encode first via TextEncoder/TextDecoder,
- * then base64-encode the resulting bytes, so any company name round-trips.
- *
- * Standard base64 also emits `+`, `/`, `=`, which are unsafe inside a query
- * string (`+` decodes to space; `/` and `=` can be mangled by proxies/CDNs).
- * We use the URL-safe alphabet (`-`/`_`, no padding) so the cursor survives
- * being placed in `?cursor=...` and echoed back on the next request.
+ * UTF-8-safe + URL-safe base64 JSON encode/decode. Implementation lives in
+ * ../../../lib/text/base64url.ts (so other packages/apps can reuse it); we
+ * call through here rather than copy-paste the charCode loop, padding, and
+ * `-`/`_` alphabet. If you're fixing a bug here, fix it in lib/ instead.
  */
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(value: string): Uint8Array {
-  const padded = value.replaceAll("-", "+").replaceAll("_", "/");
-  const withPadding = padded + "=".repeat((4 - (padded.length % 4)) % 4);
-  const binary = atob(withPadding);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
 function encodeCursor(
   sort: ListSignalsParams["sort"],
   row: Pick<SignalRow, "score" | "last_detected_at" | "id" | "company_display_name">,
@@ -157,14 +146,14 @@ function encodeCursor(
     companyDisplayName: row.company_display_name,
     id: row.id,
   };
-  return toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+  return encodeJsonToBase64Url(payload);
 }
 
 /** Throws if the cursor is malformed or was issued for a different sort. */
 function decodeCursor(cursor: string, expectedSort: ListSignalsParams["sort"]): DecodedCursor {
   let decoded: DecodedCursor;
   try {
-    decoded = JSON.parse(new TextDecoder().decode(fromBase64Url(cursor))) as DecodedCursor;
+    decoded = decodeJsonFromBase64Url<DecodedCursor>(cursor);
   } catch {
     throw new InvalidCursorError("Invalid cursor: not decodable.");
   }
@@ -224,11 +213,10 @@ export async function listSignals(
   // -- otherwise a query like "50%_off" would silently behave as a
   // wildcard pattern instead of a literal substring match.
   if (params.q) {
-    const escaped = params.q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    const pattern = `%${escapeLikePattern(params.q)}%`;
     where.push(
       `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`,
     );
-    const pattern = `%${escaped}%`;
     args.push(pattern, pattern, pattern);
   }
   // location_mode/country_code live on `jobs`, not `signals`. A signal can
