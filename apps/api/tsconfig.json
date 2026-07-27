@@ -5,6 +5,17 @@
     "noEmit": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts"],
+  // Only include the specific lib/ subtrees this app imports from. Blanket
+  // "../../lib/**/*" would accidentally pick up type-only files from other
+  // lib/ modules that this package doesn't have the typings for (e.g. D1 on
+  // a non-D1 package) and cause confusing errors later. Pattern: add one
+  // entry per actual top-level import:
+  //   - lib/kv/ttl-store.ts           (services/raw-payload-store.ts)
+  //   - lib/http/security-headers.ts  (middleware/security-headers.ts)
+  "include": [
+    "src/**/*.ts",
+    "../../lib/kv/**/*.ts",
+    "../../lib/http/**/*.ts"
+  ],
   "exclude": ["node_modules", "dist", ".wrangler"]
 }

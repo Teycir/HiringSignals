@@ -1,4 +1,5 @@
 import type { KVNamespace } from "@cloudflare/workers-types";
+import { makeTtlStore, type TtlStore } from "../../../lib/kv/ttl-store";
 
 /**
  * Raw source-response archive, backed by the shared CACHE KV namespace
@@ -12,14 +13,21 @@ import type { KVNamespace } from "@cloudflare/workers-types";
  * so no separate cleanup job is needed the way R2 lifecycle rules would
  * require.
  *
- * Caveat vs R2: KV values are capped at 25MB and are eventually
- * consistent, not strongly consistent -- both acceptable here since raw
- * ATS job-board responses are well under 25MB and this data is
- * diagnostic/audit-only, never read on the hot path.
+ * Implementation is a thin wrapper around the generic TtlStore in
+ * ../../../lib/kv/ttl-store -- the only project-specific pieces are the
+ * key prefix, retention window, and semantic wrappers (sourceId/runId
+ * instead of raw string parts).
  */
-
 const RAW_PAYLOAD_KEY_PREFIX = "raw:";
 const RAW_PAYLOAD_RETENTION_SECONDS = 30 * 24 * 60 * 60; // spec 8.3: 30 days
+
+/** Creates a TtlStore bound to the raw-payload prefix + retention window. */
+export function makeRawPayloadStore(namespace: KVNamespace): TtlStore {
+  return makeTtlStore(namespace, {
+    keyPrefix: RAW_PAYLOAD_KEY_PREFIX,
+    retentionSeconds: RAW_PAYLOAD_RETENTION_SECONDS,
+  });
+}
 
 /**
  * Deterministic per-(source, run) key so a retried ingest run overwrites
@@ -41,12 +49,10 @@ export async function storeRawPayload(
   runId: string,
   rawBody: string,
 ): Promise<string> {
-  const key = rawPayloadKey(sourceId, runId);
-  await cache.put(key, rawBody, { expirationTtl: RAW_PAYLOAD_RETENTION_SECONDS });
-  return key;
+  return makeRawPayloadStore(cache).put([sourceId, runId], rawBody);
 }
 
 /** Returns null if the payload was never stored or has already expired. */
 export async function getRawPayload(cache: KVNamespace, key: string): Promise<string | null> {
-  return cache.get(key, "text");
+  return makeRawPayloadStore(cache).get(key);
 }
