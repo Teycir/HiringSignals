@@ -1,5 +1,5 @@
 import type { KVNamespace } from "@cloudflare/workers-types";
-import { makeTtlStore, type TtlStore } from "../../../lib/kv/ttl-store";
+import { makeTtlStore, type TtlStore } from "../../../../lib/kv/ttl-store";
 
 /**
  * Raw source-response archive, backed by the shared CACHE KV namespace
@@ -14,7 +14,7 @@ import { makeTtlStore, type TtlStore } from "../../../lib/kv/ttl-store";
  * require.
  *
  * Implementation is a thin wrapper around the generic TtlStore in
- * ../../../lib/kv/ttl-store -- the only project-specific pieces are the
+ * ../../../../lib/kv/ttl-store -- the only project-specific pieces are the
  * key prefix, retention window, and semantic wrappers (sourceId/runId
  * instead of raw string parts).
  */

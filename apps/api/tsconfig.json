@@ -12,10 +12,15 @@
   // entry per actual top-level import:
   //   - lib/kv/ttl-store.ts           (services/raw-payload-store.ts)
   //   - lib/http/security-headers.ts  (middleware/security-headers.ts)
+  //   - lib/http/rate-limit.ts        (middleware/anti-abuse.ts tiered policy)
+  //   - lib/http/circuit-breaker.ts   (middleware/anti-abuse.ts + repo wrappers)
+  //   - lib/http/turnstile.ts         (middleware/anti-abuse.ts admin-write CAPTCHA)
+  //   - lib/observability/audit-abuse.ts (middleware/anti-abuse.ts signal logging)
   "include": [
     "src/**/*.ts",
     "../../lib/kv/**/*.ts",
-    "../../lib/http/**/*.ts"
+    "../../lib/http/**/*.ts",
+    "../../lib/observability/**/*.ts"
   ],
   "exclude": ["node_modules", "dist", ".wrangler"]
 }

@@ -7,6 +7,7 @@ import {
   getRecentSignalsForCompany,
   searchCompanies,
 } from "@hiring-signals/db";
+import { freeReadTier } from "../middleware/anti-abuse";
 
 const companiesQuerySchema = z.object({
   q: z.string().min(2).optional(),
@@ -14,8 +15,8 @@ const companiesQuerySchema = z.object({
 });
 
 export const companiesRoute = new Hono<AppEnv>();
+companiesRoute.use("*", freeReadTier());
 
-// Autocomplete / filter facets (spec 9.2, 10.4 typeahead).
 companiesRoute.get("/", async (c) => {
   const parsed = companiesQuerySchema.parse(c.req.query());
   const client = createD1Client(c.env.DB);

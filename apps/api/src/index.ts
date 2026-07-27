@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import type { AppEnv, Bindings } from "./bindings";
 import { requestId } from "./middleware/request-id";
+import { clientIp } from "./middleware/client-ip";
 import { securityHeaders } from "./middleware/security-headers";
 import { errorHandler } from "./middleware/error-handler";
+import { freeReadTier } from "./middleware/anti-abuse";
 import { signalsRoute } from "./routes/signals";
 import { companiesRoute } from "./routes/companies";
 import { facetsRoute } from "./routes/facets";
@@ -13,15 +15,26 @@ import type { IngestMessage } from "@hiring-signals/domain";
 
 const app = new Hono<AppEnv>();
 
-// Middleware order follows spec 13.2:
-// 1. request id, 2. security headers/CORS, 3. auth, 4. rate limit,
-// 5. zod validation (per-route), 6. handler, 7. structured error mapping.
+// Middleware order follows spec 13.2, with added global clientIp step
+// (Variables.clientIp / abuseVerdict are non-optional, so they must be set
+// before any route handler or per-group anti-abuse middleware runs):
+//   1. request id
+//   2. client ip + default verdict
+//   3. security headers / CORS
+//   4. auth (skipped: open-access)
+//   5. per-route rate limit + CAPTCHA (anti-abuse tiers)
+//   6. zod validation (per-route)
+//   7. handler
+//   8. structured error mapping
 app.use("*", requestId());
+app.use("*", clientIp());
 app.use("*", securityHeaders());
 app.onError(errorHandler);
 
-app.get("/api/v1/health", (c) =>
-  c.json({ data: { status: "ok" }, meta: { requestId: c.get("requestId") } }),
+app.get(
+  "/api/v1/health",
+  freeReadTier(),
+  (c) => c.json({ data: { status: "ok" }, meta: { requestId: c.get("requestId") } }),
 );
 
 app.route("/api/v1/signals", signalsRoute);

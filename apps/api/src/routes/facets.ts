@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
 import { createD1Client, getFacets } from "@hiring-signals/db";
+import { freeReadTier } from "../middleware/anti-abuse";
 
 export const facetsRoute = new Hono<AppEnv>();
+facetsRoute.use("*", freeReadTier());
 
 const CACHE_KEY = "facets:v1";
 const CACHE_TTL_SECONDS = 60;

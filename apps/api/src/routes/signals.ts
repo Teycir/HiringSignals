@@ -13,6 +13,7 @@ import {
   InvalidCursorError,
   listSignals,
 } from "@hiring-signals/db";
+import { freeReadTier } from "../middleware/anti-abuse";
 
 // Query schema mirrors spec 9.3. Enforced here even though Phase 0 has no
 // D1-backed data yet, so the contract is real from the start.
@@ -56,6 +57,7 @@ const signalsQuerySchema = z.object({
 });
 
 export const signalsRoute = new Hono<AppEnv>();
+signalsRoute.use("*", freeReadTier());
 
 signalsRoute.get("/", async (c) => {
   const parsed = signalsQuerySchema.parse(c.req.query());

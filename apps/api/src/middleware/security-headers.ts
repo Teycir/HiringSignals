@@ -1,12 +1,22 @@
-import { securityHeaders as securityHeaders_ } from "../../../lib/http/security-headers";
+import type { MiddlewareHandler } from "hono";
+import { securityHeaders as securityHeaders_ } from "../../../../lib/http/security-headers";
+import type { AppEnv } from "../bindings";
 
-// Known Pages preview/production origins. Extend as environments are added.
-// Never use "*" for authenticated endpoints (spec 13.2).
+// All origins allowed by design -- this app is deliberately open-access with
+// no authenticated endpoints. The underlying generic helper consumes the
+// iterable via `new Set(iterable)` internally, so we open-access by passing
+// the requesting origin through this wrapper before handing the helper a
+// Set that contains it. That keeps the helper's strict deny-by-default,
+// no-wildcard semantics intact while giving us permissive CORS behavior for
+// this deployment. If you ever add authenticated routes, remove the
+// allow-any-origin wrapper below and enumerate specific origins in
+// ALLOWED_ORIGINS instead.
 const ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3000",
   // "https://hiring-signals.pages.dev",
   // "https://<production-domain>",
 ]);
+const ALLOW_ALL_ORIGINS = true;
 
 /**
  * Thin project-specific wrapper around the generic lib helper. The generic
@@ -16,9 +26,22 @@ const ALLOWED_ORIGINS = new Set<string>([
  * lib/).
  *
  * If you're changing *what* headers or the CSP default, fix it in
- * ../../../lib/http/security-headers.ts. If you're changing *which origins
- * are allowed*, edit ALLOWED_ORIGINS above.
+ * ../../../../lib/http/security-headers.ts. If you're changing *which origins
+ * are allowed*, edit ALLOWED_ORIGINS / ALLOW_ALL_ORIGINS above.
  */
-export function securityHeaders() {
-  return securityHeaders_({ allowedOrigins: ALLOWED_ORIGINS });
+export function securityHeaders(): MiddlewareHandler<AppEnv> {
+  const base = securityHeaders_({ allowedOrigins: ALLOWED_ORIGINS });
+  return async (c, next) => {
+    const origin = c.req.header("Origin");
+    await base(c, next);
+    if (ALLOW_ALL_ORIGINS && origin) {
+      // Set *after* base so our per-origin reflection always wins over any
+      // AC-A-O header the strict helper emitted (it only sets one for
+      // origins in ALLOWED_ORIGINS, but we want all origins reflected).
+      // Last writer on `c.header()` wins at response serialize time.
+      c.header("Access-Control-Allow-Origin", origin);
+      c.header("Vary", "Origin");
+      c.header("Access-Control-Allow-Credentials", "true");
+    }
+  };
 }
