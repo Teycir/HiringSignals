@@ -36,11 +36,16 @@ export async function searchCompanies(
   params: { q?: string; limit: number },
 ): Promise<CompanySummary[]> {
   if (params.q) {
+    // `%`/`_` are LIKE wildcards -- escape any occurring in user input
+    // with ESCAPE '\' so e.g. "R&D_Labs" matches the literal string
+    // instead of "R&D" + any single char + "Labs".
+    const escaped = params.q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    const pattern = `%${escaped}%`;
     const rows = await client.all<CompanyRow>(
       `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at
-       FROM companies WHERE display_name LIKE ? OR slug LIKE ?
+       FROM companies WHERE display_name LIKE ? ESCAPE '\\' OR slug LIKE ? ESCAPE '\\'
        ORDER BY display_name ASC LIMIT ?`,
-      [`%${params.q}%`, `%${params.q}%`, params.limit],
+      [pattern, pattern, params.limit],
     );
     return rows.map(toSummary);
   }
