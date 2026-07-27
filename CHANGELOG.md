@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **No-auth decision (project-wide):** the app has no login and is public/free for anyone, permanently — not a temporary demo posture. Removed the `/api/v1/admin/*` HTTP surface entirely (`apps/api/src/routes/admin.ts` deleted, unmounted from `apps/api/src/index.ts`); source management (add/edit source, manual ingestion trigger, health check) is now a local ops script against D1 (`infrastructure/scripts/`, spec §13.5), never a Worker route. Removed `protectedWriteTier` from `apps/api/src/middleware/anti-abuse.ts` (no remaining caller) and deleted `lib/http/turnstile.ts` (its only consumer). Removed `TURNSTILE_SECRET_KEY` from `apps/api/src/bindings.ts` and narrowed `Variables.abuseVerdict` to `"ok" | "rate_limited"` (the CAPTCHA-related states are no longer reachable). `hiring-signals-spec.md`, `ROADMAP.md`, `AGENTS.md`, and `README.md` updated throughout; spec §22's access-model and multi-tenant/`workspace_id` open questions are resolved (single-tenant, public, no login) rather than left open.
+
 ### Fixed
 
 - **Dead code:** `lib/http/circuit-breaker.ts` is now actually wired in — every D1 call (`first`/`all`/`run`/`batch` in `lib/d1/client.ts`, the single choke point all repos go through via `createD1Client`) is routed through it on the `"db"` resource, matching what `apps/api/tsconfig.json`'s comment already claimed. Zero call-site changes needed in routes or repos.
@@ -14,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- **lib/README.md:** module table now lists `http/rate-limit.ts`, `http/turnstile.ts`, `http/circuit-breaker.ts`, and `observability/audit-abuse.ts`, which existed and were in use but missing from the table.
+- **lib/README.md:** module table now lists `http/rate-limit.ts`, `http/turnstile.ts` (later removed, see "Removed" above), `http/circuit-breaker.ts`, and `observability/audit-abuse.ts`, which existed and were in use but missing from the table.
 
 ## [0.1.0] — 2026-07-27
 

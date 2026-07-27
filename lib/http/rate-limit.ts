@@ -10,7 +10,11 @@
  * Two tiers are preconfigured in this file, but callers can also build
  * their own:
  *   - FREE_READ_TIER   : generous per-IP budget for anonymous signal reads
- *   - PROTECTED_WRITE_TIER : tight per-IP budget for admin/ingestion writes
+ *   - PROTECTED_WRITE_TIER : tight per-IP budget for a state-changing route,
+ *     if a consuming project ever adds one. Hiring Signals itself has no
+ *     state-changing HTTP routes (source management is a local ops script,
+ *     not a Worker route -- spec 13.5) so only FREE_READ_TIER is wired up
+ *     here today; this tier is kept as a ready-made option for reuse.
  *
  * Zero project-specific dependencies -- copy this file into any Hono-based
  * Cloudflare Worker that has a KV namespace available.

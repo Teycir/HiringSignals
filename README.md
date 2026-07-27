@@ -108,9 +108,9 @@ Not yet done (tracked against spec section 20):
 - Per-provider adapter implementations (Phase 1/3, spec 5.3, 20), and the
   `sources`/`jobs` write-path repos the ingestion consumer needs
 - Wiring the cron scheduler + queue consumer to real D1 queries (still stubs)
-- Auth (Cloudflare Access, spec 14.1) -- admin routes only soft-gate on
-  `ENVIRONMENT !== "production"` right now; **do not deploy to production
-  as-is**
+- Source-management ops scripts (spec 13.5) -- add/edit source, manual
+  ingestion trigger, source health -- not yet written; there is no admin
+  HTTP surface by design (the app is public/free, no login, ever)
 - `locationMode`/`country` filters on `GET /api/v1/signals` are accepted but
   not yet applied (need a join to jobs/signal_evidence to filter by location)
 - Brutalist design tokens / dashboard UI (Phase 2)

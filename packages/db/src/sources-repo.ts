@@ -5,8 +5,10 @@ import type { D1Client } from "./d1-client";
  * Thrown when INSERT into `sources` violates the `UNIQUE(provider,
  * board_token)` constraint (migration 0001). Framework-agnostic on
  * purpose -- packages/db must not depend on hono (see AGENTS.md "How to
- * work in this repo"). The apps/api admin route catches this and maps it
- * to 409, not a bare 500 (ROADMAP.md Milestone A).
+ * work in this repo"). Caught by the local ops source-management script
+ * (ROADMAP.md Milestone D, spec §13.5) and printed as a clear message
+ * instead of a raw D1 constraint error -- there is no HTTP admin route
+ * to map this to a status code, source management is not a Worker route.
  */
 export class DuplicateSourceError extends Error {
   constructor(
@@ -78,8 +80,10 @@ export interface CreateSourceInput {
 /**
  * Inserts a new source. Duplicate `(provider, board_token)` throws
  * DuplicateSourceError instead of letting the raw D1 constraint error
- * surface -- the route layer (apps/api admin routes, ROADMAP.md
- * Milestone D) maps this to 409.
+ * surface -- the ops source-management script (ROADMAP.md Milestone D,
+ * spec §13.5) catches it and prints a clear message. There is no HTTP
+ * route in front of this; source management is a local script, not a
+ * Worker endpoint.
  *
  * `next_poll_at` is left NULL on creation (see getDueSources) so a new
  * source is immediately due on the next scheduler tick rather than
@@ -127,11 +131,12 @@ export interface UpdateSourcePatch {
 }
 
 /**
- * Partial update for admin routes (enable/disable, change schedule).
+ * Partial update for the ops source-management script (enable/disable,
+ * change schedule) -- spec §13.5, not an HTTP admin route.
  * Only touches columns present in `patch` -- callers pass just what
  * changed, same convention as the rest of this repo's write functions.
- * Returns false if no row matched `sourceId` (route layer maps that to
- * 404), true otherwise.
+ * Returns false if no row matched `sourceId` (the script prints a "not
+ * found" message), true otherwise.
  */
 export async function updateSource(
   client: D1Client,

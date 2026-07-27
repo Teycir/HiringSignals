@@ -75,14 +75,14 @@ Every signal shown to users must retain an evidence trail: source platform, cano
 7. Provide a signal-detail drawer/page with public evidence links.
 8. Provide CSV export of the currently filtered signal list.
 9. Run scheduled ingestion via Cloudflare Worker cron triggers, on a **tight, per-provider adaptive cadence** (see §5.2) — this is the core lever for detection speed and is P0, not a later optimization.
-10. Protect internal app access with authentication before production use.
+10. The app itself has no login and is free/public for anyone to use — no authentication step in front of it, ever (see §13.5/§14.1).
 11. Per-source health isolation: one broken/degraded adapter must never affect ingestion of any other source (see §13.4) — required for "set and forget" at a tighter polling cadence.
 
 ### 2.2 P1
 
 - Saved role/location filter profiles (no alerting attached — just a saved dashboard view).
 - Company watchlists.
-- Admin source registry and source-health interface.
+- Source-health interface as a local ops script (§13.5), not an in-app admin page.
 - Manual company/source onboarding from a CSV.
 - Role taxonomy editor and title-rule review queue.
 - Change log showing why a signal or score changed.
@@ -176,8 +176,16 @@ hiring-signals/
 | Primary database               | Cloudflare D1                               | Relational joins and filtering fit signals/jobs well                                                                                                   |
 | Async work                     | Cloudflare Queues                           | Decouple scheduler from source fetching/retries                                                                                                        |
 | Cache / counters / raw archive | Cloudflare KV                               | Filter metadata cache, rate-limit state, and TTL-based raw payload archive (no R2 -- avoids requiring Cloudflare billing/a credit card on the account) |
-| Auth                           | Cloudflare Access initially, app auth later | Fast internal protection without exposing a custom auth system                                                                                         |
 | Observability                  | Workers Analytics Engine + structured logs  | Query ingestion quality and operational failures                                                                                                       |
+
+The product is public and free to use: no login, no accounts, no
+per-user access control. Every data endpoint (`/api/v1/signals`,
+`/api/v1/companies`, `/api/v1/facets`, the dashboard itself) is reachable
+by anyone, unauthenticated, as its permanent operating mode -- not a
+temporary demo posture ahead of an auth rollout. Source management
+(adding/editing ATS sources, triggering a manual ingestion run, viewing
+source health) is an operator task done directly against D1 via a local
+script, not an HTTP surface exposed by the deployed Worker -- see §13.5.
 
 ---
 
@@ -256,7 +264,6 @@ No API credential belongs in browser code, static environment variables, Git his
 | ------------------------------------------------------- | ----------------------------------------- | -------------------------- |
 | Worker secrets, webhook signing keys, CRM OAuth secrets | Cloudflare Worker secrets                 | Server only                |
 | Database/KV/Queue bindings                              | `wrangler.toml` binding references        | Worker runtime only        |
-| Cloudflare Access config                                | Cloudflare dashboard / Worker environment | Server only                |
 | `NEXT_PUBLIC_API_BASE_URL`                              | Pages environment variable                | Public by design; URL only |
 | Feature flags with no sensitive value                   | Pages public build env or Worker config   | May be public              |
 
@@ -654,8 +661,7 @@ Retention settings must be centralized, documented, and automated with scheduled
 
 - Base path: `/api/v1`.
 - All responses use JSON and have a stable envelope.
-- Require authentication for all data endpoints in production.
-- Enforce authorization at the Worker, never only in the UI.
+- All data endpoints are public and unauthenticated (§14.1) — no auth check anywhere in the request path.
 - Return `requestId` in success and error responses.
 - Cursor pagination for signal lists; do not use offset pagination on large tables.
 - Validate query parameters using Zod.
@@ -690,11 +696,11 @@ Error envelope:
 | `GET`   | `/api/v1/companies`           | Company autocomplete / filter facets             |
 | `GET`   | `/api/v1/companies/:slug`     | Company detail and recent signals                |
 | `GET`   | `/api/v1/facets`              | Role, company, source, location counts           |
-| `GET`   | `/api/v1/export/signals.csv`  | Server-generated CSV of current authorized query |
-| `POST`  | `/api/v1/admin/sources`       | Add a curated source                             |
-| `PATCH` | `/api/v1/admin/sources/:id`   | Enable, disable, or modify schedule              |
-| `POST`  | `/api/v1/admin/ingestion/run` | Manually enqueue an approved source              |
-| `GET`   | `/api/v1/admin/health`        | Source and ingestion-health summary              |
+| `GET`   | `/api/v1/export/signals.csv`  | Server-generated CSV of the current filtered query |
+
+There is no `/api/v1/admin/*` HTTP surface. Adding/editing sources,
+triggering a manual ingestion run, and viewing source health are done
+via a local script against D1 (§13.5), not a Worker route.
 
 ### 9.3 Signal list query
 
@@ -830,7 +836,6 @@ A direct route plus optional side panel on wide screens. Must include:
 | No data yet      | Explain the monitored-source scope, not “no hiring exists” |
 | Source stale     | Show “Source last confirmed $X$ ago” in detail             |
 | API error        | Compact error panel with retry, no raw stack trace         |
-| Unauthorized     | Direct to the organization’s access/login flow             |
 
 ---
 
@@ -998,14 +1003,13 @@ Middleware order:
 
 1. Request ID generation.
 2. Security headers and CORS allow-list.
-3. Authentication / authorization.
-4. Per-user and per-IP rate limit.
-5. Zod validation.
-6. Route handler.
-7. Structured error mapping.
-8. Structured log with safe fields only.
+3. Per-IP rate limit (no auth step -- every route is open-access, see §13.5).
+4. Zod validation.
+5. Route handler.
+6. Structured error mapping.
+7. Structured log with safe fields only.
 
-CORS must name known Pages preview/production origins. Do not use `*` for authenticated endpoints.
+CORS must name known Pages preview/production origins.
 
 ### 13.3 Queue message design
 
@@ -1034,16 +1038,36 @@ The consumer must be idempotent. A retry for the same `$sourceId + runId$` must 
 
 Maximum retry count should be configured, e.g. $5$. After exhaustion, send to a dead-letter queue or persistent failure table with a human-review workflow.
 
+### 13.5 Source management (ops-only, not an HTTP surface)
+
+The product has no login and no admin UI in the deployed app. Adding a
+source, editing a source's schedule/enabled flag, and triggering a
+manual ingestion run are operator tasks performed by running a local
+script against the target D1 database (`infrastructure/scripts/`),
+the same way seed data (§20 Phase 0 step 5) is loaded. This keeps the
+Worker's only routes as the public, unauthenticated read API -- there is
+no state-changing endpoint reachable over the internet, so there is
+nothing that needs CSRF protection, session auth, or a CAPTCHA gate.
+
+Viewing source health (per-source last success/failure, next poll,
+job counts -- the table shape in §16.2) is likewise a local query/script
+against D1, not a `/admin/health` HTTP route.
+
+If a future need justifies bringing source management back into the
+deployed app (e.g. multiple people need to manage sources without shell
+access to the Cloudflare account), that reopens the access-control
+question this section currently closes -- treat it as a new decision,
+not a default reversion to Cloudflare Access.
+
 ---
 
 ## 14. Security, privacy, and compliance
 
 ### 14.1 Security controls
 
-- Enforce authentication on all data APIs outside a deliberately public demo mode.
-- Use Cloudflare Access for internal MVP access, with email-domain or identity-provider policy.
-- Use role-based authorization for admin endpoints.
-- Protect state-changing routes with CSRF-appropriate controls if cookie auth is used.
+- All data APIs are intentionally public and unauthenticated -- this is
+  the permanent operating mode, not a temporary demo posture. Do not add
+  an auth step in front of `/api/v1/*` read routes.
 - Parameterize every SQL query.
 - Validate all external payloads.
 - Escape/sanitize untrusted job descriptions. Do not render source HTML with `dangerouslySetInnerHTML`.
@@ -1114,9 +1138,11 @@ Emit structured logs/events with:
 
 Never include access tokens, cookies, full raw payloads, or browser PII in logs.
 
-### 16.2 Admin health page
+### 16.2 Ops health script output
 
-Show a compact operational table:
+Not an in-app page — this is the output of the local ops script (§13.5)
+run against D1 when an operator wants a status check. Show a compact
+operational table:
 
 | Source | Company | Provider | Last success | Next poll | Jobs | Failures | Status |
 | ------ | ------- | -------- | ------------ | --------- | ---: | -------: | ------ |
@@ -1171,7 +1197,7 @@ Use Playwright or equivalent:
 5. Open a signal and verify evidence/source link.
 6. Tab through filters and CTA controls.
 7. Test mobile viewport and $200\%$ zoom.
-8. Confirm CSV export respects filters and authorization.
+8. Confirm CSV export respects the currently applied filters.
 
 ### 17.4 Quality gates
 
@@ -1233,8 +1259,8 @@ Never point preview deployments at production secrets or production write bindin
 - [ ] A user can filter by one or more roles and one company.
 - [ ] Filters are encoded in and restored from the URL.
 - [ ] A user can open a signal and see the score explanation and evidence.
-- [ ] CSV export includes only the filtered and authorized result set.
-- [ ] Admin health identifies stale, degraded, and disabled sources.
+- [ ] CSV export includes only the currently filtered result set.
+- [ ] The ops health script (§13.5) identifies stale, degraded, and disabled sources.
 
 ### 19.2 Visual / interaction
 
@@ -1286,10 +1312,10 @@ Never point preview deployments at production secrets or production write bindin
 
 1. Add remaining P0 adapters (SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR) using the same contract.
 2. Add company-level acceleration/burst signals (secondary context) and formula versioning.
-3. Add Cloudflare Access and admin role checks.
-4. Add source-health dashboard, structured logging, alerting _to the admin/operator_ (not user-facing push — see delivery model in the header), and retention cleanup.
+3. Build out the source-management/health ops script (§13.5) as source count grows.
+4. Add structured logging, alerting _to the operator_ (not user-facing push — see delivery model in the header), and retention cleanup.
 5. Add CI preview, integration tests, and production deployment runbook.
-6. Wire the detection-latency metric (§15) into the health page: track time between a job's `first_seen_at` and the source run that produced it, so cadence-tuning decisions are based on measured latency, not assumption.
+6. Wire the detection-latency metric (§15) into the ops health script: track time between a job's `first_seen_at` and the source run that produced it, so cadence-tuning decisions are based on measured latency, not assumption.
 
 ### Phase 4 — Verification
 
@@ -1317,14 +1343,16 @@ Never point preview deployments at production secrets or production write bindin
 
 ## 22. Open decisions to resolve before production
 
-1. **Access model:** Cloudflare Access only, or a product-level multi-tenant auth system? (Lower stakes than before if this stays a single-user/small-group tool rather than a multi-tenant SaaS.)
-2. **Customer data boundary:** Is this a single internal workspace or a multi-tenant SaaS? If multi-tenant, add `workspace_id` to every tenant-owned table and enforce it on every query.
-3. **Source coverage:** which additional official ATS APIs beyond the §4.1 P0 list are worth building next, and in what order — driven by observed gaps in detected postings, not by legal gatekeeping (the trade-off in §1.3/§2.1 already accepts reduced legal-review overhead in exchange for coverage speed).
-4. **Company/source registry supply:** who supplies and validates ATS board tokens at launch, and how does the registry grow over time without becoming a bottleneck on detection speed?
-5. **Regional/role scope:** which countries/markets and which IT role categories are the actual target, so saved filters and source prioritization can focus effort where it matters most to the job seeker?
-6. **Export policy:** what fields may be exported via CSV, and how long are exported files retained?
-7. **Paid-tier threshold:** at what point (source count, or a detection-latency target the free tier can't hit) does moving to Workers Paid ($5/month) become worth it, given it removes the daily request cap and raises Queues/D1 allowances substantially (§5.2)?
-8. **Cadence/coverage trade-off:** if source count grows to the point where the computed safe interval (§5.2) exceeds what feels acceptable, is the answer to prune less-valuable sources, tighten the role/location scope, or move to the paid tier?
+Settled, no longer open: access model and tenancy. The product has no
+login, is public/free for anyone to use, and is single-tenant only (no
+`workspace_id`, no per-customer data boundary) — see §3, §13.5, §14.1.
+
+1. **Source coverage:** which additional official ATS APIs beyond the §4.1 P0 list are worth building next, and in what order — driven by observed gaps in detected postings, not by legal gatekeeping (the trade-off in §1.3/§2.1 already accepts reduced legal-review overhead in exchange for coverage speed).
+2. **Company/source registry supply:** who supplies and validates ATS board tokens at launch, and how does the registry grow over time without becoming a bottleneck on detection speed?
+3. **Regional/role scope:** which countries/markets and which IT role categories are the actual target, so saved filters and source prioritization can focus effort where it matters most to the job seeker?
+4. **Export policy:** what fields may be exported via CSV, and how long are exported files retained?
+5. **Paid-tier threshold:** at what point (source count, or a detection-latency target the free tier can't hit) does moving to Workers Paid ($5/month) become worth it, given it removes the daily request cap and raises Queues/D1 allowances substantially (§5.2)?
+6. **Cadence/coverage trade-off:** if source count grows to the point where the computed safe interval (§5.2) exceeds what feels acceptable, is the answer to prune less-valuable sources, tighten the role/location scope, or move to the paid tier?
 
 ---
 

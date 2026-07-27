@@ -61,12 +61,13 @@ lives only in packages/db").
   - `getSourceById(client, sourceId)` — single row, used by the queue
     consumer to re-load config per message.
   - `createSource(client, input)` / `updateSource(client, sourceId,
-    patch)` — backs the admin routes (Milestone D). `provider +
+    patch)` — backs the ops source-management scripts (Milestone D,
+    spec §13.5). `provider +
     board_token` UNIQUE constraint (migration 0001) means a duplicate
     insert throws a D1 constraint error; catch it and throw a typed
     `DuplicateSourceError` (same pattern as `InvalidCursorError` in
-    `signals-repo.ts`) so the route layer maps it to `409`, not a bare
-    `500`.
+    `signals-repo.ts`) so the ops script (Milestone D) can print a clear
+    message instead of a raw D1 error.
   - `recordSourceRunStart(client, input) -> sourceRunId` /
     `recordSourceRunComplete(client, sourceRunId, result)` — writes
     `source_runs` rows (spec §8.2 columns: `status`, `http_status`,
@@ -230,11 +231,12 @@ arbitrarily here).
 
 ---
 
-## Milestone D — Scheduler, queue consumer, admin routes (`apps/api`)
+## Milestone D — Scheduler, queue consumer, source-management scripts (`apps/api` + `infrastructure/scripts`)
 
 Spec: §5.1 (flow), §5.2 (cadence math — already fully specified, just
 needs implementing), §13.2 (middleware order), §13.3 (queue message,
-idempotency), §13.4 (failure handling table).
+idempotency), §13.4 (failure handling table), §13.5 (source management
+is ops-only, no HTTP admin surface).
 
 This is the milestone that turns Milestones A–C from "code that exists"
 into "a running pipeline." Depends on all three being done first.
@@ -316,26 +318,41 @@ into "a running pipeline." Depends on all three being done first.
     produces identical row counts (the idempotency requirement, made
     concrete as a test instead of just a comment).
 
-- [ ] `apps/api/src/routes/admin.ts` — wire the four already-validated,
-      currently-stub routes to real repo calls:
-  - `POST /sources` → `createSource` (Milestone A). Duplicate
-    `(provider, board_token)` → `409`, not `500` (the typed error from
-    Milestone A).
-  - `PATCH /sources/:id` → `updateSource`.
-  - `POST /ingestion/run` → manual trigger: enqueue one `IngestMessage`
-    for the given source immediately (bypasses `next_poll_at`, still
-    goes through the queue, still governed by `protectedWriteTier`'s
-    rate limit — spec doesn't say manual triggers get a rate-limit
-    exemption and AGENTS.md's anti-abuse note already flags admin
-    routes as needing real auth regardless).
-  - `GET /health` → source-health table per spec §16.2's exact column
-    set (Source, Company, Provider, Last success, Next poll, Jobs,
-    Failures, Status) and status definitions (Healthy/Delayed/Degraded/
-    Disabled) computed from `sources` + recent `source_runs`, not a new
-    stored field — status is derived, not persisted, so it can't drift
-    from the underlying data.
-  - Verify: `pnpm --filter @hiring-signals/api typecheck`; route-level
-    tests hitting each of the four with a fake `D1Client`.
+- [ ] There is no `apps/api/src/routes/admin.ts` HTTP surface — the app
+      has no login and is public/free for anyone, permanently (spec §3,
+      §13.5, §14.1). `routes/admin.ts` and its mount in
+      `apps/api/src/index.ts` should be deleted, along with
+      `protectedWriteTier` in `middleware/anti-abuse.ts` (no remaining
+      caller once admin routes are gone) and `lib/http/turnstile.ts`
+      (only consumer was `protectedWriteTier`). Remove
+      `TURNSTILE_SECRET_KEY` from `apps/api/src/bindings.ts` and any
+      `wrangler.toml`/`.dev.vars` reference to it.
+  - Source management moves to a local ops script instead (spec §13.5):
+    `infrastructure/scripts/manage-sources.ts` (or split into
+    `add-source.ts` / `update-source.ts` / `run-ingestion.ts` /
+    `source-health.ts` — pick whichever reads cleaner once written, the
+    spec doesn't mandate a single file). Each calls the Milestone A repo
+    functions (`createSource`, `updateSource`, `getDueSources` /
+    `getSourceById`) directly against a `D1Client` constructed from
+    `wrangler d1 execute` bindings or a direct D1 HTTP API call — no
+    Hono, no route, no network exposure.
+  - `createSource` duplicate `(provider, board_token)` still throws
+    `DuplicateSourceError` (Milestone A) — the script catches it and
+    prints a clear message instead of a route mapping it to `409`.
+  - Manual ingestion trigger: the script enqueues one `IngestMessage`
+    for a given source immediately (bypasses `next_poll_at`), the same
+    message shape the scheduler produces — no rate limit needed since
+    it's not reachable over HTTP.
+  - Source health: a script that computes the same table spec §16.2
+    describes (Source, Company, Provider, Last success, Next poll,
+    Jobs, Failures, Status) from `sources` + recent `source_runs` and
+    prints it to the terminal — status is derived at read time, not a
+    stored field, same reasoning as before, just no longer behind a
+    `GET /health` route.
+  - Verify: `pnpm --filter @hiring-signals/api typecheck` after the
+    deletions (confirm nothing else imports the removed exports); run
+    each script once against local D1 (`wrangler d1 execute
+    hiring-signals --local`) and confirm it does what it says.
 
 ---
 
@@ -375,10 +392,12 @@ invent API endpoints ... Verify source contracts first") — don't assume
 last-known-good API shapes from training data are current; check the
 provider's own developer docs.
 
-- [ ] Update `admin.ts::addSourceSchema`'s provider enum usage (already
-      references the full `@hiring-signals/domain` `ATS_PROVIDERS` list —
-      confirm no separate hardcoded list needs updating elsewhere; grep
-      for `ATS_PROVIDERS` usages before assuming this is a no-op).
+- [ ] Update the ops source-management script's provider-enum usage
+      (Milestone D — the `addSourceSchema`-equivalent Zod schema, wherever
+      it lands under `infrastructure/scripts/`; already references the
+      full `@hiring-signals/domain` `ATS_PROVIDERS` list — confirm no
+      separate hardcoded list needs updating elsewhere; grep for
+      `ATS_PROVIDERS` usages before assuming this is a no-op).
 - [ ] Update AGENTS.md's roadmap status and this file as each adapter
       lands.
 
@@ -398,17 +417,16 @@ off the one-line spec references above.
 
 ---
 
-## Milestone G — Auth, hardening, deploy (Phase 3 remainder / Phase 4)
+## Milestone G — Hardening, deploy (Phase 3 remainder / Phase 4)
 
-Spec §14.1 (security controls), §16.2/§16.3 (health page, alerts already
-partially covered by Milestone D's `/admin/health` route — this
-milestone is the *alerting* layer on top, and Cloudflare Access), §18
+Spec §14.1 (security controls — no auth is required or wanted; the app
+is public/free permanently), §16.2/§16.3 (ops health script output,
+alerts — the *alerting* layer on top of Milestone D's ops scripts), §18
 (CI/CD), §19 (acceptance criteria).
 
-Also not detailed task-by-task yet — expand before starting. Known
-blocking item already tracked in AGENTS.md: Cloudflare Access / role-
-based auth on admin routes, currently only soft-gated on
-`ENVIRONMENT !== "production"`.
+Also not detailed task-by-task yet — expand before starting. No auth
+item remains here: access model and tenancy are settled (spec §22
+preamble) — single-tenant, public, no login, ever.
 
 ---
 

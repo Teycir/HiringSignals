@@ -7,7 +7,7 @@ against the spec, kept in sync as work lands, and gives agents entry
 points so they don't have to rediscover context each session.
 
 For anything past Phase 1's read-path (i.e. write paths, ingestion,
-adapters, scheduler, UI, auth/hardening), see **`ROADMAP.md`** — a
+adapters, scheduler, UI, hardening/deploy), see **`ROADMAP.md`** — a
 task-by-task, spec-cited breakdown. This file (AGENTS.md) keeps the
 short status view per phase; `ROADMAP.md` is where a phase gets planned
 out into ordered, independently-verifiable tasks before implementation
