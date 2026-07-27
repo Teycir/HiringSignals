@@ -1,0 +1,426 @@
+# ROADMAP.md
+
+Detailed, sequenced task breakdown for the work remaining after Phase 0
+(scaffolding) and the Phase 1 read-path (D1 schema + `GET` routes), both
+complete as of 2026-07-27. `AGENTS.md` keeps the short status view and
+repo-wide policy; this file is where a phase gets broken into ordered,
+independently-verifiable tasks before anyone starts writing code, so
+scope doesn't get discovered mid-implementation.
+
+Source of truth for *behavior* is always `hiring-signals-spec.md` —
+every task below cites the spec section it implements. If a task and the
+spec disagree, the spec wins and this file gets corrected.
+
+**Why a separate file from AGENTS.md:** AGENTS.md's roadmap section
+tracks five phases in ~120 lines total; that was enough detail for
+Phase 0/read-path because each item was small and self-contained. The
+write-path phase is not small — it's a write-repo layer, a classification
+engine that doesn't exist yet, one adapter per provider (11 total), a
+scheduler, a queue consumer with idempotency requirements, and admin
+routes, all with cross-dependencies. Cramming that into AGENTS.md's
+existing five-bullet-point section understated the scope and made it easy
+to lose track of sequencing. This file exists to fix that; AGENTS.md
+links here instead of re-describing it.
+
+---
+
+## How to use this file
+
+- Work top to bottom within a milestone; milestones themselves are
+  ordered by hard dependency (you cannot build the scheduler before the
+  write-path repos it calls exist).
+- A task is only checked off once code is written, the cited spec section
+  re-read against what was built, and the listed verification command run
+  with a real passing result — same bar as AGENTS.md's "fix and verify"
+  policy, applied to new work as well as bugfixes.
+- If a task turns out bigger than it looks once you're in the code, stop
+  and split it into sub-tasks here rather than quietly expanding scope
+  inside one commit.
+- Update `AGENTS.md`'s roadmap section (the short version) and
+  `CHANGELOG.md` when a milestone completes, same as before.
+
+---
+
+## Milestone A — Write-path repositories (`packages/db`)
+
+Nothing downstream (adapters calling in, scheduler, consumer, admin
+routes) can be built or even typechecked against real signatures until
+this exists. Framework-agnostic — no `hono` import, same rule as the
+read-path repos (see AGENTS.md "How to work in this repo").
+
+Spec: §8.2 (schema), §5.4 (lifecycle), §14.1 ("Repository (SQL) code
+lives only in packages/db").
+
+- [ ] `packages/db/src/sources-repo.ts`
+  - `getDueSources(client, params: { now: string; limit: number })` —
+    `SELECT ... FROM sources WHERE enabled = 1 AND (next_poll_at IS NULL
+    OR next_poll_at <= ?) ORDER BY next_poll_at ASC LIMIT ?`. Uses
+    `idx_source_due` (already indexed in migration 0001 — verify with
+    `EXPLAIN QUERY PLAN` once seed data exists, don't just assume the
+    index is hit).
+  - `getSourceById(client, sourceId)` — single row, used by the queue
+    consumer to re-load config per message.
+  - `createSource(client, input)` / `updateSource(client, sourceId,
+    patch)` — backs the admin routes (Milestone D). `provider +
+    board_token` UNIQUE constraint (migration 0001) means a duplicate
+    insert throws a D1 constraint error; catch it and throw a typed
+    `DuplicateSourceError` (same pattern as `InvalidCursorError` in
+    `signals-repo.ts`) so the route layer maps it to `409`, not a bare
+    `500`.
+  - `recordSourceRunStart(client, input) -> sourceRunId` /
+    `recordSourceRunComplete(client, sourceRunId, result)` — writes
+    `source_runs` rows (spec §8.2 columns: `status`, `http_status`,
+    `jobs_received`, `jobs_normalized`, `error_code`,
+    `error_message_safe`, `raw_payload_key`, `duration_ms`).
+    `error_message_safe` is exactly that — sanitized, no raw response
+    bodies or secrets, matching spec §16.1's "never include ... full raw
+    payloads" — enforce this in the function, not just by naming
+    convention (strip/truncate before insert).
+  - `markSourceSuccess(client, sourceId, nextPollAt)` /
+    `markSourceFailure(client, sourceId)` — the former resets
+    `consecutive_failures` to 0 and sets `last_success_at` +
+    `next_poll_at`; the latter increments `consecutive_failures` only
+    (spec §5.4: "Source run fails → do not alter missing counts" — this
+    is about *job* missing counts, `sources.consecutive_failures` is a
+    different counter and *does* increment on failure, don't conflate
+    the two).
+  - Verify: `pnpm --filter @hiring-signals/db typecheck`, plus a vitest
+    file once seed fixtures exist (blocked item already flagged in
+    AGENTS.md Phase 0 — see Milestone A.1 below).
+
+- [ ] `packages/db/src/jobs-repo.ts`
+  - `upsertJob(client, input: NormalizedJob & { sourceId, companyId,
+    contentHash })` — `INSERT ... ON CONFLICT(source_id,
+    external_job_id) DO UPDATE SET ...` keyed on the schema's own
+    `UNIQUE(source_id, external_job_id)` constraint (spec §5.3: "Use a
+    unique job key of source_id + external_job_id"). On conflict, only
+    update fields that can legitimately change between observations
+    (title, description, location, status fields, `last_seen_at`,
+    `content_hash`) — never overwrite `first_seen_at` or `id`.
+  - `insertJobObservation(client, input: { jobId, sourceRunId,
+    observedAt, contentHash, isPresent })` — one row per
+    `(job, source_run)` per spec §8.2's `job_observations` table.
+  - `getJobsMissingFromRun(client, sourceId, seenExternalIds: string[])`
+    — the complement query the lifecycle step needs: jobs previously
+    `active`/`possibly_closed` for this source whose `external_job_id`
+    is *not* in the current run's result set. This is what feeds the
+    missing-count increment in Milestone B; do not compute "missing" by
+    diffing in application code across two full-table loads when a NOT
+    IN / LEFT JOIN query does it in one round trip.
+  - `applyLifecycleTransition(client, jobId, patch: { status,
+    missingRunCount, lastSeenAt })` — single-purpose update, called by
+    the lifecycle engine (Milestone B), not by adapters or the consumer
+    directly. Keeps the state-machine *decision* (Milestone B, pure
+    function, unit-testable without D1) separate from the state-machine
+    *write* (this repo function).
+  - Verify: same as above.
+
+### A.1 — Seed fixtures (unblocks repo tests)
+
+Already flagged as pending in AGENTS.md Phase 0 and referenced by the
+existing "no test coverage yet for listSignals" note — both block on
+this, so it's worth doing once, early, rather than deferring twice.
+
+- [ ] `infrastructure/scripts/seed-local-d1.ts` (or `.sql` — whichever
+      is less friction against `wrangler d1 execute --local`): a small,
+      realistic, *sanitized* set of companies/sources/jobs/signals per
+      spec §20 Phase 0 step 5 ("Seed 20 companies and realistic sanitized
+      job fixtures"). Sanitized means: no real company job postings
+      copy-pasted verbatim — synthesize titles/descriptions in the shape
+      real ones take, don't scrape live boards for seed data.
+  - Verify: `wrangler d1 execute hiring-signals --local --file=...`
+    runs clean, then a quick manual `GET /api/v1/signals` against local
+    dev returns the seeded rows.
+
+---
+
+## Milestone B — Classification and lifecycle (pure logic, no D1)
+
+Spec: §6.2 (classification), §5.4 (lifecycle table), §6.4 (location —
+already done via `packages/adapters/src/location.ts`).
+
+This is pure, D1-free logic on purpose — spec §6.2 opener is explicit
+("Use deterministic rules first. Do not make an LLM dependency necessary
+for the ingestion pipeline") and pure functions are fixture-testable the
+same way `greenhouse.test.ts` tests `normalize()` without a network call.
+Lives in `packages/domain` (taxonomy/types already there) or a new
+`packages/classification` — decide based on whether `packages/adapters`
+would need to import it too (title-based pre-filtering at fetch time is
+out of scope for v1, so probably not; default to `packages/domain` unless
+that turns out awkward).
+
+- [ ] Title normalization: lowercase, Unicode-normalize (NFKC), strip
+      punctuation, collapse whitespace (spec §6.2 step 1). Small, pure,
+      easy to over-engineer — keep it to exactly what the spec lists.
+- [ ] Phrase-rule + abbreviation matcher against the 10 P0 role
+      categories (`packages/domain/src/role-taxonomy.ts`), spec §6.2
+      steps 2–3. Rules are data (a table/JSON of phrase → category, and
+      abbreviation → category), not a long if/else chain — makes the
+      "labeled fixture set" testing requirement (spec §6.2 step 7,
+      §17.1) tractable.
+- [ ] Negative-term guard (spec §6.2 step 4) — e.g. "security guard"
+      must not match `cybersecurity`. Applied *before* a phrase match is
+      accepted, not as a post-hoc filter.
+- [ ] Confidence scoring: $C_{role} = 0.70C_{title} + 0.20C_{department}
+      + 0.10C_{description}$ (spec §6.2 formula), department/description
+      inspection only when title confidence is low (step 5). Auto-classify
+      only at $C_{role} \geq 0.80$; store `classification_confidence` and
+      `classification_version` either way (step 6); below-threshold jobs
+      still get written with `role_primary = null`, not dropped or
+      blocked (step 7 — "review queue" doesn't require a UI *now*, but
+      the job record itself must make low-confidence items queryable
+      later, so don't silently discard the raw signal).
+- [ ] Job lifecycle state machine as a pure function: `(currentState,
+      wasPresentThisRun, consecutiveMissingRuns, daysSinceLastSeen) =>
+      nextState` implementing spec §5.4's table exactly (2 consecutive
+      missing runs → `possibly_closed`; 4 consecutive OR 14 days →
+      `closed`; reappearance → `active` + emit `reopened_job`
+      candidate). Thresholds (`2`, `4`, `14`) must be named constants,
+      not inlined magic numbers, per spec §5.4 ("must be configuration,
+      not hard-coded") — a config object/module is enough for v1, a full
+      admin-editable setting can come later per §22 open decisions.
+- [ ] Fixture-driven tests for all of the above, modeled on
+      `packages/adapters/src/greenhouse.test.ts` / `location.test.ts`
+      (`vitest`). Cover: the "security guard" negative case explicitly
+      (spec calls it out by name), a title-only high-confidence match, a
+      low-confidence case that needs department disambiguation, and each
+      row of the lifecycle table as its own test case.
+  - Verify: `pnpm --filter @hiring-signals/domain test` (or whichever
+    package this lands in) green; `pnpm -r typecheck` clean.
+
+---
+
+## Milestone C — Signal generation (`new_job` only for v1 of this milestone)
+
+Spec: §7 (signal model/scoring), §7.3 (deduplication), §20 Phase 1 step 5
+("Implement new_job signal generation and evidence persistence" — the
+spec's own build order limits Phase 1 to this one signal type;
+`hiring_burst`/`role_acceleration`/`multi_location`/`persistent_demand`
+need historical volume baselines that don't exist until `new_job` has
+been running for a while, so they're a later milestone, not deferred
+arbitrarily here).
+
+- [ ] `packages/db/src/signals-write-repo.ts` (separate file from the
+      existing read-only `signals-repo.ts` — keeps the read/write split
+      explicit and avoids one file mixing query-building styles):
+      `createSignal(client, input)`, `appendSignalEvidence(client,
+      signalId, evidence)`, `findActiveSignal(client, { companyId,
+      roleCategory, signalType })` (dedup check before creating a new
+      row — spec §7.3 hard-duplicate rule applied at the signal level).
+- [ ] Score computation as a pure function per spec §7.2's formula:
+      $S = \min(100, 35R + 25V + 20A + 10B + 10Q - P)$, with
+      $R = e^{-d/14}$ freshness decay. For v1 `new_job` signals, $V$/$A$/
+      $B$ can be simple (a freshly-created signal has one piece of
+      evidence, so volume/acceleration/breadth start low/neutral —
+      document the exact v1 simplification in the function's header
+      comment, since spec §7.2 requires "every component score, formula
+      version, and inputs" to be recoverable from `signal_evidence`, and
+      a future milestone will need to know what v1 actually computed vs.
+      what the full formula eventually does).
+  - **Store `score_version`** (already a column) and bump it if the
+    formula's inputs change later — spec §7.2: "Scores must be
+    recomputable from persisted observations."
+- [ ] Wire into the ingest-consumer's post-upsert step (Milestone D):
+      new job upserted → lifecycle says `active` and it's a first-seen →
+      classification says role matched → create/refresh signal + evidence
+      row.
+  - Verify: unit tests for the score formula against hand-computed
+    expected values (at least 3 cases spanning the freshness decay
+    curve); `pnpm --filter @hiring-signals/db typecheck`.
+
+---
+
+## Milestone D — Scheduler, queue consumer, admin routes (`apps/api`)
+
+Spec: §5.1 (flow), §5.2 (cadence math — already fully specified, just
+needs implementing), §13.2 (middleware order), §13.3 (queue message,
+idempotency), §13.4 (failure handling table).
+
+This is the milestone that turns Milestones A–C from "code that exists"
+into "a running pipeline." Depends on all three being done first.
+
+- [ ] `apps/api/src/jobs/scheduler.ts` (currently an empty
+      `TODO(Phase 1)` stub):
+  - Query `getDueSources` (Milestone A) for sources where
+    `enabled = 1 AND next_poll_at <= now()`.
+  - For each due source, enqueue one `IngestMessage` (domain schema
+    already exists: `packages/domain/src/ingest-message.ts`) with
+    deterministic jitter derived from `source_id` (spec §5.2's explicit
+    requirement — "so sources don't all fire in the same cron tick").
+    A stable hash of `source_id` mod some spread window is enough; no
+    need for a crypto-strength hash here, just determinism.
+  - **Must only enqueue, never fetch** (spec §5.1, §5.2's closing
+    paragraph is explicit and repeated for emphasis — this is the one
+    rule most likely to get violated by "just inline the fetch, it's
+    only for testing"). Enforce this by *not* importing any adapter's
+    `fetchBoard` into this file at all — if the import isn't there, it
+    can't be called.
+  - Bound the number of sources processed per invocation so the 15-min
+    cron (spec §13.1 wrangler.toml example) can't blow Workers' Free-tier
+    CPU-per-invocation limit if the due-source count spikes; a `LIMIT` on
+    the `getDueSources` query is enough, remaining due sources get picked
+    up next tick.
+  - Verify: unit test with a fake `D1Client`/queue double asserting (a)
+    only due sources enqueue, (b) jitter is deterministic for a given
+    `source_id` across two calls, (c) nothing is fetched.
+
+- [ ] `apps/api/src/jobs/ingest-consumer.ts` (currently
+      `console.log("ingest_stub", ...)` + ack):
+  - Full pipeline per spec §5.1: fetch (adapter's `fetchBoard`) → validate
+    (adapter's Zod schema, inside `normalize()`) → normalize → upsert jobs
+    (Milestone A) → insert observations (Milestone A) → lifecycle
+    transition (Milestone B) → classification (Milestone B) → signal
+    generation (Milestone C) → write `source_runs` metrics (Milestone A)
+    → cache invalidation for the facets KV cache (`apps/api/src/routes/
+    facets.ts` already has a 60s KV cache — bust or let it expire
+    naturally; expiring naturally is simpler and the spec doesn't
+    require sub-60s propagation, don't add invalidation complexity the
+    spec doesn't ask for).
+  - **Idempotency is the hard requirement here** (spec §13.3: "A retry
+    for the same sourceId + runId must not create duplicate observations
+    or duplicate signals"). The natural key is already unique
+    (`jobs(source_id, external_job_id)`, and `job_observations` should
+    key off `(job_id, source_run_id)` — check whether that needs its own
+    UNIQUE constraint added in a new migration, since migration 0001 as
+    written doesn't have one on `job_observations`; if a retry can insert
+    a second observation row for the same `(job_id, source_run_id)`,
+    that's a bug to fix as its own migration task, not silently worked
+    around in application code). Use the `runId` to make `source_runs`
+    writes idempotent too (upsert or check-before-insert on `id`).
+  - Failure handling per spec §13.4's table — implement each row as its
+    own branch, don't collapse them into one generic catch-and-retry:
+    429/Retry-After, transient 5xx/timeout (capped exponential backoff),
+    4xx config issue (mark source degraded, no hammering), schema
+    mismatch (already surfaces as `GreenhouseSchemaError` from the
+    adapter — catch it specifically, store the safe diagnostic, don't
+    let it fall through to a generic 500-equivalent), anti-bot/CAPTCHA
+    (disable source automatically), D1/KV transient error (retry,
+    preserve idempotency).
+  - Max retry count from config (spec §13.4 suggests 5); after
+    exhaustion, a persistent failure record for human review — a simple
+    `source_runs` row with `status = 'failed_final'` plus the diagnostic
+    is enough for v1, a formal dead-letter queue can wait for real
+    failure volume to justify it.
+  - Structured log fields exactly per spec §16.1's list (`request_id`,
+    `source_id`, `provider`, `run_id`, `adapter_version`, `http_status`,
+    `duration_ms`, `jobs_received`, `jobs_normalized`,
+    `signals_created`, `error_code`) — and the same section's explicit
+    negative list (never log tokens, cookies, full raw payloads, browser
+    PII).
+  - Verify: integration-style test using the existing Greenhouse fixture
+    (`packages/adapters/src/fixtures/greenhouse-board.json`) through the
+    full consumer pipeline against a local D1 (miniflare/`wrangler dev
+    --local` or vitest + a D1 test binding, whichever the existing test
+    setup in this repo already supports — check `apps/api`'s vitest
+    config before picking); assert re-running the same `runId` twice
+    produces identical row counts (the idempotency requirement, made
+    concrete as a test instead of just a comment).
+
+- [ ] `apps/api/src/routes/admin.ts` — wire the four already-validated,
+      currently-stub routes to real repo calls:
+  - `POST /sources` → `createSource` (Milestone A). Duplicate
+    `(provider, board_token)` → `409`, not `500` (the typed error from
+    Milestone A).
+  - `PATCH /sources/:id` → `updateSource`.
+  - `POST /ingestion/run` → manual trigger: enqueue one `IngestMessage`
+    for the given source immediately (bypasses `next_poll_at`, still
+    goes through the queue, still governed by `protectedWriteTier`'s
+    rate limit — spec doesn't say manual triggers get a rate-limit
+    exemption and AGENTS.md's anti-abuse note already flags admin
+    routes as needing real auth regardless).
+  - `GET /health` → source-health table per spec §16.2's exact column
+    set (Source, Company, Provider, Last success, Next poll, Jobs,
+    Failures, Status) and status definitions (Healthy/Delayed/Degraded/
+    Disabled) computed from `sources` + recent `source_runs`, not a new
+    stored field — status is derived, not persisted, so it can't drift
+    from the underlying data.
+  - Verify: `pnpm --filter @hiring-signals/api typecheck`; route-level
+    tests hitting each of the four with a fake `D1Client`.
+
+---
+
+## Milestone E — Remaining P0 adapters
+
+Spec §20 Phase 3 step 1 groups these with "production hardening," after
+the dashboard (Phase 2) — the spec's own priority order puts a working
+UI over adapter breadth. **Sequence this milestone after Milestone F
+(Phase 2 UI) unless there's a specific reason to front-load adapter
+coverage** (e.g. a particular provider is needed to validate the pipeline
+against real-world messier data before UI work starts — Greenhouse's
+fixtures are clean by construction, so this is a legitimate reason to
+pull one or two adapters earlier if lifecycle/classification edge cases
+need more real shapes to test against; use judgment, don't treat the
+spec's ordering as absolute if it stops making sense in practice).
+
+Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
+`normalize`), same fixture-test pattern as `greenhouse.ts`/
+`greenhouse.test.ts`. One PR/commit per adapter, not a batch — keeps
+review scoped and lets a bad fixture assumption in one provider get
+caught before it's copy-pasted into the next nine.
+
+- [ ] `lever` — `packages/adapters/src/lever.ts` + fixtures + tests
+- [ ] `ashby`
+- [ ] `smartrecruiters`
+- [ ] `workable`
+- [ ] `recruitee`
+- [ ] `personio`
+- [ ] `teamtailor`
+- [ ] `jazzhr`
+- [ ] `breezy`
+- [ ] `bamboohr`
+
+For each: confirm the provider's public, unauthenticated board API is
+still live and documented *before* writing the schema (spec §21: "Never
+invent API endpoints ... Verify source contracts first") — don't assume
+last-known-good API shapes from training data are current; check the
+provider's own developer docs.
+
+- [ ] Update `admin.ts::addSourceSchema`'s provider enum usage (already
+      references the full `@hiring-signals/domain` `ATS_PROVIDERS` list —
+      confirm no separate hardcoded list needs updating elsewhere; grep
+      for `ATS_PROVIDERS` usages before assuming this is a no-op).
+- [ ] Update AGENTS.md's roadmap status and this file as each adapter
+      lands.
+
+---
+
+## Milestone F — Dashboard UI (Phase 2, `apps/web`)
+
+Spec §11 (Minimal Brutalist visual system), §12 (Next.js requirements),
+§10 (UX spec — route map, filters, signal cards, detail view, empty/
+loading/error states).
+
+Not detailed task-by-task here yet — this file's first pass focused on
+the write-path (Milestones A–E) since that's what was in flight when
+this document was created. Expand this milestone into the same
+level of task detail before starting it; don't start UI work directly
+off the one-line spec references above.
+
+---
+
+## Milestone G — Auth, hardening, deploy (Phase 3 remainder / Phase 4)
+
+Spec §14.1 (security controls), §16.2/§16.3 (health page, alerts already
+partially covered by Milestone D's `/admin/health` route — this
+milestone is the *alerting* layer on top, and Cloudflare Access), §18
+(CI/CD), §19 (acceptance criteria).
+
+Also not detailed task-by-task yet — expand before starting. Known
+blocking item already tracked in AGENTS.md: Cloudflare Access / role-
+based auth on admin routes, currently only soft-gated on
+`ENVIRONMENT !== "production"`.
+
+---
+
+## Open questions to resolve before Milestone D is "done" (not blocking earlier milestones)
+
+Carried over from spec §22 ("Open decisions to resolve before
+production") to the extent they affect write-path implementation
+choices — full list is in the spec, this is just the subset relevant to
+Milestones A–D:
+
+- [ ] Where do lifecycle thresholds (`2`/`4`/`14` from spec §5.4) live
+      as "configuration, not hard-coded" — a constants module is enough
+      for v1 per Milestone B, but confirm that satisfies the spec's
+      intent or whether it needs to be admin-editable (D1-backed config
+      table) before Milestone D ships to any real source.
