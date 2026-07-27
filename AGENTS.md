@@ -80,6 +80,41 @@ output — not assuming it passes.
       archive + export artifacts now live in KV under TTL-based keys) so
       the project doesn't require Cloudflare billing/a credit card.
 - [ ] Seed fixtures to test read paths against real data
+- [x] Anti-abuse middleware: `apps/api/src/middleware/anti-abuse.ts`
+      (`freeReadTier()` / `protectedWriteTier()`) wrapping
+      `lib/http/rate-limit.ts` (KV sliding-window: 600 req/300s read tier,
+      30 req/300s write tier), `lib/http/turnstile.ts` (Cloudflare Turnstile
+      CAPTCHA, gracefully downgrades to rate-limit-only if
+      `TURNSTILE_SECRET_KEY` is unset), and `lib/observability/audit-abuse.ts`
+      (fire-and-forget abuse-event logging to KV). Global `clientIp()`
+      middleware in `apps/api/src/middleware/client-ip.ts` sets
+      `Variables.clientIp` (CF-Connecting-IP → X-Forwarded-For → "unknown")
+      and a default `abuseVerdict` on every request before route-level
+      anti-abuse middleware runs. Wired onto `GET /signals`, `/companies`,
+      `/facets`, `/health` (free tier) and `POST /admin/sources`,
+      `PATCH /admin/sources/:id`, `POST /admin/ingestion/run` (protected
+      tier, replacing the old prod-only 401 placeholder). Verified:
+      `pnpm -r typecheck` clean.
+  - **Note — this is not the Auth item below.** Rate-limit + CAPTCHA stops
+    high-volume/automated abuse; it does not check *who* is calling. Any
+    caller that solves the CAPTCHA and stays under 30 req/300s can still
+    hit the admin write routes in production. The "Auth (blocking for any
+    production deploy)" section further down is still unimplemented and
+    still blocks prod deploy independently of this item.
+  - **Found, not fixed — `lib/http/circuit-breaker.ts` is dead code.** Both
+    its own file header and the `tsconfig.json` comment describing why it's
+    in the typecheck `include` glob claim it's used by
+    `anti-abuse.ts` + "repo wrappers." Grepped the whole tree
+    (`apps`, `lib`, `packages`) for `circuit-breaker`: zero imports anywhere.
+    The module itself (`createCircuitBreaker`/`withCircuit`, module-level
+    state, per-resource bulkhead semaphore) looks complete and typechecks,
+    it's just never wired into `d1-client.ts` or any repo call. Per this
+    file's own policy this should be wired up or the comment/claim removed
+    — leaving it as an unreferenced module with a comment asserting it's in
+    use is exactly the kind of drift this doc warns against. Flagging here
+    instead of silently fixing because wiring it into `packages/db` touches
+    the D1 client's call sites — falls under "large bug, own task" per the
+    policy above, not a same-turn fix.
 
 ### Phase 1 — D1 schema + read paths
 
