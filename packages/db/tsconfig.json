@@ -4,6 +4,6 @@
     "types": ["@cloudflare/workers-types"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "../../lib/d1/**/*.ts", "../../lib/text/base64url.ts", "../../lib/pagination/**/*.ts"],
+  "include": ["src/**/*.ts", "../../lib/d1/**/*.ts", "../../lib/http/circuit-breaker.ts", "../../lib/text/base64url.ts", "../../lib/pagination/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

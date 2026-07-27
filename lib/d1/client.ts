@@ -4,9 +4,24 @@
  * to be the only place in a project that touches `D1Database` directly;
  * everything else calls these helpers instead of `env.DB.prepare(...)`.
  *
- * Zero project-specific dependencies -- copy this file into any
- * Cloudflare Workers + D1 project as-is.
+ * Every call is routed through a module-level circuit breaker
+ * (../http/circuit-breaker.ts) on the "db" resource. This is the *only*
+ * choke point every repo function goes through (packages/db/src/*-repo.ts
+ * -> createD1Client(c.env.DB), one call per request, see apps/api/src/
+ * routes/*.ts) -- wrapping here protects all of them with zero call-site
+ * changes, instead of threading withCircuit through each repo function
+ * individually. State lives in circuit-breaker.ts's module-level map,
+ * which is fine because a Worker isolate handles one request at a time
+ * (see that file's header comment).
+ *
+ * Depends on ../http/circuit-breaker.ts (zero project-specific deps
+ * itself) -- copy both files together into any Cloudflare Workers + D1
+ * project as-is.
  */
+
+import { createCircuitBreaker } from "../http/circuit-breaker";
+
+const breaker = createCircuitBreaker({ resources: ["db"] });
 
 export interface D1Client {
   /** Zero-or-one row. */
@@ -21,30 +36,38 @@ export interface D1Client {
 
 export function createD1Client(db: D1Database): D1Client {
   return {
-    async first<T>(sql: string, params: unknown[] = []) {
-      const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
-      const row = await stmt.first<T>();
-      return row ?? null;
+    first<T>(sql: string, params: unknown[] = []) {
+      return breaker.withCircuit("db", async () => {
+        const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
+        const row = await stmt.first<T>();
+        return row ?? null;
+      });
     },
 
-    async all<T>(sql: string, params: unknown[] = []) {
-      const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
-      const { results } = await stmt.all<T>();
-      return results ?? [];
+    all<T>(sql: string, params: unknown[] = []) {
+      return breaker.withCircuit("db", async () => {
+        const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
+        const { results } = await stmt.all<T>();
+        return results ?? [];
+      });
     },
 
-    async run(sql: string, params: unknown[] = []) {
-      const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
-      const result = await stmt.run();
-      return { changes: result.meta?.changes ?? 0 };
+    run(sql: string, params: unknown[] = []) {
+      return breaker.withCircuit("db", async () => {
+        const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
+        const result = await stmt.run();
+        return { changes: result.meta?.changes ?? 0 };
+      });
     },
 
-    async batch<T>(statements: Array<{ sql: string; params?: unknown[] }>) {
-      const prepared = statements.map(({ sql, params = [] }) =>
-        params.length ? db.prepare(sql).bind(...params) : db.prepare(sql),
-      );
-      const results = await db.batch<T>(prepared);
-      return results.map((r) => r.results ?? []);
+    batch<T>(statements: Array<{ sql: string; params?: unknown[] }>) {
+      return breaker.withCircuit("db", async () => {
+        const prepared = statements.map(({ sql, params = [] }) =>
+          params.length ? db.prepare(sql).bind(...params) : db.prepare(sql),
+        );
+        const results = await db.batch<T>(prepared);
+        return results.map((r) => r.results ?? []);
+      });
     },
   };
 }

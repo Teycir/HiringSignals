@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Dead code:** `lib/http/circuit-breaker.ts` is now actually wired in — every D1 call (`first`/`all`/`run`/`batch` in `lib/d1/client.ts`, the single choke point all repos go through via `createD1Client`) is routed through it on the `"db"` resource, matching what `apps/api/tsconfig.json`'s comment already claimed. Zero call-site changes needed in routes or repos.
+- **Local typecheck:** removed a stray, gitignored `packages/db/src/__sqlite_probe.ts` scratch file that broke `pnpm --filter @hiring-signals/db typecheck` locally with `Cannot find module 'node:sqlite'`.
+
+### Documentation
+
+- **lib/README.md:** module table now lists `http/rate-limit.ts`, `http/turnstile.ts`, `http/circuit-breaker.ts`, and `observability/audit-abuse.ts`, which existed and were in use but missing from the table.
+
 ## [0.1.0] — 2026-07-27
 
 ### Added

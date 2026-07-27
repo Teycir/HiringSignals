@@ -101,20 +101,38 @@ output — not assuming it passes.
     hit the admin write routes in production. The "Auth (blocking for any
     production deploy)" section further down is still unimplemented and
     still blocks prod deploy independently of this item.
-  - **Found, not fixed — `lib/http/circuit-breaker.ts` is dead code.** Both
-    its own file header and the `tsconfig.json` comment describing why it's
-    in the typecheck `include` glob claim it's used by
-    `anti-abuse.ts` + "repo wrappers." Grepped the whole tree
-    (`apps`, `lib`, `packages`) for `circuit-breaker`: zero imports anywhere.
-    The module itself (`createCircuitBreaker`/`withCircuit`, module-level
-    state, per-resource bulkhead semaphore) looks complete and typechecks,
-    it's just never wired into `d1-client.ts` or any repo call. Per this
-    file's own policy this should be wired up or the comment/claim removed
-    — leaving it as an unreferenced module with a comment asserting it's in
-    use is exactly the kind of drift this doc warns against. Flagging here
-    instead of silently fixing because wiring it into `packages/db` touches
-    the D1 client's call sites — falls under "large bug, own task" per the
-    policy above, not a same-turn fix.
+  - [x] **Fixed — `lib/http/circuit-breaker.ts` is now wired in, no longer
+    dead code.** Previously both its own file header and the
+    `apps/api/tsconfig.json` comment claimed it was used by
+    `anti-abuse.ts` + "repo wrappers," but a full-tree grep found zero
+    imports anywhere. Every repo function goes through exactly one choke
+    point — `createD1Client(c.env.DB)`, called fresh per-request in each
+    route (`apps/api/src/routes/{signals,companies,facets}.ts`) — so
+    `withCircuit("db", ...)` is now applied inside `lib/d1/client.ts`
+    itself, wrapping `first`/`all`/`run`/`batch`. This protects every repo
+    call with zero call-site changes, instead of threading `withCircuit`
+    through each `*-repo.ts` function individually. Module-level breaker
+    state is safe here for the same reason `circuit-breaker.ts`'s own
+    header comment gives: a Worker isolate handles one request at a time.
+    `packages/db/tsconfig.json`'s include glob now also lists
+    `lib/http/circuit-breaker.ts` (needed since `lib/d1/client.ts` imports
+    it and `packages/db` must typecheck standalone). Verified:
+    `pnpm -r typecheck` and `pnpm -r lint` both clean across all 5
+    workspace projects; adapter test suite (17 tests, unaffected by this
+    change) still green.
+  - **Also fixed while verifying the above — stray `__sqlite_probe.ts`
+    broke local `packages/db` typecheck.** `packages/db/src/` had an
+    untracked, gitignored scratch file (`import { DatabaseSync } from
+    "node:sqlite"`) matched by `src/**/*.ts` in `packages/db/tsconfig.json`.
+    It's invisible to `git status`/`git diff` (matched by `.gitignore:39`,
+    `__*.ts`) but still sat on disk and made `pnpm --filter
+    @hiring-signals/db typecheck` fail locally with
+    `Cannot find module 'node:sqlite'` — meaning the "Known-good
+    verification commands" below couldn't be trusted to actually pass for
+    any dev who'd ever run that probe. Deleted it (disposable scratch
+    output, not referenced by any real module). If you need to probe
+    `node:sqlite` again locally, do it outside `packages/db/src/` — that
+    whole directory is typechecked as real source.
 
 ### Phase 1 — D1 schema + read paths
 

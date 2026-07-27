@@ -15,12 +15,16 @@ canonical implementation, kept generic on purpose.
 
 | File | What it is | Depends on |
 |---|---|---|
-| `d1/client.ts` | Thin, parameterized D1 query wrapper (`first`/`all`/`run`/`batch`) | Cloudflare Workers types only |
+| `d1/client.ts` | Thin, parameterized D1 query wrapper (`first`/`all`/`run`/`batch`), every call routed through `http/circuit-breaker.ts` on the `"db"` resource | Cloudflare Workers types, `http/circuit-breaker.ts` |
 | `d1/like-pattern.ts` | Escapes `%`/`_` in user input before building a `LIKE` pattern | none |
 | `kv/ttl-store.ts` | Generic TTL-keyed KV blob store (prefix + retention window) | `@cloudflare/workers-types` |
 | `text/base64url.ts` | UTF-8-safe, URL-safe base64 encode/decode (+ JSON helpers) | none |
 | `pagination/cursor.ts` | Opaque keyset-pagination cursor codec, mode-tagged so a sort change between pages is rejected instead of silently corrupting results | `text/base64url.ts` |
 | `http/security-headers.ts` | Hono middleware: baseline security headers + explicit-allowlist CORS | `hono` (type-only) |
+| `http/rate-limit.ts` | KV sliding-window per-IP rate limiter, free/protected tier presets | `@cloudflare/workers-types` |
+| `http/turnstile.ts` | Cloudflare Turnstile CAPTCHA verification, graceful no-secret downgrade | none (fetches Cloudflare's siteverify endpoint) |
+| `http/circuit-breaker.ts` | Circuit breaker + per-resource bulkhead (concurrency limit) for external deps; used by `d1/client.ts` on the `"db"` resource | none |
+| `observability/audit-abuse.ts` | Fire-and-forget abuse-event logging to a KV namespace | `@cloudflare/workers-types` |
 | `text/location-mode.ts` | Infers remote/hybrid/onsite/unknown from a free-text location string | none |
 
 ## Using this in a new project
