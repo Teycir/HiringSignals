@@ -34,3 +34,7 @@ coverage/
 playwright-report/
 test-results/
 .opencode
+
+# Temporary probe / scratch files
+__*.ts
+__*.js
