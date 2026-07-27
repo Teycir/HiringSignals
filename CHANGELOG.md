@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`job_observations` idempotency gap (ROADMAP.md Milestone A):** migration 0001 never put a UNIQUE constraint on `(job_id, source_run_id)`, so a retried queue message could insert a duplicate observation row, silently corrupting missing-run-count and lifecycle math (spec §13.3's idempotency requirement). Added `0004_job_observations_idempotency.sql` (`CREATE UNIQUE INDEX idx_job_observations_idempotency`, SQLite has no `ALTER TABLE ADD CONSTRAINT`), applied and verified against local D1 (constraint fires on a duplicate insert). Updated `insertJobObservation`'s doc comment in `packages/db/src/jobs-repo.ts` accordingly — it previously told callers to guard against this manually; now the schema enforces it and callers instead catch the resulting D1 UNIQUE error.
 - **Dead code:** `lib/http/circuit-breaker.ts` is now actually wired in — every D1 call (`first`/`all`/`run`/`batch` in `lib/d1/client.ts`, the single choke point all repos go through via `createD1Client`) is routed through it on the `"db"` resource, matching what `apps/api/tsconfig.json`'s comment already claimed. Zero call-site changes needed in routes or repos.
 - **Local typecheck:** removed a stray, gitignored `packages/db/src/__sqlite_probe.ts` scratch file that broke `pnpm --filter @hiring-signals/db typecheck` locally with `Cannot find module 'node:sqlite'`.
 

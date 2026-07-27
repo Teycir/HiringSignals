@@ -43,6 +43,17 @@ links here instead of re-describing it.
 
 ## Milestone A — Write-path repositories (`packages/db`)
 
+**Status (2026-07-28): both repo files below are implemented and
+typecheck clean.** The idempotency schema gap flagged in
+`jobs-repo.ts`'s `insertJobObservation` doc comment has been closed —
+see migration `0004_job_observations_idempotency.sql` (adds
+`UNIQUE(job_id, source_run_id)` via `CREATE UNIQUE INDEX`, since SQLite
+has no `ALTER TABLE ADD CONSTRAINT`), applied to local D1 and verified
+by a manual duplicate-insert test that confirmed the constraint fires.
+`insertJobObservation`'s comment updated accordingly. A.1 (seed
+fixtures) is still open below — nothing in this milestone has test
+coverage yet because there's no seed data to test against.
+
 Nothing downstream (adapters calling in, scheduler, consumer, admin
 routes) can be built or even typechecked against real signatures until
 this exists. Framework-agnostic — no `hono` import, same rule as the
@@ -51,7 +62,7 @@ read-path repos (see AGENTS.md "How to work in this repo").
 Spec: §8.2 (schema), §5.4 (lifecycle), §14.1 ("Repository (SQL) code
 lives only in packages/db").
 
-- [ ] `packages/db/src/sources-repo.ts`
+- [x] `packages/db/src/sources-repo.ts`
   - `getDueSources(client, params: { now: string; limit: number })` —
     `SELECT ... FROM sources WHERE enabled = 1 AND (next_poll_at IS NULL
     OR next_poll_at <= ?) ORDER BY next_poll_at ASC LIMIT ?`. Uses
@@ -89,7 +100,7 @@ lives only in packages/db").
     file once seed fixtures exist (blocked item already flagged in
     AGENTS.md Phase 0 — see Milestone A.1 below).
 
-- [ ] `packages/db/src/jobs-repo.ts`
+- [x] `packages/db/src/jobs-repo.ts`
   - `upsertJob(client, input: NormalizedJob & { sourceId, companyId,
     contentHash })` — `INSERT ... ON CONFLICT(source_id,
     external_job_id) DO UPDATE SET ...` keyed on the schema's own

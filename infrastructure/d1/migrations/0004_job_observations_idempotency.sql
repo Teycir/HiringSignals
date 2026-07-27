@@ -1,0 +1,29 @@
+-- Migration 0004: enforce idempotent job_observations writes
+-- Applies to D1 database "hiring-signals".
+-- Run: pnpm --filter @hiring-signals/api run db:migrations:apply:local
+--      pnpm --filter @hiring-signals/api run db:migrations:apply:remote
+--
+-- Gap: migration 0001 created job_observations with no uniqueness
+-- constraint on (job_id, source_run_id). spec §13.3 requires "a retry
+-- for the same sourceId + runId must not create duplicate observations
+-- or duplicate signals" -- without this constraint, a retried queue
+-- message re-running insertJobObservation (packages/db/src/jobs-repo.ts)
+-- for the same job+run would silently insert a second row instead of
+-- failing loudly, corrupting missing-run-count and lifecycle math
+-- downstream (ROADMAP.md Milestone B) since job_observations rows are
+-- counted, not just checked for existence.
+--
+-- SQLite has no ALTER TABLE ADD CONSTRAINT, so this is enforced as a
+-- UNIQUE index instead -- same pattern already used in this schema for
+-- constraints added after initial table creation (see idx_source_due,
+-- migration 0001, which backs a WHERE clause rather than uniqueness, but
+-- establishes that this schema expresses table-level rules as indexes
+-- where SQLite's DDL requires it).
+--
+-- Any pre-existing duplicate (job_id, source_run_id) rows would make
+-- this CREATE UNIQUE INDEX fail outright (SQLite refuses to build a
+-- unique index over data that violates it) -- that failure is the
+-- correct signal to go clean up real duplicate rows first, not a reason
+-- to weaken this migration.
+CREATE UNIQUE INDEX idx_job_observations_idempotency
+  ON job_observations(job_id, source_run_id);

@@ -164,15 +164,16 @@ export interface InsertJobObservationInput {
 /**
  * One row per (job, source_run) per spec §8.2's job_observations table.
  *
- * NOTE (ROADMAP.md Milestone D flag, carried here since it's this table's
- * concern): migration 0001 does not put a UNIQUE constraint on
- * (job_id, source_run_id), so a retried queue message could insert a
- * second observation row for the same pair. That's a schema gap to close
- * with its own migration (tracked in ROADMAP.md, not silently worked
- * around here) -- until that migration lands, callers that need
- * idempotency across retries (the ingest-consumer, spec §13.3) must
- * guard against double-insert themselves, e.g. by checking for an
- * existing (job_id, source_run_id) row before calling this function.
+ * Idempotency (spec §13.3): `idx_job_observations_idempotency` (migration
+ * 0004) enforces UNIQUE(job_id, source_run_id) at the schema level, so a
+ * retried queue message calling this function twice for the same pair
+ * throws a D1 UNIQUE constraint error on the second call instead of
+ * silently inserting a duplicate row. Callers that need retry-safety
+ * (the ingest-consumer, ROADMAP.md Milestone D) must catch that error and
+ * treat it as "already recorded, continue" rather than a hard failure --
+ * this function itself does not swallow it, same division of
+ * responsibility as DuplicateSourceError in sources-repo.ts (schema
+ * enforces, caller decides what the conflict means for its own flow).
  */
 export async function insertJobObservation(
   client: D1Client,
