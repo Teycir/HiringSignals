@@ -58,5 +58,10 @@ output — not assuming it passes.
   apps/api-only) imports. If a repo function needs to signal a
   client-caused error (bad input, not a server fault), throw a plain
   `Error` subclass exported from the package (see `InvalidCursorError` in
-  `signals-repo.ts`) and let the route layer in `apps/api` catch it and
-  map it to the right HTTP status.
+  `signals-repo.ts`). Callers map it to whatever's appropriate for their
+  context — an HTTP route in `apps/api` maps it to a status code (e.g.
+  `InvalidCursorError` → 400), but not every typed error has an HTTP
+  route above it: `DuplicateSourceError` (`sources-repo.ts`) is caught by
+  the local ops source-management script (spec §13.5), not a route,
+  since there is no `/api/v1/admin/*` surface — the app has no login and
+  is public/free, permanently (spec §3, §14.1).
