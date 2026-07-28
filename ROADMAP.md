@@ -395,19 +395,27 @@ with its own generic method signatures instead of `vi.fn()` wrapping.
     tests (never exceeds 100, never below 0) and a test asserting the
     v1 neutral constant is exactly 0.5 for V/A/B. All hand-computed
     expected values matched on first run — no arithmetic bugs found.
-- [ ] Wire into the ingest-consumer's post-upsert step (Milestone D):
+- [x] Wire into the ingest-consumer's post-upsert step (Milestone D):
       new job upserted → lifecycle says `active` and it's a first-seen →
       classification says role matched → create/refresh signal + evidence
       row.
   - Verify: unit tests for the score formula against hand-computed
     expected values (at least 3 cases spanning the freshness decay
     curve); `pnpm --filter @hiring-signals/db typecheck`.
-  - Not started — depends on `apps/api/src/jobs/ingest-consumer.ts`
-    (Milestone D), which is still a stub. The score-formula unit tests
-    this item's own verify line asks for are already done above (they
-    didn't need to wait for the consumer, since they test the pure
-    function directly) — what's left here is purely the wiring inside
-    the consumer once it exists.
+  - **Status (2026-07-28): done.** Wired inside
+    `apps/api/src/jobs/ingest-consumer.ts`'s per-job loop (Milestone D):
+    on a `new_job`/`reopened_job` lifecycle candidate, `classifyJob()`
+    runs, and if `autoClassified` is true, `findActiveSignal` →
+    `createSignal`/`refreshSignal` → `appendSignalEvidence` fires using
+    `computeNewJobScore()`'s result. Covered end-to-end by
+    `apps/api/src/jobs/ingest-consumer.test.ts`'s happy-path test. This
+    only became exercisable after a real bug fix to `classifyJob`
+    (`packages/domain/src/classification.ts`, 2026-07-28 commit) — the
+    prior implementation made `autoClassified: true` mathematically
+    unreachable for any input, which would have made this wiring
+    silently dead code even though it was written correctly. See that
+    commit and `packages/domain/src/classification.test.ts`'s new
+    regression test.
 
 ---
 
@@ -421,7 +429,7 @@ is ops-only, no HTTP admin surface).
 This is the milestone that turns Milestones A–C from "code that exists"
 into "a running pipeline." Depends on all three being done first.
 
-- [ ] `apps/api/src/jobs/scheduler.ts` (currently an empty
+- [x] `apps/api/src/jobs/scheduler.ts` (currently an empty
       `TODO(Phase 1)` stub):
   - Query `getDueSources` (Milestone A) for sources where
     `enabled = 1 AND next_poll_at <= now()`.
@@ -445,8 +453,14 @@ into "a running pipeline." Depends on all three being done first.
   - Verify: unit test with a fake `D1Client`/queue double asserting (a)
     only due sources enqueue, (b) jitter is deterministic for a given
     `source_id` across two calls, (c) nothing is fetched.
+  - **Status (2026-07-28): done.** `apps/api/src/jobs/scheduler.test.ts`
+    (4 tests) confirms all three: only `getDueSources` rows enqueue,
+    jitter is deterministic per `source_id` across two calls, and no
+    adapter/fetch import exists in the file (enforced structurally, not
+    just by test — grep confirms it). `pnpm --filter @hiring-signals/api
+    typecheck`/`lint` clean.
 
-- [ ] `apps/api/src/jobs/ingest-consumer.ts` (currently
+- [x] `apps/api/src/jobs/ingest-consumer.ts` (currently
       `console.log("ingest_stub", ...)` + ack):
   - Full pipeline per spec §5.1: fetch (adapter's `fetchBoard`) → validate
     (adapter's Zod schema, inside `normalize()`) → normalize → upsert jobs
@@ -497,8 +511,39 @@ into "a running pipeline." Depends on all three being done first.
     config before picking); assert re-running the same `runId` twice
     produces identical row counts (the idempotency requirement, made
     concrete as a test instead of just a comment).
+  - **Status (2026-07-28): done.** `apps/api/src/jobs/ingest-consumer.ts`
+    is fully implemented (not a stub). Verified with
+    `apps/api/src/jobs/ingest-consumer.test.ts` (10 tests) — deviated
+    from this item's original verify plan of miniflare/`wrangler dev
+    --local` against the real Greenhouse fixture: used a hand-built
+    in-memory `D1Client` fake instead (SQL-substring-routed, same style
+    as `packages/db/src/signals-write-repo.test.ts` and
+    `scheduler.test.ts`), since that's the pattern already established
+    elsewhere in this repo and avoids a slower/flakier local-D1
+    dependency for CI. A fake adapter (not the real Greenhouse fixture)
+    supplies a job whose title+department both phrase-match, so the
+    happy-path test exercises real auto-classification and signal
+    creation end-to-end. Covers: happy path (upsert → observation →
+    lifecycle → classification → signal creation), idempotency (same
+    `runId` retried twice produces identical row counts — the concrete
+    assertion this item's verify line asks for), lifecycle transitions
+    across multiple runs (active → possibly_closed on second absence,
+    spec §5.4), and every §13.4 failure branch (missing source, 429
+    requeue-with-delay, transient 5xx backoff, retry exhaustion →
+    `failed_final`, 4xx config error → source disabled, unsupported
+    provider, uncaught error → `message.retry()`). This test file was
+    originally committed truncated mid-file (syntax error, failing
+    `apps/api` typecheck repo-wide) — completed and fixed 2026-07-28.
+    `pnpm --filter @hiring-signals/api typecheck`/`lint`/`test` all
+    clean; `pnpm -r typecheck`/`lint`/`test` clean across the whole
+    workspace (73 tests total).
+    A real `wrangler dev --local`/miniflare run against the actual
+    Greenhouse fixture is still worth doing before this ships to
+    production traffic, same caveat A.1's seed-data verification left
+    for D1-specific dialect quirks — the fake double proves the
+    consumer's own logic, not D1's behavior under it.
 
-- [ ] There is no `apps/api/src/routes/admin.ts` HTTP surface — the app
+- [x] There is no `apps/api/src/routes/admin.ts` HTTP surface — the app
       has no login and is public/free for anyone, permanently (spec §3,
       §13.5, §14.1). `routes/admin.ts` and its mount in
       `apps/api/src/index.ts` should be deleted, along with
@@ -507,6 +552,19 @@ into "a running pipeline." Depends on all three being done first.
       (only consumer was `protectedWriteTier`). Remove
       `TURNSTILE_SECRET_KEY` from `apps/api/src/bindings.ts` and any
       `wrangler.toml`/`.dev.vars` reference to it.
+  - **Status (2026-07-28): confirmed done** (landed in an earlier
+    session's "Remove auth" commit, verified this session rather than
+    taken on faith): `apps/api/src/routes/admin.ts` does not exist,
+    `grep -rn "protectedWriteTier|turnstile|Turnstile|
+    TURNSTILE_SECRET_KEY"` across `apps/api/src`, `lib/http/`, and
+    `apps/api/src/bindings.ts` returns nothing, and `lib/http/` contains
+    only `circuit-breaker.ts`, `rate-limit.ts`, `security-headers.ts` —
+    no `turnstile.ts`.
+
+- [ ] Source management ops scripts (spec §13.5) — the sub-item bundled
+      under the admin-route-removal bullet above, split out here since
+      it's a separate, still-open piece of work (the removal above is
+      done; this is not):
   - Source management moves to a local ops script instead (spec §13.5):
     `infrastructure/scripts/manage-sources.ts` (or split into
     `add-source.ts` / `update-source.ts` / `run-ingestion.ts` /
