@@ -16,12 +16,14 @@
   //   - lib/http/circuit-breaker.ts   (middleware/anti-abuse.ts + repo wrappers)
   //   - lib/http/turnstile.ts         (middleware/anti-abuse.ts admin-write CAPTCHA)
   //   - lib/observability/audit-abuse.ts (middleware/anti-abuse.ts signal logging)
+  //   - lib/d1/unique-constraint.ts   (jobs/ingest-consumer.ts observation idempotency)
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
     "../../lib/kv/**/*.ts",
     "../../lib/http/**/*.ts",
-    "../../lib/observability/**/*.ts"
+    "../../lib/observability/**/*.ts",
+    "../../lib/d1/unique-constraint.ts"
   ],
   "exclude": ["node_modules", "dist", ".wrangler"]
 }

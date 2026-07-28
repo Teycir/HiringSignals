@@ -1,5 +1,5 @@
 import type { D1Client } from "./d1-client";
-import { isUniqueConstraintError } from "./internal/d1-errors";
+import { isUniqueConstraintError } from "../../../lib/d1/unique-constraint";
 import { escapeLikePattern } from "../../../lib/d1/like-pattern";
 
 /**

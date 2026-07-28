@@ -29,6 +29,7 @@ import {
   type SourceRow,
 } from "@hiring-signals/db";
 import { computeContentHash } from "../../../../lib/text/content-hash";
+import { isUniqueConstraintError } from "../../../../lib/d1/unique-constraint";
 import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
 
 /**
@@ -575,7 +576,11 @@ async function processMissingJobs(
  * Insert a job_observation, treating a UNIQUE(job_id, source_run_id)
  * constraint violation (migration 0004) as "already recorded by a prior
  * attempt of this same run" rather than a hard failure -- the idempotency
- * contract spec §13.3 requires.
+ * contract spec §13.3 requires. Uses the shared isUniqueConstraintError
+ * helper (lib/d1/unique-constraint.ts) rather than its own inline regex
+ * copy -- code review flagged this as the third of three near-identical
+ * copies (the other two, in sources-repo.ts/companies-repo.ts, were
+ * already centralized) and this was the one left behind.
  */
 async function insertObservationIdempotent(
   client: ReturnType<typeof createD1Client>,
@@ -584,7 +589,7 @@ async function insertObservationIdempotent(
   try {
     await insertJobObservation(client, input);
   } catch (err) {
-    if (err instanceof Error && /UNIQUE constraint failed/i.test(err.message)) {
+    if (isUniqueConstraintError(err)) {
       return; // already recorded this (job, run) pair -- idempotent no-op
     }
     throw err;

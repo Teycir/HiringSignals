@@ -1,6 +1,6 @@
 import type { AtsProvider } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
-import { isUniqueConstraintError } from "./internal/d1-errors";
+import { isUniqueConstraintError } from "../../../lib/d1/unique-constraint";
 
 /**
  * Thrown when INSERT into `sources` violates the `UNIQUE(provider,
