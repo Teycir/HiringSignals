@@ -9,33 +9,52 @@ describe("classifyJob", () => {
     expect(result.autoClassified).toBe(false); // 0.7 < 0.80 threshold
   });
 
-  it("auto-classifies a title-only phrase match when title weight alone clears the threshold requires department help; verify boundary via ML engineer", () => {
+  it("title-only match cannot reach auto-classify alone (capped at WEIGHT_TITLE=0.70)", () => {
     // Title-only confidence is capped at WEIGHT_TITLE (0.70), which is
-    // always below AUTO_CLASSIFY_THRESHOLD (0.80) by design -- title
-    // alone can never auto-classify per the formula. This test documents
-    // that intentional ceiling rather than asserting a false positive.
+    // below AUTO_CLASSIFY_THRESHOLD (0.80) -- title alone (no department
+    // or description provided) can never auto-classify.
     const result = classifyJob({ title: "Machine Learning Engineer" });
+    expect(result.confidence).toBeCloseTo(0.7, 5);
     expect(result.confidence).toBeLessThan(AUTO_CLASSIFY_THRESHOLD);
   });
 
-  it("auto-classifies when title + department both match (>= 0.80)", () => {
+  it("title + department match alone (no description) still falls short of 0.80", () => {
     const result = classifyJob({
       title: "some ambiguous role name with no direct phrase match",
       department: "Site Reliability Engineer",
     });
     // Title has no match (0), department matches SRE phrase (1.0 * 0.20 = 0.20).
-    // This alone won't clear 0.80 -- combine with a title match instead:
+    expect(result.confidence).toBeCloseTo(0.2, 5);
     expect(result.confidence).toBeLessThan(AUTO_CLASSIFY_THRESHOLD);
   });
 
-  it("combines title + department + description to clear the auto-classify threshold", () => {
-    // Craft a case where title confidence is high (matches a phrase) so
-    // per spec 6.2 step 5, department/description are NOT inspected --
-    // title alone tops out at 0.70. To reach >= 0.80 requires the
-    // low-title-confidence branch where department AND description both
-    // independently match, since 0 + 0.20 + 0.10 = 0.30 (still not
-    // enough) -- so this test documents that a single department match
-    // without a title match cannot reach 0.80 either.
+  it("bug-fix regression: title + department both matching DOES clear 0.80 (previously unreachable)", () => {
+    // Regression test for the 2026-07-28 fix: title match (0.70) +
+    // department match (0.20) = 0.90 >= 0.80. Before the fix, a title
+    // match short-circuited the function and department was never even
+    // inspected, so this case incorrectly returned confidence=0.70,
+    // autoClassified=false.
+    const result = classifyJob({
+      title: "Site Reliability Engineer",
+      department: "Site Reliability Engineer",
+    });
+    expect(result.rolePrimary).toBe("cloud_platform_devops_sre");
+    expect(result.confidence).toBeCloseTo(0.9, 5);
+    expect(result.autoClassified).toBe(true);
+  });
+
+  it("combines title + department + description; all three matching reaches 1.0", () => {
+    const result = classifyJob({
+      title: "Security Analyst",
+      department: "Security Analyst",
+      descriptionText: "You will work as a security analyst on our SOC team.",
+    });
+    expect(result.confidence).toBeCloseTo(1.0, 5);
+    expect(result.rolePrimary).toBe("cybersecurity");
+    expect(result.autoClassified).toBe(true);
+  });
+
+  it("department + description match without a title match cannot reach 0.80", () => {
     const result = classifyJob({
       title: "team member",
       department: "Security Analyst",

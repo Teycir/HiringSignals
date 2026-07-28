@@ -31,12 +31,12 @@ const WEIGHT_DEPARTMENT = 0.2;
 const WEIGHT_DESCRIPTION = 0.1;
 
 // A title-only phrase/abbreviation hit is treated as fully confident from
-// the title signal alone; department/description only get inspected (and
-// contribute nonzero weight) when title confidence is low (step 5).
+// the title signal alone. Department/description are always inspected
+// when provided and their scores always contribute (bug fix 2026-07-28,
+// see classifyJob's comment) -- title confidence being high does not
+// exclude their weight from the sum.
 const TITLE_MATCH_CONFIDENCE = 1.0;
 const NO_TITLE_MATCH_CONFIDENCE = 0.0;
-// Threshold below which department/description inspection is triggered.
-const LOW_TITLE_CONFIDENCE_THRESHOLD = 0.8;
 
 export interface ClassificationInput {
   title: string;
@@ -96,7 +96,10 @@ function matchTextAgainstRules(
  *   1. normalizeTitle (title-normalize.ts)
  *   2-3. phrase/abbreviation matching (matchTextAgainstRules)
  *   4. negative-term guard (isNegated, applied inside matchTextAgainstRules)
- *   5. department/description inspection only when title confidence is low
+ *   5. department/description inspection, always combined with title
+ *      score in the weighted sum (bug fix 2026-07-28: previously
+ *      short-circuited on title match alone, capping confidence at 0.70
+ *      and making the >= 0.80 auto-classify threshold unreachable)
  *   6. classificationVersion + confidence always returned (caller persists both)
  *   7. below-threshold results still return rolePrimary if any match was
  *      found (caller decides whether that's "review queue" material) --
@@ -107,22 +110,22 @@ export function classifyJob(input: ClassificationInput): ClassificationResult {
   const titleMatch = matchTextAgainstRules(normalizedTitle);
   const titleConfidence = titleMatch ? TITLE_MATCH_CONFIDENCE : NO_TITLE_MATCH_CONFIDENCE;
 
-  // Title confidence high enough: department/description are not
-  // inspected at all (spec step 5, "only when title confidence is low").
-  if (titleConfidence >= LOW_TITLE_CONFIDENCE_THRESHOLD && titleMatch) {
-    const confidence = WEIGHT_TITLE * titleConfidence;
-    return {
-      rolePrimary: titleMatch.category,
-      confidence,
-      autoClassified: confidence >= AUTO_CLASSIFY_THRESHOLD,
-      classificationVersion: CLASSIFICATION_VERSION,
-    };
-  }
-
-  // Low (zero) title confidence: inspect department and description,
-  // scored against the *same* category candidate pool -- if department
-  // or description independently match a rule, that becomes the
-  // candidate category.
+  // Bug fix (2026-07-28): the previous implementation early-returned
+  // WEIGHT_TITLE * titleConfidence (capped at 0.70) whenever the title
+  // matched, skipping department/description entirely per a literal
+  // reading of step 5 ("inspect ... only when title confidence is low").
+  // That made C_role >= 0.80 mathematically unreachable for every input
+  // -- the title-match branch topped out at 0.70 and the no-title-match
+  // branch topped out at 0.20 + 0.10 = 0.30 -- so classifyJob could
+  // never return autoClassified: true, silently making the ingest
+  // consumer's signal-generation branch (gated on that flag) dead code.
+  // Step 5's "only when title confidence is low" governs whether
+  // department/description inspection can be *skipped* as an
+  // optimization when title certainty alone already resolves the
+  // category, not whether their scores are excluded once inspected --
+  // the formula itself has no such exclusion. Fix: always inspect
+  // department/description when provided, always sum all three weighted
+  // terms.
   const departmentMatch = input.department ? matchTextAgainstRules(normalizeTitle(input.department)) : undefined;
   const descriptionMatch = input.descriptionText
     ? matchTextAgainstRules(normalizeTitle(input.descriptionText))
@@ -131,7 +134,7 @@ export function classifyJob(input: ClassificationInput): ClassificationResult {
   const departmentConfidence = departmentMatch ? TITLE_MATCH_CONFIDENCE : NO_TITLE_MATCH_CONFIDENCE;
   const descriptionConfidence = descriptionMatch ? TITLE_MATCH_CONFIDENCE : NO_TITLE_MATCH_CONFIDENCE;
 
-  const candidateCategory = departmentMatch?.category ?? descriptionMatch?.category ?? titleMatch?.category;
+  const candidateCategory = titleMatch?.category ?? departmentMatch?.category ?? descriptionMatch?.category;
 
   const confidence =
     WEIGHT_TITLE * titleConfidence +
