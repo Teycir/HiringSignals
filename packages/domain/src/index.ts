@@ -8,3 +8,4 @@ export * from "./title-normalize";
 export * from "./role-rules";
 export * from "./classification";
 export * from "./lifecycle";
+export * from "./signal-score";

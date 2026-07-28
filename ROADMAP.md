@@ -332,14 +332,39 @@ need historical volume baselines that don't exist until `new_job` has
 been running for a while, so they're a later milestone, not deferred
 arbitrarily here).
 
-- [ ] `packages/db/src/signals-write-repo.ts` (separate file from the
+**Status (2026-07-28): score computation and the write-repo are done and
+verified; the ingest-consumer wiring item is intentionally still open
+below since it depends on Milestone D's consumer, which doesn't exist
+yet.** `pnpm --filter @hiring-signals/domain test` and `pnpm --filter
+@hiring-signals/db test` both green, `pnpm -r typecheck` clean across all
+5 workspace projects. One real typecheck bug was caught and fixed in the
+write-repo's own test file (not the write-repo itself): `D1Client`'s
+`first`/`all`/`batch` methods are generic (`<T>(...) => Promise<T | ...>`),
+and building the fake test client via `vi.fn()`-wrapped arrow functions
+made TS infer a concrete non-generic signature that didn't satisfy the
+generic interface -- fixed by building the fake as a plain object literal
+with its own generic method signatures instead of `vi.fn()` wrapping.
+
+- [x] `packages/db/src/signals-write-repo.ts` (separate file from the
       existing read-only `signals-repo.ts` — keeps the read/write split
       explicit and avoids one file mixing query-building styles):
       `createSignal(client, input)`, `appendSignalEvidence(client,
       signalId, evidence)`, `findActiveSignal(client, { companyId,
       roleCategory, signalType })` (dedup check before creating a new
       row — spec §7.3 hard-duplicate rule applied at the signal level).
-- [ ] Score computation as a pure function per spec §7.2's formula:
+  - Done. Also added `refreshSignal(client, signalId, input)` (not
+    originally listed here, but required by the dedup flow: when
+    `findActiveSignal` finds a match, the caller needs a way to update
+    that row's score/last_detected_at rather than only being able to
+    create or append evidence — spec §7.3's "upsert one job" pattern
+    applied at the signal level too, so a matching active signal is
+    refreshed, not duplicated).
+  - Verify: `packages/db/src/signals-write-repo.test.ts` (7 tests, fake
+    `D1Client` double asserting exact SQL/param shape for all four
+    functions, including the null-jobId case for evidence not tied to a
+    specific job); `pnpm --filter @hiring-signals/db typecheck` clean;
+    `pnpm --filter @hiring-signals/db lint` clean.
+- [x] Score computation as a pure function per spec §7.2's formula:
       $S = \min(100, 35R + 25V + 20A + 10B + 10Q - P)$, with
       $R = e^{-d/14}$ freshness decay. For v1 `new_job` signals, $V$/$A$/
       $B$ can be simple (a freshly-created signal has one piece of
@@ -349,9 +374,27 @@ arbitrarily here).
       version, and inputs" to be recoverable from `signal_evidence`, and
       a future milestone will need to know what v1 actually computed vs.
       what the full formula eventually does).
+  - `packages/domain/src/signal-score.ts`'s `computeNewJobScore()` +
+    `computeFreshness()`. V/A/B are fixed at a documented neutral
+    constant (0.5, not 0) so they contribute a stable baseline rather
+    than silently zeroing out 55% of the formula's weight for every
+    `new_job` signal — the header comment explains why 0.5 was chosen
+    over 0 and flags this as the exact thing a future milestone (real
+    volume/acceleration baselines) must replace. Q is real (fed directly
+    from `classification_confidence`, not a placeholder). P is always 0
+    in v1 (no penalty inputs implemented yet, and a real P needs
+    source-reliability history this milestone doesn't have).
   - **Store `score_version`** (already a column) and bump it if the
     formula's inputs change later — spec §7.2: "Scores must be
     recomputable from persisted observations."
+  - Done: `SCORE_FORMULA_VERSION = "v1"` exported and threaded through
+    `ScoreResult.formulaVersion`, meant to be persisted as `signals.score_version`.
+  - Verify: `packages/domain/src/signal-score.test.ts` (9 tests) — 3
+    hand-computed cases spanning the freshness decay curve (d=0, d=14,
+    d=60) with the exact arithmetic shown in comments, plus boundary
+    tests (never exceeds 100, never below 0) and a test asserting the
+    v1 neutral constant is exactly 0.5 for V/A/B. All hand-computed
+    expected values matched on first run — no arithmetic bugs found.
 - [ ] Wire into the ingest-consumer's post-upsert step (Milestone D):
       new job upserted → lifecycle says `active` and it's a first-seen →
       classification says role matched → create/refresh signal + evidence
@@ -359,6 +402,12 @@ arbitrarily here).
   - Verify: unit tests for the score formula against hand-computed
     expected values (at least 3 cases spanning the freshness decay
     curve); `pnpm --filter @hiring-signals/db typecheck`.
+  - Not started — depends on `apps/api/src/jobs/ingest-consumer.ts`
+    (Milestone D), which is still a stub. The score-formula unit tests
+    this item's own verify line asks for are already done above (they
+    didn't need to wait for the consumer, since they test the pure
+    function directly) — what's left here is purely the wiring inside
+    the consumer once it exists.
 
 ---
 
