@@ -146,14 +146,31 @@ export interface CreateCompanyInput {
  * preserve.
  */
 export async function createCompany(client: D1Client, input: CreateCompanyInput): Promise<CompanyRow> {
+  // Required fields must not be blank/whitespace-only -- a caller could
+  // pass a technically-non-empty string like " " that would otherwise
+  // persist as a useless row. Enforced here (not just in the ops script
+  // that's currently the only caller) since this is the repo-layer
+  // primitive other future callers would go through directly.
+  if (input.slug.trim() === "" || input.displayName.trim() === "") {
+    throw new Error("createCompany: slug and displayName must not be blank/whitespace-only");
+  }
+
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  // Normalize "" to null alongside undefined -- `??` alone only catches
+  // null/undefined, so a caller passing an empty string (e.g. an ops
+  // script forwarding an unset CLI flag as "") would otherwise persist
+  // "" instead of NULL, making the column's "not provided" state
+  // inconsistent depending on how the caller happened to omit the value.
+  const domain = emptyToNull(input.domain);
+  const industry = emptyToNull(input.industry);
+  const employeeBand = emptyToNull(input.employeeBand);
 
   try {
     await client.run(
       `INSERT INTO companies (id, slug, display_name, domain, industry, employee_band, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, input.slug, input.displayName, input.domain ?? null, input.industry ?? null, input.employeeBand ?? null, now, now],
+      [id, input.slug, input.displayName, domain, industry, employeeBand, now, now],
     );
   } catch (err) {
     if (isUniqueConstraintError(err)) {
@@ -166,12 +183,16 @@ export async function createCompany(client: D1Client, input: CreateCompanyInput)
     id,
     slug: input.slug,
     display_name: input.displayName,
-    domain: input.domain ?? null,
-    industry: input.industry ?? null,
-    employee_band: input.employeeBand ?? null,
+    domain,
+    industry,
+    employee_band: employeeBand,
     created_at: now,
     updated_at: now,
   };
+}
+
+function emptyToNull(value: string | undefined): string | null {
+  return value === undefined || value === "" ? null : value;
 }
 
 /**

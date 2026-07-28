@@ -64,18 +64,70 @@ describe("createCompany", () => {
     ]);
   });
 
-  it("passes optional fields through when provided", async () => {
+  it("passes optional fields through in the correct bind-parameter positions", async () => {
     const { client, calls } = createFakeClient();
-    await createCompany(client, {
+    const row = await createCompany(client, {
       slug: "beta-labs",
       displayName: "Beta Labs",
       domain: "betalabs.io",
       industry: "fintech",
       employeeBand: "51-200",
     });
-    expect(calls[0]?.params).toEqual(
-      expect.arrayContaining(["beta-labs", "Beta Labs", "betalabs.io", "fintech", "51-200"]),
+
+    // Exact positional check, not expect.arrayContaining -- arrayContaining
+    // would still pass if slug/displayName were swapped, or if domain was
+    // bound into industry's position, since it only checks membership, not
+    // order. Params must match the column list exactly: (id, slug,
+    // display_name, domain, industry, employee_band, created_at, updated_at).
+    expect(calls).toHaveLength(1);
+    const params = calls[0]?.params;
+    expect(params).toHaveLength(8);
+    expect(params?.[0]).toBe(row.id);
+    expect(params?.[1]).toBe("beta-labs");
+    expect(params?.[2]).toBe("Beta Labs");
+    expect(params?.[3]).toBe("betalabs.io");
+    expect(params?.[4]).toBe("fintech");
+    expect(params?.[5]).toBe("51-200");
+    expect(params?.[6]).toBe(row.created_at);
+    expect(params?.[7]).toBe(row.updated_at);
+    expect(params?.[6]).toBe(params?.[7]);
+  });
+
+  it("normalizes empty-string optionals to null, same as omitting them", async () => {
+    const { client, calls } = createFakeClient();
+    const row = await createCompany(client, {
+      slug: "gamma-co",
+      displayName: "Gamma Co",
+      domain: "",
+      industry: "",
+      employeeBand: "",
+    });
+
+    expect(row.domain).toBeNull();
+    expect(row.industry).toBeNull();
+    expect(row.employee_band).toBeNull();
+    expect(calls[0]?.params).toEqual([
+      row.id,
+      "gamma-co",
+      "Gamma Co",
+      null,
+      null,
+      null,
+      row.created_at,
+      row.updated_at,
+    ]);
+  });
+
+  it("rejects blank/whitespace-only slug or displayName without hitting D1", async () => {
+    const { client, calls } = createFakeClient();
+    await expect(createCompany(client, { slug: "   ", displayName: "Acme Inc" })).rejects.toThrow(
+      /blank\/whitespace-only/,
     );
+    await expect(createCompany(client, { slug: "acme-inc", displayName: "  " })).rejects.toThrow(
+      /blank\/whitespace-only/,
+    );
+    // Neither rejected call should have reached the D1 client at all.
+    expect(calls).toHaveLength(0);
   });
 
   it("throws DuplicateCompanyError (not a raw D1 error) on a UNIQUE constraint violation", async () => {
