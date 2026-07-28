@@ -483,7 +483,18 @@ async function processNormalizedJob(
     return 0;
   }
 
-  const daysSinceObservation = 0; // freshly observed this run
+  // Freshness (R) must reflect how old the *job listing* is, not how
+  // recently we happened to scrape it (spec 7.2: "days since the job's
+  // posting/most recent evidence observation"). Anchor on the adapter's
+  // postedAt when the source provides it; otherwise fall back to
+  // first_seen_at (our own earliest observation of this job) so a job
+  // whose source omits postedAt still ages normally instead of always
+  // scoring as brand-new.
+  const anchorDate = job.postedAt ?? existing?.first_seen_at ?? observedAt;
+  const daysSinceObservation = Math.max(
+    0,
+    (new Date(observedAt).getTime() - new Date(anchorDate).getTime()) / 86_400_000,
+  );
   const scoreResult = computeNewJobScore({
     daysSinceObservation,
     classificationConfidence: classification.confidence,
