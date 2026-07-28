@@ -879,3 +879,41 @@ Milestones A–D:
     code 1, and a call missing `--display-name` correctly rejected.
     Test company deleted afterward; local D1 confirmed back at 20
     companies, matching Milestone A.1's documented seed exactly.
+  - **Correction (2026-07-28, same day): a code review of this commit
+    found 5 real issues** that this "done" status had not caught — same
+    "verified but not exhaustively" gap the ops scripts' own header
+    comments warn about elsewhere. Fixed in commit `3ca36ee` rather
+    than leaving the status stale:
+    - P1: `add-company.mjs`'s INSERT had no try/catch around the
+      UNIQUE-constraint race (the SELECT pre-check is TOCTOU, not a
+      guarantee) — a concurrent duplicate-slug run would have surfaced
+      a raw D1 error instead of the script's own message. Fixed to
+      mirror `createCompany`'s own try/catch.
+    - P2: `?? null` in `createCompany` only normalizes null/undefined,
+      not `""` — an empty-string optional would persist as `""`
+      instead of `NULL`. Fixed with an `emptyToNull()` helper in both
+      the repo function and the script.
+    - P2: the "optional fields passed through" test used
+      `expect.arrayContaining`, which doesn't catch swapped param
+      positions. Replaced with exact positional assertions; added a
+      dedicated empty-string-normalization test.
+    - P3: `parseArgs` in `add-company.mjs` silently treated a flag
+      immediately followed by another flag as that flag's value. Fixed
+      to detect a following `--`-prefixed token and leave the value
+      `undefined` so the required-argument check catches it.
+    - P3: whitespace-only `slug`/`displayName` passed the truthiness
+      check and would have persisted a blank row. Rejected explicitly
+      in both the script (before any D1 call) and the repo function
+      (defense in depth for future callers that bypass the script).
+    All 5 verified: `pnpm -r typecheck`/`lint`/`test` clean (92 tests,
+    up from 90), plus a real local-D1 run of the two new P3 cases and
+    the empty-string-optionals happy path confirmed via direct
+    `sqlite3` query (not just the script's printed output) —
+    `wrangler d1 execute` itself hit an unrelated pre-existing
+    `.wrangler/state` WAL issue on this machine (`_cf_ALARM` column
+    mismatch, a Cloudflare-internal table, not `companies`);
+    `sqlite3 ... PRAGMA integrity_check` on the underlying file
+    returned `ok` and a direct query confirmed the insert/cleanup.
+    Worth a fresh `.wrangler/state` before next relying on
+    `wrangler d1 execute` locally, but didn't block verifying this fix.
+    Test row cleaned up afterward, local D1 back to 20 companies.
