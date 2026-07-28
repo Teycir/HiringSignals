@@ -1,17 +1,16 @@
 # AGENTS.md
 
-Instructions and living roadmap for AI agents (Claude, opencode, etc.)
-working in this repo. Read `hiring-signals-spec.md` first — that's the
-source of truth for behavior. This file tracks _implementation status_
-against the spec, kept in sync as work lands, and gives agents entry
-points so they don't have to rediscover context each session.
+Instructions for AI agents (Claude, opencode, etc.) working in this
+repo. Read `hiring-signals-spec.md` first — that's the source of truth
+for behavior. This file carries repo-wide policy and how-to-work notes;
+it does not track implementation status itself — see `ROADMAP.md` for
+that, kept in sync as work lands.
 
-For anything past Phase 1's read-path (i.e. write paths, ingestion,
-adapters, scheduler, UI, hardening/deploy), see **`ROADMAP.md`** — a
-task-by-task, spec-cited breakdown. This file (AGENTS.md) keeps the
-short status view per phase; `ROADMAP.md` is where a phase gets planned
-out into ordered, independently-verifiable tasks before implementation
-starts.
+`ROADMAP.md` covers everything: Phase 0 and Phase 1 (both complete) plus
+the write-path milestones (A onward — ingestion, adapters, scheduler,
+UI, hardening/deploy). It's a task-by-task, spec-cited breakdown and the
+single source of truth for status. Don't add a status checklist here;
+add it to ROADMAP.md instead.
 
 ## Policy: fix and verify before advancing
 
@@ -21,7 +20,7 @@ to the original task as if it weren't there. "Verify" means actually
 running the relevant command (typecheck, lint, or test) and reading its
 output — not assuming it passes.
 
-- A checkbox in the roadmap below is only checked once the code has been
+- A checkbox in `ROADMAP.md` is only checked once the code has been
   read and the fix verified — not because a prior session's summary
   claimed it, and not because the fix "looks right." Summaries drift from
   what's actually on disk; only the file contents and a command's exit

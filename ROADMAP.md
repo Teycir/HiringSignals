@@ -36,8 +36,63 @@ links here instead of re-describing it.
 - If a task turns out bigger than it looks once you're in the code, stop
   and split it into sub-tasks here rather than quietly expanding scope
   inside one commit.
-- Update `AGENTS.md`'s roadmap section (the short version) and
-  `CHANGELOG.md` when a milestone completes, same as before.
+- Update `CHANGELOG.md` when a milestone completes, same as before.
+  (Previously this also said to update AGENTS.md's roadmap section —
+  that section no longer exists there; AGENTS.md now only carries
+  cross-cutting policy/how-to-work content and points here for all
+  status, including Phase 0/1 below. Don't recreate a duplicate status
+  list in AGENTS.md.)
+
+---
+
+## Phase 0 — Scaffolding (complete)
+
+pnpm workspace, strict TS base config, shared ESLint base, Next.js 16 +
+Tailwind `apps/web`, Hono Worker `apps/api` with the
+request-id/security-headers/error-handler middleware chain, `packages/domain`
+(role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod
+schemas), a provisioned D1 database + KV namespace + Queue (`wrangler.toml`
+has real resource IDs, no R2 — raw payload archive lives in KV under
+TTL'd keys instead, so the project doesn't require Cloudflare billing).
+Anti-abuse middleware (`freeReadTier`/rate-limit + audit logging) is wired
+onto the read routes. `lib/http/circuit-breaker.ts` wraps every D1 call
+via `lib/d1/client.ts` (not per-repo-function). Workspace-wide `pnpm -r
+typecheck` and `pnpm -r lint` both clean across all 5 projects.
+
+- [x] pnpm workspace, strict TS base config, Prettier, shared ESLint base
+- [x] `apps/web` scaffold + `lib/api-client.ts` (calls the Worker API only,
+      never ATS providers directly, spec §12.1)
+- [x] `apps/api` Hono Worker + middleware chain + `wrangler.toml` bindings
+      + 15-minute scheduler cron config (spec §13.1)
+- [x] `packages/domain` core schemas
+- [x] Real D1/KV/Queue resources provisioned (not placeholders)
+- [x] Anti-abuse middleware (rate-limit + audit logging) on read routes
+- [x] `lib/http/circuit-breaker.ts` wired into `lib/d1/client.ts`
+
+## Phase 1 — D1 schema + read paths (complete)
+
+Full schema per spec §8.2 (`infrastructure/d1/migrations/0001_initial_schema.sql`),
+parameterized D1 client wrapper, cursor-paginated signal feed with
+sort-aware cursors (`score_desc`/`newest`/`company_asc` each encode their
+own comparison columns — a cursor issued for one sort throws
+`InvalidCursorError` if replayed against another), company autocomplete/
+detail/recent-signals, KV-cached facet counts, and all `GET` routes
+(`/api/v1/signals`, `/signals/:id`, `/companies`, `/companies/:slug`,
+`/facets`) wired to real D1 queries. `locationMode`/`country`/`source`
+filters use `EXISTS` subqueries through `signal_evidence` → `jobs` (never
+a plain `JOIN`, which would duplicate signals with multiple evidence rows
+matching the filter).
+
+- [x] `infrastructure/d1/migrations/0001_initial_schema.sql`
+- [x] `packages/db/src/d1-client.ts` (parameterized `.bind()` wrapper)
+- [x] `packages/db/src/signals-repo.ts` (cursor-paginated feed + detail)
+- [x] `packages/db/src/companies-repo.ts`
+- [x] `packages/db/src/facets-repo.ts` (KV-cached)
+- [x] `apps/api` `GET` routes wired to real D1 queries
+- [x] Sort-aware cursor pagination (bug fix, verified)
+- [x] `locationMode`/`country`/`source` filters via `EXISTS` (bug fixes, verified)
+- [x] Workspace lint fixed repo-wide (previously silently broken past the
+      first package in run order)
 
 ---
 
@@ -185,19 +240,38 @@ would need to import it too (title-based pre-filtering at fetch time is
 out of scope for v1, so probably not; default to `packages/domain` unless
 that turns out awkward).
 
-- [ ] Title normalization: lowercase, Unicode-normalize (NFKC), strip
+**Status (2026-07-28): done, landed in `packages/domain`.** All five
+items below implemented and verified: `pnpm --filter @hiring-signals/domain
+typecheck` clean, `pnpm --filter @hiring-signals/domain test` green (24/24
+tests across `title-normalize.test.ts`, `classification.test.ts`,
+`lifecycle.test.ts`), `pnpm --filter @hiring-signals/domain lint` clean,
+and `pnpm -r typecheck` confirmed nothing downstream broke. Two real bugs
+were caught and fixed during this pass (not just assumed passing): two
+of the classification test fixtures used department strings like "Site
+Reliability Engineering" that didn't actually match the phrase rule
+"site reliability engineer" under word-boundary matching ("engineering"
+≠ "engineer") — fixed by correcting the fixtures, not the matcher, since
+the matcher's behavior (no partial-word matches) is correct per spec
+§6.2's precision requirement.
+
+- [x] Title normalization: lowercase, Unicode-normalize (NFKC), strip
       punctuation, collapse whitespace (spec §6.2 step 1). Small, pure,
       easy to over-engineer — keep it to exactly what the spec lists.
-- [ ] Phrase-rule + abbreviation matcher against the 10 P0 role
+  - `packages/domain/src/title-normalize.ts`.
+- [x] Phrase-rule + abbreviation matcher against the 10 P0 role
       categories (`packages/domain/src/role-taxonomy.ts`), spec §6.2
       steps 2–3. Rules are data (a table/JSON of phrase → category, and
       abbreviation → category), not a long if/else chain — makes the
       "labeled fixture set" testing requirement (spec §6.2 step 7,
       §17.1) tractable.
-- [ ] Negative-term guard (spec §6.2 step 4) — e.g. "security guard"
+  - `packages/domain/src/role-rules.ts` (`PHRASE_RULES`,
+    `ABBREVIATION_RULES`); matching logic in `classification.ts`.
+- [x] Negative-term guard (spec §6.2 step 4) — e.g. "security guard"
       must not match `cybersecurity`. Applied *before* a phrase match is
       accepted, not as a post-hoc filter.
-- [ ] Confidence scoring: $C_{role} = 0.70C_{title} + 0.20C_{department}
+  - `role-rules.ts`'s `NEGATIVE_TERM_RULES`, checked inside
+    `matchTextAgainstRules()` before a candidate match is returned.
+- [x] Confidence scoring: $C_{role} = 0.70C_{title} + 0.20C_{department}
       + 0.10C_{description}$ (spec §6.2 formula), department/description
       inspection only when title confidence is low (step 5). Auto-classify
       only at $C_{role} \geq 0.80$; store `classification_confidence` and
@@ -206,7 +280,16 @@ that turns out awkward).
       blocked (step 7 — "review queue" doesn't require a UI *now*, but
       the job record itself must make low-confidence items queryable
       later, so don't silently discard the raw signal).
-- [ ] Job lifecycle state machine as a pure function: `(currentState,
+  - `classification.ts`'s `classifyJob()`; `AUTO_CLASSIFY_THRESHOLD` and
+    `CLASSIFICATION_VERSION` exported as named constants. Note: title-only
+    confidence is capped at the 0.70 title weight and can never alone
+    reach the 0.80 auto-classify threshold by construction of the
+    formula — reaching auto-classify requires a title match plus at
+    least a department or description assist, or a low-title-confidence
+    case where department+description both independently match.
+    `rolePrimary` is still returned (with `autoClassified: false`) below
+    threshold rather than discarded, satisfying step 7.
+- [x] Job lifecycle state machine as a pure function: `(currentState,
       wasPresentThisRun, consecutiveMissingRuns, daysSinceLastSeen) =>
       nextState` implementing spec §5.4's table exactly (2 consecutive
       missing runs → `possibly_closed`; 4 consecutive OR 14 days →
@@ -215,7 +298,15 @@ that turns out awkward).
       not inlined magic numbers, per spec §5.4 ("must be configuration,
       not hard-coded") — a config object/module is enough for v1, a full
       admin-editable setting can come later per §22 open decisions.
-- [ ] Fixture-driven tests for all of the above, modeled on
+  - `packages/domain/src/lifecycle.ts`'s `computeLifecycleTransition()`;
+    constants `POSSIBLY_CLOSED_AFTER_MISSING_RUNS`,
+    `CLOSED_AFTER_MISSING_RUNS`, `CLOSED_AFTER_DAYS`. "Source run fails"
+    (spec's "do not alter missing counts" row) is deliberately not a
+    branch inside this function — the ingest consumer (Milestone D)
+    simply must not call it for a failed run, which is the only way to
+    *guarantee* the counts are untouched rather than trusting an extra
+    conditional not to be miscalled.
+- [x] Fixture-driven tests for all of the above, modeled on
       `packages/adapters/src/greenhouse.test.ts` / `location.test.ts`
       (`vitest`). Cover: the "security guard" negative case explicitly
       (spec calls it out by name), a title-only high-confidence match, a
@@ -223,6 +314,11 @@ that turns out awkward).
       row of the lifecycle table as its own test case.
   - Verify: `pnpm --filter @hiring-signals/domain test` (or whichever
     package this lands in) green; `pnpm -r typecheck` clean.
+  - Done: `title-normalize.test.ts` (5 tests), `classification.test.ts`
+    (11 tests, including the named "security guard" case and a
+    "physical security" variant), `lifecycle.test.ts` (8 tests, one per
+    table row plus present-while-possibly_closed and
+    present-while-active edge cases).
 
 ---
 
