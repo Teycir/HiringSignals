@@ -133,16 +133,40 @@ Already flagged as pending in AGENTS.md Phase 0 and referenced by the
 existing "no test coverage yet for listSignals" note — both block on
 this, so it's worth doing once, early, rather than deferring twice.
 
-- [ ] `infrastructure/scripts/seed-local-d1.ts` (or `.sql` — whichever
-      is less friction against `wrangler d1 execute --local`): a small,
-      realistic, *sanitized* set of companies/sources/jobs/signals per
-      spec §20 Phase 0 step 5 ("Seed 20 companies and realistic sanitized
-      job fixtures"). Sanitized means: no real company job postings
-      copy-pasted verbatim — synthesize titles/descriptions in the shape
-      real ones take, don't scrape live boards for seed data.
-  - Verify: `wrangler d1 execute hiring-signals --local --file=...`
-    runs clean, then a quick manual `GET /api/v1/signals` against local
-    dev returns the seeded rows.
+**Status (2026-07-28): done.** `infrastructure/scripts/seed-local-d1.sql`
+existed on disk from a prior session but was silently truncated mid-way
+through the `jobs` INSERT (cut off mid-row, no closing `;`, and the
+`job_observations`/`signals`/`signal_evidence` INSERTs the file's own
+header comment promised were entirely missing) -- a mismatch between the
+file's apparent completeness and this checkbox's unchecked state, caught
+per AGENTS.md's "only checked once verified" policy rather than trusted
+on sight. Completed: closed the truncated `jobs` INSERT (60 rows, 20
+companies x 3 jobs), added `job_observations` (60 rows, one per job keyed
+to its source's single `source_runs` row), `signals` (20 rows, one active
+`new_job` signal per company anchored to that company's most-recently-
+posted job, score via spec 7.2's freshness-decay term only -- v1
+simplification, documented inline in the header), and `signal_evidence`
+(20 rows, one per signal).
+
+- [x] `infrastructure/scripts/seed-local-d1.sql`: 20 companies, 20
+      sources (all 11 ATS providers represented), 20 `source_runs`
+      (status=success), 60 `jobs` (all 10 role categories, remote/
+      hybrid/onsite across US/DE/GB, classification_confidence >= 0.80),
+      60 `job_observations`, 20 `signals`, 20 `signal_evidence`.
+  - Verify: applied cleanly against a scratch SQLite DB seeded with
+    migrations 0001-0004 in order (zero errors, including migration
+    0004's `UNIQUE(job_id, source_run_id)` idempotency index -- no
+    duplicate `(job, run)` pairs in the seed data). Row counts confirmed
+    against every table. The exact query shape `listSignals` runs
+    (`status='active' AND score >= ? AND last_detected_at >= now-30d`,
+    joined to `companies`, sorted `score DESC, last_detected_at DESC, id
+    DESC`) was run directly against the seeded DB and returned all 20
+    signals correctly joined and sorted -- not just a raw table count.
+    `wrangler d1 execute hiring-signals --local --file=...` against the
+    real D1 binding (and a live `GET /api/v1/signals` against local dev)
+    is still worth a quick confirm before relying on this for D1-specific
+    behavior (e.g. D1's SQL dialect quirks vs. stock SQLite), since the
+    check above used SQLite directly rather than D1's local emulation.
 
 ---
 
