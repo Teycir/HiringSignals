@@ -19,12 +19,27 @@ export interface SignalRowMinimal {
 }
 
 /**
+ * Signals older than this many days since their last evidence are no
+ * longer treated as "the same ongoing signal" for dedup purposes, even
+ * if their status row still reads 'active' (e.g. the expiration cron
+ * from spec §7.2 hasn't swept it yet). Hiring that resumes after a
+ * multi-month lull is a new occurrence a user should be told about, not
+ * silently folded into a stale row nobody's looked at since.
+ */
+const ACTIVE_SIGNAL_LOOKBACK_DAYS = 28;
+
+/**
  * Dedup check per spec §7.3's hard-duplicate rule applied at the signal
  * level: an active signal for the same (company, role, type) should be
  * refreshed (new evidence appended, score/last_detected_at updated), not
  * duplicated as a second row. Only considers status='active' -- an
  * expired signal for the same triple is a legitimately new occurrence
  * (e.g. hiring resumed after a lull), not a duplicate of the old one.
+ *
+ * Also bounded by ACTIVE_SIGNAL_LOOKBACK_DAYS: an 'active' row whose
+ * last_detected_at is further back than that is treated as not-a-match
+ * here, so a fresh burst after a long pause creates a new signal instead
+ * of quietly refreshing (and thus resurrecting) a dormant one.
  */
 export async function findActiveSignal(
   client: D1Client,
@@ -33,7 +48,8 @@ export async function findActiveSignal(
   return client.first<SignalRowMinimal>(
     `SELECT id, status, score, first_detected_at, last_detected_at
      FROM signals
-     WHERE company_id = ? AND role_category = ? AND signal_type = ? AND status = 'active'`,
+     WHERE company_id = ? AND role_category = ? AND signal_type = ? AND status = 'active'
+       AND last_detected_at >= datetime('now', '-${ACTIVE_SIGNAL_LOOKBACK_DAYS} days')`,
     [params.companyId, params.roleCategory, params.signalType],
   );
 }
