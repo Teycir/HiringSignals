@@ -25,6 +25,7 @@ canonical implementation, kept generic on purpose.
 | `http/circuit-breaker.ts` | Circuit breaker + per-resource bulkhead (concurrency limit) for external deps; used by `d1/client.ts` on the `"db"` resource | none |
 | `observability/audit-abuse.ts` | Fire-and-forget abuse-event logging to a KV namespace | `@cloudflare/workers-types` |
 | `text/location-mode.ts` | Infers remote/hybrid/onsite/unknown from a free-text location string | none |
+| `text/content-hash.ts` | Deterministic SHA-256 content hash (Web Crypto) over a stable-key-order field object, used to detect record edits between observations | none |
 
 ## Using this in a new project
 
