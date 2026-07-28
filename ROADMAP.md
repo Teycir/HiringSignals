@@ -561,7 +561,7 @@ into "a running pipeline." Depends on all three being done first.
     only `circuit-breaker.ts`, `rate-limit.ts`, `security-headers.ts` —
     no `turnstile.ts`.
 
-- [ ] Source management ops scripts (spec §13.5) — the sub-item bundled
+- [x] Source management ops scripts (spec §13.5) — the sub-item bundled
       under the admin-route-removal bullet above, split out here since
       it's a separate, still-open piece of work (the removal above is
       done; this is not):
@@ -591,6 +591,78 @@ into "a running pipeline." Depends on all three being done first.
     deletions (confirm nothing else imports the removed exports); run
     each script once against local D1 (`wrangler d1 execute
     hiring-signals --local`) and confirm it does what it says.
+  - **Status (2026-07-28): done.** `infrastructure/scripts/add-source.mjs`,
+    `update-source.mjs`, `source-health.mjs`, plus a shared
+    `infrastructure/scripts/lib/d1-exec.mjs` helper. Written in plain
+    Node (`.mjs`, no TS build step) rather than TypeScript as this
+    item's original text suggested — `tsx`/`ts-node` aren't installed
+    anywhere in this repo and adding one felt like scope creep for what
+    is three CLI wrappers around SQL strings; revisit as `.ts` only if
+    the scripts grow real logic worth typechecking.
+  - **D1 access approach differs from this item's original plan.**
+    `createD1Client` (`lib/d1/client.ts`) takes a native `D1Database`
+    binding, which only exists inside a Worker (`wrangler dev` / a
+    deployed Worker) — there is no way to construct one from a plain
+    Node process, so "call the Milestone A repo functions directly
+    against a D1Client" (this item's original text) isn't actually
+    achievable outside the Workers runtime. Instead each script shells
+    out to `wrangler d1 execute hiring-signals --json` per query
+    (`lib/d1-exec.mjs`). This necessarily *duplicates* the SQL shape of
+    `sources-repo.ts`'s `createSource`/`updateSource` rather than
+    calling those functions — keep both in sync by hand if the schema
+    changes; there's no way around this without a build step that
+    compiles the workspace package for a plain-Node consumer.
+  - **Manual ingestion trigger differs from this item's original plan
+    for the same reason.** "The script enqueues one IngestMessage...
+    bypasses next_poll_at" (original text) implied pushing directly
+    onto `INGEST_QUEUE`, but Cloudflare Queues can only be sent to via a
+    live Queue *binding* — `wrangler queues` has no CLI verb to send a
+    message, confirmed via `wrangler queues --help`. Reimplementing the
+    ~500-line ingest-consumer pipeline inside a script (bypassing the
+    queue entirely) was considered and rejected: any drift between two
+    copies of that logic would be a silent correctness bug. Implemented
+    instead as `update-source.mjs --run-now`, which clears
+    `next_poll_at` so the real scheduler cron (or `wrangler dev
+    --test-scheduled` for an immediate local trigger) enqueues it
+    through the actual, single pipeline. Slower (up to one 15-minute
+    cron interval in production) but never diverges from the real code
+    path.
+  - **New gap found, not yet closed:** there is no `createCompany` in
+    `packages/db` (grepped — only `searchCompanies`/`getCompanyBySlug`/
+    `getRecentSignalsForCompany` exist; Milestone A's own scope never
+    listed a companies-repo write function). `add-source.mjs` therefore
+    only attaches a source to an **existing** `company_id` — onboarding
+    a brand-new company still requires a manual `INSERT INTO companies`
+    via `wrangler d1 execute` until a `createCompany` repo function and
+    a corresponding `add-company.mjs`/flag on `add-source.mjs` exist.
+    Tracked as a new open item below rather than built silently inside
+    this task.
+  - **Verified for real, not just typechecked:** applied
+    `infrastructure/scripts/seed-local-d1.sql` to a fresh local D1
+    instance (companies=20, sources=20, jobs=60, signals=20, matching
+    A.1's documented seed exactly), then ran all three scripts against
+    it. `source-health.mjs` printed all 20 seeded sources with correct
+    company names, job counts, and "healthy" status. `add-source.mjs`
+    created a real source row (confirmed via a follow-up `SELECT`), then
+    correctly rejected a re-run of the same command with
+    `DuplicateSourceError`'s message (exit code 1), and separately
+    rejected a nonexistent `--company-id` and an invalid `--provider`.
+    `update-source.mjs --disable` and `--run-now` were confirmed via
+    `SELECT` to have actually persisted `enabled=0` and
+    `next_poll_at=NULL` (not just printed a success message), and
+    separately rejected a nonexistent `--id` and a no-flags no-op call.
+    Test source cleaned up afterward so local D1 matches A.1's
+    documented seed state. One environment note worth recording:
+    `wrangler` refuses to run under this machine's default Node
+    (v20.20.0, `wrangler` requires >=22) — these scripts (and any future
+    `wrangler d1 execute` use) need `nvm use 24.18.0` first, matching
+    this repo's own `package.json` `engines` field; the pnpm-workspace
+    typecheck/lint/test commands are unaffected since pnpm/tsc/vitest
+    don't share wrangler's Node-version check.
+    `pnpm -r typecheck`/`lint` re-ran clean after adding these files
+    (they sit outside all workspace packages, as expected for plain
+    ops scripts, so they don't participate in either check — confirmed
+    rather than assumed).
 
 ---
 
@@ -630,12 +702,15 @@ invent API endpoints ... Verify source contracts first") — don't assume
 last-known-good API shapes from training data are current; check the
 provider's own developer docs.
 
-- [ ] Update the ops source-management script's provider-enum usage
-      (Milestone D — the `addSourceSchema`-equivalent Zod schema, wherever
-      it lands under `infrastructure/scripts/`; already references the
-      full `@hiring-signals/domain` `ATS_PROVIDERS` list — confirm no
-      separate hardcoded list needs updating elsewhere; grep for
-      `ATS_PROVIDERS` usages before assuming this is a no-op).
+- [ ] Update the ops source-management script's provider-enum usage as
+      each adapter below lands. Milestone D's `add-source.mjs`
+      (`infrastructure/scripts/`) is a plain `.mjs` script (not
+      TypeScript, so it can't import `@hiring-signals/domain`'s
+      `ATS_PROVIDERS` directly — see Milestone D's status note) and
+      instead inlines its own copy of the 11-provider list with a
+      comment pointing back to `packages/domain/src/providers.ts` as the
+      source of truth. Update that inlined copy by hand each time an
+      adapter lands here — there's no automated sync between the two.
 - [ ] Update AGENTS.md's roadmap status and this file as each adapter
       lands.
 
@@ -680,3 +755,18 @@ Milestones A–D:
       for v1 per Milestone B, but confirm that satisfies the spec's
       intent or whether it needs to be admin-editable (D1-backed config
       table) before Milestone D ships to any real source.
+
+- [ ] `packages/db` has no `createCompany` (or any companies-repo write
+      function) — found while building the source-management ops
+      scripts above. Onboarding a genuinely new company currently
+      requires a hand-written `INSERT INTO companies` via `wrangler d1
+      execute` rather than a script. Add `createCompany(client, input:
+      { slug, displayName, domain?, industry?, employeeBand? })` to
+      `packages/db/src/companies-repo.ts` (currently read-only:
+      `searchCompanies`/`getCompanyBySlug`/`getRecentSignalsForCompany`
+      only) with a `slug` UNIQUE-constraint check mirroring
+      `sources-repo.ts`'s `DuplicateSourceError` pattern, then either an
+      `add-company.mjs` ops script or a `--create-company` flag on
+      `add-source.mjs` (`infrastructure/scripts/`). Small — likely
+      bundles cleanly with the next ops-scripts session rather than
+      needing its own milestone.
