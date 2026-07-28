@@ -663,6 +663,48 @@ into "a running pipeline." Depends on all three being done first.
     (they sit outside all workspace packages, as expected for plain
     ops scripts, so they don't participate in either check — confirmed
     rather than assumed).
+  - **Status (2026-07-29): test-isolation + code-review follow-up
+    pass.** Three changes, each committed separately rather than
+    squashed, so the history stays legible if any one needs reverting:
+    1. **Test-folder isolation.** Every `*.test.ts` (and its fixtures)
+       moved out of `src/` into a sibling `test/` directory across
+       `apps/api`, `packages/adapters`, `packages/db`, and
+       `packages/domain` — import paths updated to relative `../src/*`
+       and `test/**/*.ts` added to each package's `tsconfig.json`
+       `include` so typecheck still covers them. Purely structural, no
+       behavior change.
+    2. **Centralized `isUniqueConstraintError`** (code-review P3 from
+       the ingest-consumer fix-adequacy review below): the helper had
+       three near-identical copies — `sources-repo.ts` and
+       `companies-repo.ts` already shared one via
+       `packages/db/src/internal/d1-errors.ts`, but that module being
+       package-private meant `insertObservationIdempotent` in the
+       ingest consumer couldn't import it and kept its own inline
+       regex. Also flagged: `internal/` living inside `packages/db/src`
+       with no `tsconfig`/`exports` guard meant a stray cross-package
+       import could resolve at build time despite not being
+       re-exported from `index.ts`. Fixed per the review's own
+       suggested option: moved the helper to
+       `lib/d1/unique-constraint.ts` (a pure string check with no
+       repo/schema coupling, same home as the sibling
+       `lib/d1/like-pattern.ts`) and had all three call sites import it
+       directly; deleted the now-empty `packages/db/src/internal/`.
+    3. **Hardened the ingest-consumer test's fake bindings**
+       (code-review P3): `makeFakeEnv()`'s `env.DB`/`env.CACHE` were
+       `{} as unknown as Bindings[...]` — safe today only because
+       `createD1Client` is mocked to ignore whatever's passed to it,
+       but a bare empty object would fail with a confusing "is not a
+       function" instead of a clear signal if that mock were ever
+       removed. Replaced with an `unusedBinding<T>(name)` helper: a
+       `Proxy` that throws a descriptive error naming the accessed
+       property and the mock it should go through instead. Applied to
+       both `ingest-consumer.test.ts` and `scheduler.test.ts`, which
+       had the identical pattern.
+    All three verified independently: `pnpm -r typecheck` (5/5
+    workspace projects clean) and `pnpm -r test` (94/94 passing,
+    unchanged count — confirms #2 and #3 were pure refactors with no
+    behavior change, and #1 didn't silently drop or duplicate any
+    tests in the move).
 
 ---
 
