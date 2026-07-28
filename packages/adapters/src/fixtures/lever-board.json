@@ -1,0 +1,74 @@
+[
+  {
+    "id": "5ac21346-8e0c-4494-8e7a-3eb92ff77902",
+    "text": "Staff Backend Engineer",
+    "categories": {
+      "commitment": "Full-time",
+      "department": "Engineering",
+      "location": "Remote - US",
+      "team": "Platform",
+      "allLocations": ["Remote - US"]
+    },
+    "country": "US",
+    "createdAt": 1753000000000,
+    "workplaceType": "remote",
+    "description": "<div>We build the platform.</div>",
+    "descriptionPlain": "We build the platform.\n",
+    "hostedUrl": "https://jobs.lever.co/examplecorp/5ac21346-8e0c-4494-8e7a-3eb92ff77902",
+    "applyUrl": "https://jobs.lever.co/examplecorp/5ac21346-8e0c-4494-8e7a-3eb92ff77902/apply",
+    "salaryRange": {
+      "currency": "USD",
+      "interval": "year",
+      "min": 180000,
+      "max": 220000
+    }
+  },
+  {
+    "id": "1897fca1-502e-4511-b279-de479e99fbea",
+    "text": "Account Executive",
+    "categories": {
+      "department": "Sales",
+      "location": "Bombay, MH",
+      "team": "Account Executive",
+      "allLocations": ["Bombay, MH"]
+    },
+    "country": "IN",
+    "createdAt": 1558041148927,
+    "workplaceType": "unspecified",
+    "description": "<div>Add all your text here.</div>",
+    "descriptionPlain": "Add all your text here.\n",
+    "hostedUrl": "https://jobs.lever.co/examplecorp/1897fca1-502e-4511-b279-de479e99fbea",
+    "applyUrl": "https://jobs.lever.co/examplecorp/1897fca1-502e-4511-b279-de479e99fbea/apply"
+  },
+  {
+    "id": "79eda854-d6ba-4e73-9eb0-524daefed2d8",
+    "text": "Corporate Account Executive",
+    "categories": {
+      "team": "Sales",
+      "allLocations": []
+    },
+    "createdAt": 1556123484732,
+    "workplaceType": "unspecified",
+    "description": "<div>THE CHALLENGE...</div>",
+    "descriptionPlain": "THE CHALLENGE...\n",
+    "hostedUrl": "https://jobs.lever.co/examplecorp/79eda854-d6ba-4e73-9eb0-524daefed2d8",
+    "applyUrl": "https://jobs.lever.co/examplecorp/79eda854-d6ba-4e73-9eb0-524daefed2d8/apply"
+  },
+  {
+    "id": "c2f4a001-1111-2222-3333-444455556666",
+    "text": "Site Manager, Warehouse Operations",
+    "categories": {
+      "department": "Operations",
+      "location": "Hybrid - Chicago, IL",
+      "team": "Operations",
+      "allLocations": ["Hybrid - Chicago, IL"]
+    },
+    "country": "US",
+    "createdAt": 1753100000000,
+    "workplaceType": "hybrid",
+    "description": "<div>Run the warehouse floor.</div>",
+    "descriptionPlain": "Run the warehouse floor.\n",
+    "hostedUrl": "https://jobs.lever.co/examplecorp/c2f4a001-1111-2222-3333-444455556666",
+    "applyUrl": "https://jobs.lever.co/examplecorp/c2f4a001-1111-2222-3333-444455556666/apply"
+  }
+]

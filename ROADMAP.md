@@ -685,7 +685,76 @@ Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
 review scoped and lets a bad fixture assumption in one provider get
 caught before it's copy-pasted into the next nine.
 
-- [ ] `lever` — `packages/adapters/src/lever.ts` + fixtures + tests
+- [x] `lever` — `packages/adapters/src/lever.ts` + fixtures + tests
+  - **Status (2026-07-28): done.** Public, unauthenticated Postings API
+    (`GET https://api.lever.co/v0/postings/{site}?mode=json`) verified
+    live before writing the schema, per spec §21 — fetched
+    `github.com/lever/postings-api`'s own README for the current field
+    list, then hit `https://api.lever.co/v0/postings/leverdemo?mode=json`
+    directly and confirmed the real response matches. This surfaced
+    three shape details training data alone wouldn't have guaranteed
+    were still current: the list response is a **bare top-level array**
+    (not a `{ jobs: [...] }` envelope like Greenhouse), `country` can be
+    **entirely absent** (not just `null`), and `categories.location`/
+    `categories.department` are independently optional — a real posting
+    in the fetched sample had only `categories.team`.
+  - `leverPostingSchema`/`leverBoardSchema` (Zod) validate the array-of-
+    postings shape; `LeverSchemaError` thrown on validation failure,
+    same non-silent-empty-array reasoning as `GreenhouseSchemaError`.
+  - Location mode: Lever exposes a structured `workplaceType` field
+    (`unspecified`/`on-site`/`remote`/`hybrid`) — trusted directly when
+    set to a real value (spec §6.4 prefers structured data over
+    free-text inference where available), falling back to
+    `inferLocationMode` on the location string only when
+    `workplaceType` is `"unspecified"` (Lever's own "we don't know"
+    value) or absent. `resolveLocationMode()` documents this choice
+    inline.
+  - Timestamps: Lever's list API exposes only `createdAt` (epoch ms) —
+    no separate "last updated" field — so it's used for both
+    `postedAt` and `updatedAt`. Documented inline in `normalize()` as a
+    real data-availability gap specific to this provider, not an
+    oversight, since a future milestone touching lifecycle timing for
+    Lever sources needs to know that.
+  - `packages/adapters/src/fixtures/lever-board.json` built from the
+    real `leverdemo` response fetched during verification (trimmed to 4
+    postings, company/content details replaced with placeholders) —
+    covers `workplaceType: "remote"`, `workplaceType: "hybrid"`,
+    `workplaceType: "unspecified"` with a plain-city location string,
+    and a posting with no `categories.location` at all (only `team`,
+    `allLocations: []`, and no `country` key). `lever-board-malformed.json`
+    for the schema-error case.
+  - `lever.test.ts` (13 tests): id/URL passthrough, `workplaceType`
+    trusted over free-text inference (`remote` and `hybrid` cases),
+    free-text fallback when `workplaceType` is `unspecified`,
+    `allLocations[0]` fallback when `categories.location` is absent,
+    `department` falling back to `team`, `department` preferred over
+    `team` when both present, `createdAt` → ISO-8601 conversion for
+    both `postedAt`/`updatedAt`, missing `country` handled without
+    throwing, `LeverSchemaError` on a malformed posting and on a
+    non-array payload, provider identity.
+  - Registered in `registry.ts`'s `ADAPTERS` map and re-exported from
+    `index.ts`, same as `greenhouse.ts`.
+  - **One real bug caught and fixed before this was called done, not
+    after:** the test file was originally written in two chunked
+    writes; the first chunk's `describe("leverAdapter.normalize", ...)`
+    block was closed with a stray `});` that put every test added in
+    the second chunk outside any `describe` block, which
+    `tsc --noEmit` caught immediately (`TS1128: Declaration or
+    statement expected`) rather than silently passing. Fixed by
+    removing the premature closing brace. Separately, the `createdAt`
+    → ISO timestamp test's expected value was hand-computed wrong on
+    the first pass (off by 4 hours) — caught by actually running
+    `node -e "console.log(new Date(1753000000000).toISOString())"`
+    before trusting the assertion, not by mental arithmetic.
+  - **Verified for real:** `pnpm --filter @hiring-signals/adapters
+    typecheck`/`lint`/`test` clean (30/30 tests, up from 17 — the 13 new
+    Lever tests plus the existing 12 Greenhouse + 5 location tests);
+    `pnpm -r typecheck`/`lint`/`test` clean across all 5 workspace
+    projects (90 tests total, only the 3 pre-existing
+    `consistent-type-imports` warnings in `apps/api`).
+  - `infrastructure/scripts/add-source.mjs`'s inlined `ATS_PROVIDERS`
+    list (Milestone E's own open item below) already included `"lever"`
+    — no change needed there.
 - [ ] `ashby`
 - [ ] `smartrecruiters`
 - [ ] `workable`
