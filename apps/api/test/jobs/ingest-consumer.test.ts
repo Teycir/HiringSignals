@@ -1,13 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Message } from "@cloudflare/workers-types";
 import type { IngestMessage } from "@hiring-signals/domain";
-import type { Bindings } from "../bindings";
+import type { Bindings } from "../../src/bindings";
 
 /**
  * Purpose-built in-memory D1 fake for the ingest-consumer's end-to-end
  * pipeline test. Routes each query by matching on distinctive substrings
  * in the SQL text (same "assert on shape, not a real engine" spirit as
- * packages/db/src/signals-write-repo.test.ts) rather than parsing SQL
+ * packages/db/test/signals-write-repo.test.ts) rather than parsing SQL
  * generically -- a hand-parsed SQL engine would be its own source of
  * bugs and could mask real regressions behind fake-parser bugs. Each
  * repo function's own exact SQL/param shape is independently covered by
@@ -322,12 +322,12 @@ vi.mock("@hiring-signals/adapters", async (importOriginal) => {
   };
 });
 
-vi.mock("../services/raw-payload-store", () => ({
+vi.mock("../../src/services/raw-payload-store", () => ({
   storeRawPayload: vi.fn(async () => "raw:src-1:run-1"),
   rawPayloadKey: (sourceId: string, runId: string) => `raw:${sourceId}:${runId}`,
 }));
 
-const { handleIngestMessage } = await import("./ingest-consumer");
+const { handleIngestMessage } = await import("../../src/jobs/ingest-consumer");
 
 function makeSourceRow(id = "src-1"): Row {
   return {

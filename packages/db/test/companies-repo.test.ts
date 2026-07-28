@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { D1Client } from "./d1-client";
-import { createCompany, DuplicateCompanyError } from "./companies-repo";
+import type { D1Client } from "../src/d1-client";
+import { createCompany, DuplicateCompanyError } from "../src/companies-repo";
 
 /**
  * Fake D1Client test double, same style as signals-write-repo.test.ts

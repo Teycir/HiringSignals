@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeTitle } from "./title-normalize";
+import { normalizeTitle } from "../src/title-normalize";
 
 describe("normalizeTitle", () => {
   it("lowercases and collapses whitespace", () => {

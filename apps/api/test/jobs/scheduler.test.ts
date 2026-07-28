@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IngestMessage } from "@hiring-signals/domain";
-import type { Bindings } from "../bindings";
+import type { Bindings } from "../../src/bindings";
 
 /**
  * Fake D1Client (same style as
- * packages/db/src/signals-write-repo.test.ts -- a plain object literal,
+ * packages/db/test/signals-write-repo.test.ts -- a plain object literal,
  * not vi.fn()-wrapped, so D1Client's generic method signatures stay
  * intact) injected in place of @hiring-signals/db's createD1Client, since
  * the scheduler only ever receives a raw env.DB (D1Database) binding
@@ -29,7 +29,7 @@ vi.mock("@hiring-signals/db", async (importOriginal) => {
   };
 });
 
-const { handleScheduled } = await import("./scheduler");
+const { handleScheduled } = await import("../../src/jobs/scheduler");
 
 function makeSourceRow(id: string) {
   return {

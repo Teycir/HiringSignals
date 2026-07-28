@@ -18,6 +18,7 @@
   //   - lib/observability/audit-abuse.ts (middleware/anti-abuse.ts signal logging)
   "include": [
     "src/**/*.ts",
+    "test/**/*.ts",
     "../../lib/kv/**/*.ts",
     "../../lib/http/**/*.ts",
     "../../lib/observability/**/*.ts"

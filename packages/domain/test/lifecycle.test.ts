@@ -4,7 +4,7 @@ import {
   CLOSED_AFTER_MISSING_RUNS,
   POSSIBLY_CLOSED_AFTER_MISSING_RUNS,
   computeLifecycleTransition,
-} from "./lifecycle";
+} from "../src/lifecycle";
 
 describe("computeLifecycleTransition", () => {
   it("job seen for the first time -> active, emits new_job", () => {

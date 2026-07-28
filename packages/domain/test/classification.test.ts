@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUTO_CLASSIFY_THRESHOLD, classifyJob } from "./classification";
+import { AUTO_CLASSIFY_THRESHOLD, classifyJob } from "../src/classification";
 
 describe("classifyJob", () => {
   it("classifies a title-only high-confidence phrase match", () => {

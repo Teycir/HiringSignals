@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NormalizedJob } from "@hiring-signals/domain";
-import type { SourceConfig } from "./adapter-contract";
-import { LeverSchemaError, leverAdapter } from "./lever";
+import type { SourceConfig } from "../src/adapter-contract";
+import { LeverSchemaError, leverAdapter } from "../src/lever";
 import boardFixture from "./fixtures/lever-board.json";
 import malformedFixture from "./fixtures/lever-board-malformed.json";
 

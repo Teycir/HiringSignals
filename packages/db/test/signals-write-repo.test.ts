@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { D1Client } from "./d1-client";
+import type { D1Client } from "../src/d1-client";
 import {
   appendSignalEvidence,
   createSignal,
   findActiveSignal,
   refreshSignal,
-} from "./signals-write-repo";
+} from "../src/signals-write-repo";
 
 /**
  * Fake D1Client test double: records every call's SQL + params so tests

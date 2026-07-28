@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferLocationMode } from "./location";
+import { inferLocationMode } from "../src/location";
 
 describe("inferLocationMode", () => {
   it("returns 'unknown' for null, undefined, or blank input", () => {

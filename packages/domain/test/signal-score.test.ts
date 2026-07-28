@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SCORE_FORMULA_VERSION, computeFreshness, computeNewJobScore } from "./signal-score";
+import { SCORE_FORMULA_VERSION, computeFreshness, computeNewJobScore } from "../src/signal-score";
 
 describe("computeFreshness", () => {
   it("is 1.0 at zero days (just observed)", () => {
