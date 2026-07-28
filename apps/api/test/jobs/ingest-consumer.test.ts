@@ -356,11 +356,41 @@ function makeNormalizedJob(externalJobId = "job-ext-1") {
   };
 }
 
+/**
+ * Stand-in for a binding this test never legitimately touches directly
+ * (DB, CACHE) -- the real value goes through the "@hiring-signals/db"
+ * mock below (createD1Client is replaced with a zero-arg function that
+ * ignores whatever's passed to it, see the vi.mock call), so today
+ * nothing ever reads DB/CACHE's own properties. A bare `{} as unknown
+ * as T` would make that safe-by-accident: if a future change to this
+ * test file ever removed or narrowed that mock, the first real property
+ * access (e.g. `env.DB.prepare`) would fail with a confusing "is not a
+ * function" instead of a clear signal that the binding was never faked
+ * (code-review P3 finding). A Proxy that throws on any trap makes that
+ * failure loud and immediate instead.
+ */
+function unusedBinding<T>(name: string): T {
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        throw new Error(
+          `Test bug: accessed ${name}.${String(prop)}, but ${name} is an unusedBinding() ` +
+            `placeholder -- this binding is expected to only be reached through a mocked ` +
+            `module (see the vi.mock("@hiring-signals/db", ...) call in this file), not read ` +
+            `directly. If this test now needs a real ${name}, replace unusedBinding("${name}") ` +
+            `with an actual fake.`,
+        );
+      },
+    },
+  ) as T;
+}
+
 function makeFakeEnv(): { env: Bindings; sent: Array<{ message: IngestMessage; delaySeconds?: number }> } {
   const sent: Array<{ message: IngestMessage; delaySeconds?: number }> = [];
   const env = {
-    DB: {} as unknown as Bindings["DB"],
-    CACHE: {} as unknown as Bindings["CACHE"],
+    DB: unusedBinding<Bindings["DB"]>("DB"),
+    CACHE: unusedBinding<Bindings["CACHE"]>("CACHE"),
     INGEST_QUEUE: {
       send: async (message: IngestMessage, options?: { delaySeconds?: number }) => {
         sent.push({ message, delaySeconds: options?.delaySeconds });
