@@ -11,12 +11,12 @@
 //     --public-url https://boards.greenhouse.io/acme \
 //     [--poll-interval-minutes 360] [--disabled] [--remote]
 //
-// Requires an EXISTING company_id -- there is no createCompany() in
-// packages/db (Milestone A only built sources-repo.ts/jobs-repo.ts;
-// company creation was never in scope). Look up a company id first with
+// Requires an EXISTING company_id. To create a brand-new company first,
+// use infrastructure/scripts/add-company.mjs (ROADMAP.md open item,
+// closed 2026-07-28) -- it prints the new company's id for direct use
+// here as --company-id. To look up an id for an existing company:
 // `wrangler d1 execute hiring-signals --local --command "SELECT id, slug,
-// display_name FROM companies WHERE slug = '...'"`, or see ROADMAP.md's
-// open item tracking this gap if you need to create a brand-new company.
+// display_name FROM companies WHERE slug = '...'"`.
 
 import { d1Execute, sqlString, sqlBool } from "./lib/d1-exec.mjs";
 

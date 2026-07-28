@@ -1,6 +1,21 @@
 import type { D1Client } from "./d1-client";
 import { escapeLikePattern } from "../../../lib/d1/like-pattern";
 
+/**
+ * Thrown when INSERT into `companies` violates the `slug` UNIQUE
+ * constraint (migration 0001). Same pattern as sources-repo.ts's
+ * DuplicateSourceError -- caught by the ops source-management script
+ * (ROADMAP.md Milestone D open item, spec §13.5) and printed as a clear
+ * message instead of a raw D1 constraint error; there is no HTTP route
+ * to map this to a status code.
+ */
+export class DuplicateCompanyError extends Error {
+  constructor(public readonly slug: string) {
+    super(`Company already exists with slug="${slug}".`);
+    this.name = "DuplicateCompanyError";
+  }
+}
+
 export interface CompanyRow {
   id: string;
   slug: string;
@@ -107,4 +122,65 @@ export async function getRecentSignalsForCompany(
     headline: r.headline,
     lastDetectedAt: r.last_detected_at,
   }));
+}
+
+export interface CreateCompanyInput {
+  slug: string;
+  displayName: string;
+  domain?: string;
+  industry?: string;
+  employeeBand?: string;
+}
+
+/**
+ * Inserts a new company. Duplicate `slug` throws DuplicateCompanyError
+ * instead of letting the raw D1 constraint error surface (same pattern
+ * as sources-repo.ts's createSource -- see DuplicateCompanyError above).
+ * There is no HTTP route in front of this; company creation is a local
+ * ops script, not a Worker endpoint (spec §13.5, same as source
+ * management -- companies and sources are both write-path config, not
+ * public-facing mutation surfaces).
+ *
+ * `created_at`/`updated_at` are set to the same timestamp on insert --
+ * this is a creation, not an update, so there's no prior `updated_at` to
+ * preserve.
+ */
+export async function createCompany(client: D1Client, input: CreateCompanyInput): Promise<CompanyRow> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  try {
+    await client.run(
+      `INSERT INTO companies (id, slug, display_name, domain, industry, employee_band, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.slug, input.displayName, input.domain ?? null, input.industry ?? null, input.employeeBand ?? null, now, now],
+    );
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      throw new DuplicateCompanyError(input.slug);
+    }
+    throw err;
+  }
+
+  return {
+    id,
+    slug: input.slug,
+    display_name: input.displayName,
+    domain: input.domain ?? null,
+    industry: input.industry ?? null,
+    employee_band: input.employeeBand ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+/**
+ * D1's error shape for a UNIQUE constraint violation isn't a typed class
+ * -- it surfaces as an Error whose message contains SQLite's own text.
+ * Same helper as sources-repo.ts's isUniqueConstraintError (not shared
+ * between the two files since it's a two-line function and packages/db
+ * has no shared-internals module yet -- not worth adding one for this).
+ */
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
 }

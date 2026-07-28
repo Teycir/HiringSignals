@@ -756,7 +756,7 @@ Milestones A–D:
       intent or whether it needs to be admin-editable (D1-backed config
       table) before Milestone D ships to any real source.
 
-- [ ] `packages/db` has no `createCompany` (or any companies-repo write
+- [x] `packages/db` has no `createCompany` (or any companies-repo write
       function) — found while building the source-management ops
       scripts above. Onboarding a genuinely new company currently
       requires a hand-written `INSERT INTO companies` via `wrangler d1
@@ -770,3 +770,43 @@ Milestones A–D:
       `add-source.mjs` (`infrastructure/scripts/`). Small — likely
       bundles cleanly with the next ops-scripts session rather than
       needing its own milestone.
+  - **Status (2026-07-28): done.** `createCompany(client, input)` +
+    `DuplicateCompanyError` added to `packages/db/src/companies-repo.ts`,
+    same shape as `sources-repo.ts`'s `createSource`/
+    `DuplicateSourceError` (`isUniqueConstraintError` helper duplicated
+    rather than shared — a two-line function, and `packages/db` has no
+    shared-internals module yet). `packages/db/src/companies-repo.test.ts`
+    (4 tests): generated-id insert with `created_at === updated_at` and
+    nullable fields defaulting to `null`, optional fields passed through
+    when provided, `DuplicateCompanyError` thrown (not a raw D1 error) on
+    a UNIQUE-constraint failure, and a non-UNIQUE D1 error re-thrown
+    as-is.
+  - `infrastructure/scripts/add-company.mjs` added as its own script
+    (not a flag on `add-source.mjs`), same `.mjs`-over-`wrangler d1
+    execute --json` pattern as `add-source.mjs`/`update-source.mjs` for
+    the reasons documented in `lib/d1-exec.mjs`'s header (no live
+    `D1Database` binding outside a Worker). Prints the new company's id
+    for direct use as `add-source.mjs --company-id`.
+  - **Caught mid-session, not taken on faith:** this file was found
+    already sitting in the working tree, uncommitted, truncated after
+    `parseArgs` — defined but never called, no `main()`, no INSERT, no
+    duplicate-slug check. Same "looks complete, silently cut off"
+    pattern as `seed-local-d1.sql` (Milestone A.1) and
+    `ingest-consumer.test.ts` (Milestone D) before it. Completed to
+    match `add-source.mjs`'s structure (arg validation → duplicate-slug
+    pre-check → INSERT → confirmation message) rather than committed as
+    found.
+  - **Verified for real against local D1, not just typechecked:**
+    `pnpm --filter @hiring-signals/db typecheck`/`lint`/`test` clean
+    (11/11 tests); `pnpm -r typecheck`/`lint`/`test` clean across all 5
+    workspace projects (77 tests total, only the 3 pre-existing
+    `consistent-type-imports` warnings). Ran `add-company.mjs` against a
+    real local D1 instance (`nvm use 24.18.0` first, wrangler's own
+    Node-version requirement, same environment note as Milestone D's ops
+    scripts): happy path confirmed via a follow-up `SELECT` (id, slug,
+    all optional fields, matching `created_at`/`updated_at` — not just
+    the script's printed success message), a re-run with the same slug
+    correctly rejected with `DuplicateCompanyError`'s message and exit
+    code 1, and a call missing `--display-name` correctly rejected.
+    Test company deleted afterward; local D1 confirmed back at 20
+    companies, matching Milestone A.1's documented seed exactly.
