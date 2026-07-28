@@ -1,7 +1,12 @@
 import type { Message } from "@cloudflare/workers-types";
 import type { Bindings } from "../bindings";
-import type { AtsProvider, IngestMessage } from "@hiring-signals/domain";
-import { classifyJob, computeLifecycleTransition, computeNewJobScore } from "@hiring-signals/domain";
+import type { AtsProvider, IngestMessage, NormalizedJob } from "@hiring-signals/domain";
+import {
+  atsProviderSchema,
+  classifyJob,
+  computeLifecycleTransition,
+  computeNewJobScore,
+} from "@hiring-signals/domain";
 import { getAdapterForProvider, UnsupportedProviderError, GreenhouseSchemaError } from "@hiring-signals/adapters";
 import {
   createD1Client,
@@ -12,13 +17,16 @@ import {
   updateSource,
   upsertJob,
   insertJobObservation,
+  getJobByExternalId,
   getJobsMissingFromRun,
   applyLifecycleTransition,
+  updateJobClassification,
+  resolveSourceRun,
   findActiveSignal,
   createSignal,
   refreshSignal,
   appendSignalEvidence,
-  type JobRow,
+  type SourceRow,
 } from "@hiring-signals/db";
 import { computeContentHash } from "../../../../lib/text/content-hash";
 import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
@@ -37,8 +45,23 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  * re-inserting an observation for a (job, run) pair already recorded
  * hits that constraint and is treated as "already recorded, continue"
  * rather than a hard failure (see insertObservationIdempotent below).
- * source_runs rows are keyed by runId (resolveSourceRunId reuses the
- * same row id across retries of the same logical run).
+ * source_runs rows are keyed by runId (resolveSourceRun, packages/db,
+ * reuses the same row id across retries of the same logical run).
+ *
+ * File structure (code-review P1 finding, 2026-07-28: this file was a
+ * single 359-line function mixing 7 pipeline stages with 3 inline SQL
+ * queries that bypassed the repo layer -- see git history for the prior
+ * shape). Now split into named stages so each can be read and tested in
+ * isolation: resolveProvider -> fetch/validate branches (still inline in
+ * handleIngestMessage, since each one's ack/retry decision is genuinely
+ * part of the message-handling control flow, not pipeline logic) ->
+ * processNormalizedJob (per-job upsert/observation/lifecycle/
+ * classification/signal) -> processMissingJobs (the absence complement).
+ * All 3 inline SQL queries the review flagged (job lookup by external
+ * id, classification UPDATE, source_runs resolve/insert) now live in
+ * packages/db/src/jobs-repo.ts and sources-repo.ts instead, so a future
+ * column rename breaks `pnpm --filter db test`, not a query string
+ * hidden in apps/api.
  */
 
 /** Max retry attempts before a failure is treated as final (spec §13.4: "e.g. 5"). */
@@ -55,6 +78,46 @@ function backoffSeconds(attempt: number): number {
 function daysBetween(laterIso: string, earlierIso: string): number {
   const ms = new Date(laterIso).getTime() - new Date(earlierIso).getTime();
   return ms / (1000 * 60 * 60 * 24);
+}
+
+/**
+ * A caught error's message, safe to log/persist. Guards with
+ * `instanceof Error` instead of an `as Error` cast (code-review P2
+ * finding) -- a catch binding in JS can be any thrown value (`throw 42`,
+ * `throw "oops"`), and a bare cast would silently produce `undefined` in
+ * the log for a non-Error throw instead of surfacing what was actually
+ * thrown.
+ */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Distinguishes a transient/infrastructure failure (worth retrying) from
+ * a programmer bug (not worth retrying 5x against a live pipeline).
+ * Code-review P1 finding: the prior version's outer catch retried
+ * *everything* uncaught, including a `TypeError` from a typo, up to
+ * MAX_RETRY_ATTEMPTS times -- each retry re-hits the ATS endpoint,
+ * re-archives the payload to KV, and re-runs the pipeline, so a code bug
+ * silently produced a 5x traffic spike against upstream and 5 log lines
+ * that look like infrastructure flakiness instead of one clear "this is
+ * broken" signal.
+ *
+ * Deliberately conservative: only classifies well-known JS "this is a
+ * bug in our code" error constructors as non-transient. Everything else
+ * (D1 errors, network errors, a plain `Error` thrown by a dependency)
+ * is treated as transient and retried, matching spec §13.4 row 6's
+ * "D1/KV transient error or any other uncaught failure: retry, preserve
+ * idempotency" -- this function only carves out the specific classes the
+ * spec's own retry policy was never meant to cover.
+ */
+function isProgrammerError(err: unknown): boolean {
+  return (
+    err instanceof TypeError ||
+    err instanceof ReferenceError ||
+    err instanceof RangeError ||
+    err instanceof SyntaxError
+  );
 }
 
 export async function handleIngestMessage(message: Message<IngestMessage>, env: Bindings): Promise<void> {
@@ -78,11 +141,31 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     // looking it up rather than opening a second row for the same run,
     // so job_observations' (job_id, source_run_id) idempotency key stays
     // meaningful across retries of the same logical run.
-    const sourceRunId = await resolveSourceRunId(client, sourceId, runId, startedAt);
+    const sourceRunId = await resolveSourceRun(client, sourceId, runId, startedAt);
+
+    // Validate the DB's provider string against the domain enum instead
+    // of an `as AtsProvider` cast (code-review P2 finding). Previously
+    // this cast happened 3x and "worked" only because
+    // getAdapterForProvider happened to throw UnsupportedProviderError
+    // for an invalid string, which the catch below happened to handle --
+    // correct by accident, not by a checked guarantee at this call site.
+    const providerResult = atsProviderSchema.safeParse(source.provider);
+    if (!providerResult.success) {
+      await finalizeConfigError(
+        client,
+        source.id,
+        sourceRunId,
+        startTime,
+        `Invalid provider="${source.provider}" in DB row`,
+      );
+      message.ack();
+      return;
+    }
+    const provider = providerResult.data;
 
     let adapter;
     try {
-      adapter = getAdapterForProvider(source.provider as AtsProvider);
+      adapter = getAdapterForProvider(provider);
     } catch (err) {
       if (err instanceof UnsupportedProviderError) {
         // 4xx-style configuration issue (spec §13.4 row 3): mark source
@@ -99,7 +182,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
       {
         sourceId: source.id,
         companyId: source.company_id,
-        provider: source.provider as AtsProvider,
+        provider,
         boardToken: source.board_token,
         publicUrl: source.public_url,
       },
@@ -159,7 +242,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
       normalizedJobs = adapter.normalize(fetchResult.rawBody, {
         sourceId: source.id,
         companyId: source.company_id,
-        provider: source.provider as AtsProvider,
+        provider,
         boardToken: source.board_token,
         publicUrl: source.public_url,
       });
@@ -173,7 +256,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
           source.id,
           sourceRunId,
           startTime,
-          `Schema mismatch: ${(err as Error).message}`,
+          `Schema mismatch: ${errorMessage(err)}`,
           fetchResult.httpStatus,
           "schema_mismatch",
         );
@@ -195,151 +278,10 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     let signalsCreated = 0;
 
     for (const job of normalizedJobs) {
-      const contentHash = await computeContentHash({
-        title: job.title,
-        descriptionText: job.descriptionText ?? null,
-        department: job.department ?? null,
-        employmentType: job.employmentType ?? null,
-        locationRaw: job.locationRaw ?? null,
-      });
-
-      const existing = await client.first<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at">>(
-        `SELECT id, status, missing_run_count, first_seen_at FROM jobs WHERE source_id = ? AND external_job_id = ?`,
-        [source.id, job.externalJobId],
-      );
-
-      const jobId = await upsertJob(client, {
-        sourceId: source.id,
-        companyId: source.company_id,
-        externalJobId: job.externalJobId,
-        canonicalUrl: job.canonicalUrl,
-        title: job.title,
-        titleNormalized: job.title.toLowerCase(),
-        descriptionText: job.descriptionText,
-        department: job.department,
-        employmentType: job.employmentType,
-        locationRaw: job.locationRaw,
-        locationMode: job.locationMode,
-        postedAt: job.postedAt,
-        sourceUpdatedAt: job.updatedAt,
-        contentHash,
-        observedAt,
-      });
-
-      await insertObservationIdempotent(client, {
-        jobId,
-        sourceRunId,
-        observedAt,
-        contentHash,
-        isPresent: true,
-      });
-
-      const lifecycle = computeLifecycleTransition({
-        currentState: existing?.status as "active" | "possibly_closed" | "closed" | undefined,
-        wasPresentThisRun: true,
-        consecutiveMissingRuns: existing?.missing_run_count ?? 0,
-        daysSinceLastSeen: 0,
-      });
-
-      await applyLifecycleTransition(client, jobId, {
-        status: lifecycle.nextState,
-        missingRunCount: lifecycle.nextConsecutiveMissingRuns,
-        lastSeenAt: observedAt,
-      });
-
-      if (lifecycle.candidateSignal === "new_job" || lifecycle.candidateSignal === "reopened_job") {
-        const classification = classifyJob({
-          title: job.title,
-          department: job.department,
-          descriptionText: job.descriptionText,
-        });
-
-        await client.run(
-          `UPDATE jobs SET role_primary = ?, classification_confidence = ?, classification_version = ? WHERE id = ?`,
-          [
-            classification.rolePrimary ?? null,
-            classification.confidence,
-            classification.classificationVersion,
-            jobId,
-          ],
-        );
-
-        // Signal generation only for auto-classified jobs (spec §6.2 step
-        // 7: below-threshold jobs are still stored but not surfaced as
-        // signals yet -- classification_confidence < 0.80 means role
-        // assignment isn't trustworthy enough to drive a scored signal).
-        if (classification.autoClassified && classification.rolePrimary) {
-          const daysSinceObservation = 0; // freshly observed this run
-          const scoreResult = computeNewJobScore({
-            daysSinceObservation,
-            classificationConfidence: classification.confidence,
-          });
-
-          const activeSignal = await findActiveSignal(client, {
-            companyId: source.company_id,
-            roleCategory: classification.rolePrimary,
-            signalType: lifecycle.candidateSignal,
-          });
-
-          let signalId: string;
-          if (activeSignal) {
-            signalId = activeSignal.id;
-            await refreshSignal(client, signalId, {
-              score: scoreResult.score,
-              scoreVersion: scoreResult.formulaVersion,
-              lastDetectedAt: observedAt,
-            });
-          } else {
-            signalId = await createSignal(client, {
-              companyId: source.company_id,
-              roleCategory: classification.rolePrimary,
-              signalType: lifecycle.candidateSignal,
-              score: scoreResult.score,
-              scoreVersion: scoreResult.formulaVersion,
-              detectedAt: observedAt,
-              headline: buildHeadline(lifecycle.candidateSignal, job.title),
-              summary: buildSummary(lifecycle.candidateSignal, job.title),
-            });
-            signalsCreated++;
-          }
-
-          await appendSignalEvidence(client, {
-            signalId,
-            jobId,
-            evidenceType: lifecycle.candidateSignal,
-            observedAt,
-            payload: scoreResult,
-          });
-        }
-      }
+      signalsCreated += await processNormalizedJob(client, source, sourceRunId, job, observedAt);
     }
 
-    // Complement: jobs previously active/possibly_closed for this source
-    // that were NOT seen this run -- lifecycle transition for absence
-    // (spec §5.4 rows 3-5), one round trip via getJobsMissingFromRun.
-    const missingJobs = await getJobsMissingFromRun(client, source.id, seenExternalIds);
-    for (const missingJob of missingJobs) {
-      const daysSinceLastSeen = daysBetween(observedAt, missingJob.last_seen_at);
-      const lifecycle = computeLifecycleTransition({
-        currentState: missingJob.status as "active" | "possibly_closed" | "closed",
-        wasPresentThisRun: false,
-        consecutiveMissingRuns: missingJob.missing_run_count,
-        daysSinceLastSeen,
-      });
-
-      await applyLifecycleTransition(client, missingJob.id, {
-        status: lifecycle.nextState,
-        missingRunCount: lifecycle.nextConsecutiveMissingRuns,
-      });
-
-      await insertObservationIdempotent(client, {
-        jobId: missingJob.id,
-        sourceRunId,
-        observedAt,
-        contentHash: missingJob.content_hash,
-        isPresent: false,
-      });
-    }
+    signalsCreated += await processMissingJobs(client, source, sourceRunId, seenExternalIds, observedAt);
 
     const nextPollAt = computeNextPollAt(source.poll_interval_minutes, source.id);
     await markSourceSuccess(client, source.id, nextPollAt);
@@ -377,17 +319,50 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
 
     message.ack();
   } catch (err) {
+    // Programmer bugs (TypeError/ReferenceError/RangeError/SyntaxError)
+    // fail fast with a single finalize + ack instead of retrying 5x
+    // against a live pipeline (code-review P1 finding -- see
+    // isProgrammerError's header comment for the full reasoning).
+    // Everything else (D1/KV transient error or any other uncaught
+    // failure) retries with idempotency preserved, per spec §13.4 row 6
+    // -- everything above already uses idempotent writes (ON CONFLICT
+    // upsert, UNIQUE-constrained observations), so a retry from the top
+    // is safe.
+    const message_ = errorMessage(err);
 
-    // D1/KV transient error or any other uncaught failure: retry,
-    // preserve idempotency (spec §13.4 row 6) -- everything above already
-    // uses idempotent writes (ON CONFLICT upsert, UNIQUE-constrained
-    // observations), so a retry from the top is safe.
+    if (isProgrammerError(err)) {
+      console.error("ingest_programmer_error", {
+        sourceId,
+        runId,
+        attempt,
+        errorCode: "programmer_error",
+        errorName: err instanceof Error ? err.name : typeof err,
+        message: message_,
+      });
+      try {
+        const client2 = createD1Client(env.DB);
+        const sourceRunId2 = await resolveSourceRun(client2, sourceId, runId, startedAt);
+        await recordSourceRunComplete(client2, sourceRunId2, {
+          completedAt: new Date().toISOString(),
+          status: "failed_final",
+          errorCode: "programmer_error",
+          errorMessageSafe: message_,
+          durationMs: Date.now() - startTime,
+        });
+        await markSourceFailure(client2, sourceId);
+      } catch (finalizeErr) {
+        console.error("ingest_finalize_failed", { sourceId, runId, message: errorMessage(finalizeErr) });
+      }
+      message.ack(); // not retryable -- retrying won't fix a code bug
+      return;
+    }
+
     console.error("ingest_failed", {
       sourceId,
       runId,
       attempt,
       errorCode: "uncaught",
-      message: (err as Error)?.message,
+      message: message_,
     });
 
     if (attempt >= MAX_RETRY_ATTEMPTS) {
@@ -397,17 +372,17 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
       // sufficient for v1, per ROADMAP.md Milestone D).
       try {
         const client2 = createD1Client(env.DB);
-        const sourceRunId2 = await resolveSourceRunId(client2, sourceId, runId, startedAt);
+        const sourceRunId2 = await resolveSourceRun(client2, sourceId, runId, startedAt);
         await recordSourceRunComplete(client2, sourceRunId2, {
           completedAt: new Date().toISOString(),
           status: "failed_final",
           errorCode: "retry_exhausted",
-          errorMessageSafe: (err as Error)?.message ?? "unknown error",
+          errorMessageSafe: message_,
           durationMs: Date.now() - startTime,
         });
         await markSourceFailure(client2, sourceId);
       } catch (finalizeErr) {
-        console.error("ingest_finalize_failed", { sourceId, runId, message: (finalizeErr as Error)?.message });
+        console.error("ingest_finalize_failed", { sourceId, runId, message: errorMessage(finalizeErr) });
       }
       message.ack(); // stop retrying; failure is recorded for review
       return;
@@ -418,37 +393,182 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
 }
 
 /**
- * Opens (attempt=1) or reuses (attempt>1) the source_runs row for this
- * runId, so retries of the same logical run share one row instead of
- * each attempt creating a new one -- keeps job_observations' (job_id,
- * source_run_id) idempotency key meaningful across retries.
- *
- * source_runs.id is the primary key; this reuses the queue message's own
- * runId as that primary key instead of generating a second id, so "same
- * runId" and "same source_runs row" are the same fact, checkable by a
- * single lookup on retry.
+ * One job's slice of the pipeline: upsert -> observation -> lifecycle
+ * transition -> classification -> signal generation. Extracted from
+ * handleIngestMessage's per-job loop (code-review P1 finding -- the
+ * original was a 359-line function; this is the largest single stage of
+ * it, worth naming and testing on its own). Returns 1 if a new signal
+ * was created for this job, 0 otherwise, so the caller can accumulate
+ * signalsCreated across the loop without this function needing to know
+ * about logging.
  */
-async function resolveSourceRunId(
+async function processNormalizedJob(
   client: ReturnType<typeof createD1Client>,
-  sourceId: string,
-  runId: string,
-  startedAt: string,
-): Promise<string> {
-  const existing = await client.first<{ id: string }>(
-    `SELECT id FROM source_runs WHERE source_id = ? AND id = ?`,
-    [sourceId, runId],
-  );
-  if (existing) return existing.id;
+  source: Pick<SourceRow, "id" | "company_id">,
+  sourceRunId: string,
+  job: NormalizedJob,
+  observedAt: string,
+): Promise<number> {
+  const contentHash = await computeContentHash({
+    title: job.title,
+    descriptionText: job.descriptionText ?? null,
+    department: job.department ?? null,
+    employmentType: job.employmentType ?? null,
+    locationRaw: job.locationRaw ?? null,
+  });
 
-  await client.run(
-    `INSERT INTO source_runs
-       (id, source_id, started_at, completed_at, status, http_status,
-        jobs_received, jobs_normalized, error_code, error_message_safe,
-        raw_payload_key, duration_ms)
-     VALUES (?, ?, ?, NULL, 'running', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
-    [runId, sourceId, startedAt],
-  );
-  return runId;
+  const existing = await getJobByExternalId(client, source.id, job.externalJobId);
+
+  const jobId = await upsertJob(client, {
+    sourceId: source.id,
+    companyId: source.company_id,
+    externalJobId: job.externalJobId,
+    canonicalUrl: job.canonicalUrl,
+    title: job.title,
+    titleNormalized: job.title.toLowerCase(),
+    descriptionText: job.descriptionText,
+    department: job.department,
+    employmentType: job.employmentType,
+    locationRaw: job.locationRaw,
+    locationMode: job.locationMode,
+    postedAt: job.postedAt,
+    sourceUpdatedAt: job.updatedAt,
+    contentHash,
+    observedAt,
+  });
+
+  await insertObservationIdempotent(client, {
+    jobId,
+    sourceRunId,
+    observedAt,
+    contentHash,
+    isPresent: true,
+  });
+
+  const lifecycle = computeLifecycleTransition({
+    currentState: existing?.status as "active" | "possibly_closed" | "closed" | undefined,
+    wasPresentThisRun: true,
+    consecutiveMissingRuns: existing?.missing_run_count ?? 0,
+    daysSinceLastSeen: 0,
+  });
+
+  await applyLifecycleTransition(client, jobId, {
+    status: lifecycle.nextState,
+    missingRunCount: lifecycle.nextConsecutiveMissingRuns,
+    lastSeenAt: observedAt,
+  });
+
+  if (lifecycle.candidateSignal !== "new_job" && lifecycle.candidateSignal !== "reopened_job") {
+    return 0;
+  }
+
+  const classification = classifyJob({
+    title: job.title,
+    department: job.department,
+    descriptionText: job.descriptionText,
+  });
+
+  await updateJobClassification(client, jobId, {
+    rolePrimary: classification.rolePrimary ?? null,
+    classificationConfidence: classification.confidence,
+    classificationVersion: classification.classificationVersion,
+  });
+
+  // Signal generation only for auto-classified jobs (spec §6.2 step 7:
+  // below-threshold jobs are still stored but not surfaced as signals
+  // yet -- classification_confidence < 0.80 means role assignment isn't
+  // trustworthy enough to drive a scored signal).
+  if (!classification.autoClassified || !classification.rolePrimary) {
+    return 0;
+  }
+
+  const daysSinceObservation = 0; // freshly observed this run
+  const scoreResult = computeNewJobScore({
+    daysSinceObservation,
+    classificationConfidence: classification.confidence,
+  });
+
+  const activeSignal = await findActiveSignal(client, {
+    companyId: source.company_id,
+    roleCategory: classification.rolePrimary,
+    signalType: lifecycle.candidateSignal,
+  });
+
+  let signalId: string;
+  let createdNewSignal = 0;
+  if (activeSignal) {
+    signalId = activeSignal.id;
+    await refreshSignal(client, signalId, {
+      score: scoreResult.score,
+      scoreVersion: scoreResult.formulaVersion,
+      lastDetectedAt: observedAt,
+    });
+  } else {
+    signalId = await createSignal(client, {
+      companyId: source.company_id,
+      roleCategory: classification.rolePrimary,
+      signalType: lifecycle.candidateSignal,
+      score: scoreResult.score,
+      scoreVersion: scoreResult.formulaVersion,
+      detectedAt: observedAt,
+      headline: buildHeadline(lifecycle.candidateSignal, job.title),
+      summary: buildSummary(lifecycle.candidateSignal, job.title),
+    });
+    createdNewSignal = 1;
+  }
+
+  await appendSignalEvidence(client, {
+    signalId,
+    jobId,
+    evidenceType: lifecycle.candidateSignal,
+    observedAt,
+    payload: scoreResult,
+  });
+
+  return createdNewSignal;
+}
+
+/**
+ * The absence complement: jobs previously active/possibly_closed for
+ * this source that were NOT seen this run -- lifecycle transition for
+ * absence (spec §5.4 rows 3-5), one round trip via getJobsMissingFromRun.
+ * Extracted from handleIngestMessage's second loop (code-review P1
+ * finding, same reasoning as processNormalizedJob above). Always returns
+ * 0 for signalsCreated -- an absence never creates a signal on its own,
+ * kept as a return value only so the caller's accumulation pattern
+ * (`signalsCreated += ...`) stays uniform between both stages.
+ */
+async function processMissingJobs(
+  client: ReturnType<typeof createD1Client>,
+  source: Pick<SourceRow, "id">,
+  sourceRunId: string,
+  seenExternalIds: string[],
+  observedAt: string,
+): Promise<number> {
+  const missingJobs = await getJobsMissingFromRun(client, source.id, seenExternalIds);
+  for (const missingJob of missingJobs) {
+    const daysSinceLastSeen = daysBetween(observedAt, missingJob.last_seen_at);
+    const lifecycle = computeLifecycleTransition({
+      currentState: missingJob.status as "active" | "possibly_closed" | "closed",
+      wasPresentThisRun: false,
+      consecutiveMissingRuns: missingJob.missing_run_count,
+      daysSinceLastSeen,
+    });
+
+    await applyLifecycleTransition(client, missingJob.id, {
+      status: lifecycle.nextState,
+      missingRunCount: lifecycle.nextConsecutiveMissingRuns,
+    });
+
+    await insertObservationIdempotent(client, {
+      jobId: missingJob.id,
+      sourceRunId,
+      observedAt,
+      contentHash: missingJob.content_hash,
+      isPresent: false,
+    });
+  }
+  return 0;
 }
 
 /**

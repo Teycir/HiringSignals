@@ -1,5 +1,6 @@
 import type { AtsProvider } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+import { isUniqueConstraintError } from "./internal/d1-errors";
 
 /**
  * Thrown when INSERT into `sources` violates the `UNIQUE(provider,
@@ -219,6 +220,45 @@ export async function recordSourceRunStart(
 }
 
 /**
+ * Opens (attempt=1) or reuses (attempt>1) a source_runs row keyed by the
+ * queue message's own `runId` as the row's primary key, so retries of
+ * the same logical run share one row instead of each attempt creating a
+ * new one via recordSourceRunStart's crypto.randomUUID() -- this keeps
+ * job_observations' UNIQUE(job_id, source_run_id) idempotency key
+ * (migration 0004) meaningful across retries (spec §13.3: "A retry for
+ * the same sourceId + runId must not create duplicate observations").
+ *
+ * Distinct from recordSourceRunStart above: that function always mints a
+ * fresh id for a genuinely new run; this one's whole purpose is "same
+ * runId in, same row out" across repeated calls. Previously inlined in
+ * the ingest consumer as resolveSourceRunId with its own raw SQL; moved
+ * here (ROADMAP.md P1 code-review finding) so the consumer goes through
+ * the repo layer like every other write in its pipeline.
+ */
+export async function resolveSourceRun(
+  client: D1Client,
+  sourceId: string,
+  runId: string,
+  startedAt: string,
+): Promise<string> {
+  const existing = await client.first<{ id: string }>(
+    `SELECT id FROM source_runs WHERE source_id = ? AND id = ?`,
+    [sourceId, runId],
+  );
+  if (existing) return existing.id;
+
+  await client.run(
+    `INSERT INTO source_runs
+       (id, source_id, started_at, completed_at, status, http_status,
+        jobs_received, jobs_normalized, error_code, error_message_safe,
+        raw_payload_key, duration_ms)
+     VALUES (?, ?, ?, NULL, 'running', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
+    [runId, sourceId, startedAt],
+  );
+  return runId;
+}
+
+/**
  * Max length for error_message_safe before truncation. Chosen to be
  * generous enough for a human-readable diagnostic while making it
  * structurally impossible to accidentally paste in a full raw response
@@ -328,13 +368,3 @@ export async function markSourceFailure(client: D1Client, sourceId: string): Pro
   );
 }
 
-/**
- * D1's error shape for a UNIQUE constraint violation isn't a typed class
- * -- it surfaces as an Error whose message contains SQLite's own text.
- * Match on that text rather than a driver-specific error code, since the
- * D1Client abstraction (lib/d1/client.ts) doesn't normalize error types
- * across the underlying driver.
- */
-function isUniqueConstraintError(err: unknown): boolean {
-  return err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
-}

@@ -35,7 +35,7 @@ export function errorHandler(err: unknown, c: Context) {
     );
   }
 
-  console.error("unhandled_error", { requestId, message: (err as Error)?.message });
+  console.error("unhandled_error", { requestId, message: err instanceof Error ? err.message : String(err) });
 
   return c.json(
     {

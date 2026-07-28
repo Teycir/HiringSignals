@@ -664,4 +664,51 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
     expect(retried).toEqual([true]);
     expect(acked).toEqual([]);
   });
+
+  it("programmer bug mid-pipeline (TypeError): fails fast, does NOT retry (code-review P1 fix)", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    normalizeImpl = vi.fn(() => {
+      // Simulates a typo/undefined-is-not-a-function class of bug, as
+      // opposed to the plain Error above which represents a genuinely
+      // transient failure (network blip, D1 hiccup) that's still worth
+      // retrying. Before the fix, both were retried identically up to
+      // MAX_RETRY_ATTEMPTS times, hammering the ATS endpoint 5x for a
+      // bug that retrying can never fix.
+      throw new TypeError("undefined is not a function");
+    });
+    const { message, acked, retried } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1, // well below MAX_RETRY_ATTEMPTS -- must still not retry
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    expect(acked).toEqual([true]);
+    expect(retried).toEqual([]); // the key assertion: no retry for a programmer error
+    expect(currentState.sourceRuns.get("run-1")?.status).toBe("failed_final");
+    expect(currentState.sourceRuns.get("run-1")?.error_code).toBe("programmer_error");
+  });
+
+  it("invalid provider string in the DB row: config error, not a crash or an unchecked cast (code-review P2 fix)", async () => {
+    currentState.sources.set("src-1", { ...makeSourceRow("src-1"), provider: "not-a-real-provider" });
+    const { message, acked, retried } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    expect(acked).toEqual([true]);
+    expect(retried).toEqual([]);
+    expect(currentState.sourceRuns.get("run-1")?.status).toBe("failed");
+    expect(fetchBoardImpl).not.toHaveBeenCalled();
+  });
 });

@@ -32,6 +32,53 @@ export interface JobRow {
 }
 
 /**
+ * Looks up an existing job's lifecycle-relevant fields by its natural key
+ * (source_id, external_job_id) -- used by the ingest consumer
+ * (ROADMAP.md Milestone D) to read the prior state (status,
+ * missing_run_count, first_seen_at) before upsertJob overwrites the
+ * observed fields, so the lifecycle transition (Milestone B) has
+ * something to transition *from*. Previously inlined as raw SQL in
+ * ingest-consumer.ts; moved here so a future column rename is caught by
+ * `pnpm --filter db typecheck`/test instead of silently breaking a query
+ * string that lives outside packages/db.
+ */
+export async function getJobByExternalId(
+  client: D1Client,
+  sourceId: string,
+  externalJobId: string,
+): Promise<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at"> | null> {
+  return client.first<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at">>(
+    `SELECT id, status, missing_run_count, first_seen_at FROM jobs WHERE source_id = ? AND external_job_id = ?`,
+    [sourceId, externalJobId],
+  );
+}
+
+export interface UpdateJobClassificationPatch {
+  rolePrimary: string | null;
+  classificationConfidence: number;
+  classificationVersion: string;
+}
+
+/**
+ * Writes the classifier's output (ROADMAP.md Milestone B's classifyJob())
+ * onto a job row. Separate from upsertJob and applyLifecycleTransition on
+ * purpose -- classification runs after both, as its own write, so this
+ * repo function doesn't need to know about the classifier itself, only
+ * the shape of its result. Previously inlined as raw SQL in
+ * ingest-consumer.ts (same reasoning as getJobByExternalId above).
+ */
+export async function updateJobClassification(
+  client: D1Client,
+  jobId: string,
+  patch: UpdateJobClassificationPatch,
+): Promise<void> {
+  await client.run(
+    `UPDATE jobs SET role_primary = ?, classification_confidence = ?, classification_version = ? WHERE id = ?`,
+    [patch.rolePrimary, patch.classificationConfidence, patch.classificationVersion, jobId],
+  );
+}
+
+/**
  * Input to upsertJob: the adapter's NormalizedJob plus the write-path
  * context (which source/company it belongs to, and the content hash
  * computed from the normalized fields per spec §5.3 "capture a

@@ -1,4 +1,5 @@
 import type { D1Client } from "./d1-client";
+import { isUniqueConstraintError } from "./internal/d1-errors";
 import { escapeLikePattern } from "../../../lib/d1/like-pattern";
 
 /**
@@ -195,13 +196,3 @@ function emptyToNull(value: string | undefined): string | null {
   return value === undefined || value === "" ? null : value;
 }
 
-/**
- * D1's error shape for a UNIQUE constraint violation isn't a typed class
- * -- it surfaces as an Error whose message contains SQLite's own text.
- * Same helper as sources-repo.ts's isUniqueConstraintError (not shared
- * between the two files since it's a two-line function and packages/db
- * has no shared-internals module yet -- not worth adding one for this).
- */
-function isUniqueConstraintError(err: unknown): boolean {
-  return err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
-}
