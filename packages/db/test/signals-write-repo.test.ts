@@ -4,7 +4,9 @@ import {
   appendSignalEvidence,
   createSignal,
   findActiveSignal,
+  listSignalsNeedingReconciliation,
   refreshSignal,
+  updateSignalScore,
 } from "../src/signals-write-repo";
 
 /**
@@ -126,6 +128,40 @@ describe("refreshSignal", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.sql).toContain("UPDATE signals SET score = ?, score_version = ?, last_detected_at = ?");
     expect(calls[0]?.params).toEqual([80, "v1", "2026-07-28T00:00:00Z", "sig-1"]);
+  });
+});
+
+describe("updateSignalScore", () => {
+  it("updates score fields without touching last_detected_at", async () => {
+    const { client, calls } = createFakeClient();
+    await updateSignalScore(client, "sig-1", {
+      score: 42,
+      scoreVersion: "v2",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.sql).toBe("UPDATE signals SET score = ?, score_version = ? WHERE id = ? AND status = 'active'");
+    expect(calls[0]?.params).toEqual([42, "v2", "sig-1"]);
+  });
+});
+
+describe("listSignalsNeedingReconciliation", () => {
+  it("queries stale active signals and derives classification confidence from matching active jobs", async () => {
+    const { client, calls } = createFakeClient();
+    await listSignalsNeedingReconciliation(client, {
+      staleBefore: "2026-07-28T06:00:00.000Z",
+      limit: 200,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("all");
+    expect(calls[0]?.sql).toContain("FROM signals s");
+    expect(calls[0]?.sql).toContain("LEFT JOIN jobs j");
+    expect(calls[0]?.sql).toContain("MAX(j.classification_confidence)");
+    expect(calls[0]?.sql).toContain("s.status = 'active'");
+    expect(calls[0]?.sql).toContain("s.last_detected_at < ?");
+    expect(calls[0]?.sql).toContain("NOT EXISTS");
+    expect(calls[0]?.sql).toContain("se.evidence_type = 'score_recomputed'");
+    expect(calls[0]?.sql).toContain("ORDER BY s.last_detected_at ASC, s.id ASC");
+    expect(calls[0]?.params).toEqual(["2026-07-28T06:00:00.000Z", "2026-07-28T06:00:00.000Z", 200]);
   });
 });
 

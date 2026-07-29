@@ -18,6 +18,18 @@ export interface SignalRowMinimal {
   last_detected_at: string;
 }
 
+export interface SignalReconciliationRow {
+  id: string;
+  company_id: string;
+  role_category: RoleCategory;
+  signal_type: SignalType;
+  score: number;
+  score_version: string;
+  first_detected_at: string;
+  last_detected_at: string;
+  classification_confidence: number;
+}
+
 /**
  * Signals older than this many days since their last evidence are no
  * longer treated as "the same ongoing signal" for dedup purposes, even
@@ -118,6 +130,79 @@ export async function refreshSignal(
   await client.run(
     `UPDATE signals SET score = ?, score_version = ?, last_detected_at = ? WHERE id = ?`,
     [input.score, input.scoreVersion, input.lastDetectedAt, signalId],
+  );
+}
+
+export interface UpdateSignalScoreInput {
+  score: number;
+  scoreVersion: string;
+}
+
+/**
+ * Reconciliation score update (ROADMAP.md H.5): refreshes the ranking
+ * fields without touching last_detected_at, because no new evidence from
+ * a source arrived. Mutating last_detected_at here would erase the very
+ * staleness signal that reconciliation is meant to expose.
+ */
+export async function updateSignalScore(
+  client: D1Client,
+  signalId: string,
+  input: UpdateSignalScoreInput,
+): Promise<{ changes: number }> {
+  return client.run(`UPDATE signals SET score = ?, score_version = ? WHERE id = ? AND status = 'active'`, [
+    input.score,
+    input.scoreVersion,
+    signalId,
+  ]);
+}
+
+/**
+ * Active signals whose most recent real evidence is older than the
+ * reconciliation threshold. The classification-confidence input for Q is
+ * derived from the best currently active/possibly_closed matching job for
+ * the same company+role; if none exists (e.g. all jobs closed after the
+ * signal was created), Q falls back to 0 so the recomputed score decays
+ * safely instead of preserving stale confidence from old evidence JSON.
+ *
+ * Excludes signals that already have a `score_recomputed` evidence row
+ * inside the same 24-hour reconciliation window. `last_detected_at` is
+ * intentionally not moved by reconciliation, so this recent-evidence guard
+ * is what makes cron retries/manual double-runs idempotent-ish instead of
+ * appending duplicate daily decay evidence for the same stale row.
+ */
+export async function listSignalsNeedingReconciliation(
+  client: D1Client,
+  params: { staleBefore: string; limit: number },
+): Promise<SignalReconciliationRow[]> {
+  return client.all<SignalReconciliationRow>(
+    `SELECT
+       s.id,
+       s.company_id,
+       s.role_category,
+       s.signal_type,
+       s.score,
+       s.score_version,
+       s.first_detected_at,
+       s.last_detected_at,
+       COALESCE(MAX(j.classification_confidence), 0) AS classification_confidence
+     FROM signals s
+     LEFT JOIN jobs j
+       ON j.company_id = s.company_id
+      AND j.role_primary = s.role_category
+      AND j.status IN ('active', 'possibly_closed')
+     WHERE s.status = 'active'
+       AND s.last_detected_at < ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM signal_evidence se
+         WHERE se.signal_id = s.id
+           AND se.evidence_type = 'score_recomputed'
+           AND se.observed_at >= ?
+       )
+     GROUP BY s.id
+     ORDER BY s.last_detected_at ASC, s.id ASC
+     LIMIT ?`,
+    [params.staleBefore, params.staleBefore, params.limit],
   );
 }
 

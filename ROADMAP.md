@@ -1174,8 +1174,49 @@ independent of H.1–H.4 and can land in any order relative to them.
     corresponding signal row was created with the right `signal_type`;
     `pnpm --filter @hiring-signals/api test`/`typecheck`.
 
-- [ ] **H.5 — Freshness anchor decision + reconciliation decay** (new,
+- [x] **H.5 — Freshness anchor decision + reconciliation decay** (new,
   spec §5.2, §7.2)
+  - **Status (2026-07-29): done.** The freshness-anchor decision was
+    codified without reverting the existing new-job scoring path:
+    `computeNewJobScore()` still uses the job posting/observation anchor
+    for detection-latency ranking, while the new
+    `computeReconciliationScore()` uses days-since-`last_detected_at`
+    for quiet active signals whose score needs to decay. Both share the
+    same v2 V/A/B/Q/P component functions and weighted combiner, so the
+    only behavioral difference is the caller-supplied freshness anchor.
+  - Repo support added in `packages/db/src/signals-write-repo.ts`:
+    `listSignalsNeedingReconciliation()` finds active signals older than
+    a caller-supplied threshold and derives the Q input from the best
+    current matching active/possibly-closed job; `updateSignalScore()`
+    updates only `score`/`score_version` and deliberately does **not**
+    touch `last_detected_at`, because reconciliation is not new source
+    evidence. Follow-up review tightened this further: the stale-signal
+    query excludes signals that already received `score_recomputed`
+    evidence inside the current 24-hour reconciliation window (so cron
+    retries/manual double-runs do not duplicate daily evidence), and the
+    score update is guarded with `status='active'` so a signal closed
+    after selection is skipped without appending misleading evidence.
+  - New orchestration in `apps/api/src/jobs/reconciliation.ts`: daily,
+    best-effort score recompute for stale active signals. It refetches
+    H.2 company-role activity stats at reconciliation time, computes the
+    H.5 score, writes the score-only update, and appends a
+    `score_recomputed` evidence row with the prior score/version,
+    stale-threshold, full score result, and inputs for recomputability.
+    Per-signal failures are logged and skipped rather than retried with
+    ingest-consumer-grade dead-letter handling; that lighter failure
+    model is documented in the file header as a deliberate v1 scope line.
+  - Cron wiring added in `apps/api/src/index.ts` and
+    `apps/api/wrangler.toml`: the existing `*/15 * * * *` trigger still
+    goes to the source scheduler, while a new daily `"0 6 * * *"` trigger
+    runs reconciliation. Neither cron path fetches ATS providers directly.
+  - Verified: domain signal-score tests now include
+    `computeReconciliationScore()` hand-computed cases (quiet 20-day
+    decay and very-stale 60-day/current-activity case) plus bounds and
+    anchor tests; db tests cover the stale-signal query and score-only
+    update SQL; api tests cover a stale signal being recomputed/evidence
+    appended and the no-stale-signal no-op path. `pnpm -r typecheck`,
+    `pnpm -r lint`, and `pnpm -r test` all clean (lint still reports only
+    the pre-existing api warnings unrelated to H.5; no errors).
   - Investigated whether the current `job.postedAt`-anchored freshness
     (see the README's "Post-D fixes" note — a deliberate prior change,
     not an oversight) is a bug against spec §7.2's literal wording
