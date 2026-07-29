@@ -111,6 +111,26 @@ function matchTextAgainstRules(
  *      independently from whichever channels actually matched it, then
  *      picking the top-scoring category and applying a discount when
  *      more than one distinct category was hit (channels disagreed).
+ *   5c. description-channel noise guard (bug fix, logic review H.1,
+ *      2026-07-29): title/department are structured, curated fields
+ *      describing the role's own identity; description is unstructured
+ *      prose that routinely mentions *other* roles the person will work
+ *      alongside ("you'll collaborate with our Security team"). Feeding
+ *      description into the same disagreement-penalty math as
+ *      title/department let one incidental phrase knock a correctly
+ *      classified job below AUTO_CLASSIFY_THRESHOLD -- e.g.
+ *      title="Software Engineer" + department="Software Engineer"
+ *      (0.7+0.2=0.9) with a description mentioning "our Security team"
+ *      discounted to 0.9*0.85=0.765, below 0.80, even though both
+ *      structured fields agreed. Fixed: description only contributes to
+ *      categoryScores when it either (a) confirms a category a
+ *      structured channel (title or department) already matched -- pure
+ *      confirmation, never a competing vote -- or (b) is the only
+ *      evidence available at all (title and department both matched
+ *      nothing, the pre-existing "last resort" path). A description
+ *      match that disagrees with an existing structured match is
+ *      dropped before scoring, not counted as a third vote. See
+ *      applyDescriptionGuard below.
  *   6. classificationVersion + confidence always returned (caller persists both)
  *   7. below-threshold results still return rolePrimary if any match was
  *      found (caller decides whether that's "review queue" material) --
@@ -137,9 +157,27 @@ export function classifyJob(input: ClassificationInput): ClassificationResult {
   // department/description when provided, always sum all three weighted
   // terms.
   const departmentMatch = input.department ? matchTextAgainstRules(normalizeTitle(input.department)) : undefined;
-  const descriptionMatch = input.descriptionText
+  const rawDescriptionMatch = input.descriptionText
     ? matchTextAgainstRules(normalizeTitle(input.descriptionText))
     : undefined;
+
+  // H.1 guard: description only counts as a scoring channel when it
+  // confirms a structured (title/department) match, or when title and
+  // department both matched nothing at all (last-resort path, spec 6.2
+  // step 5's "inspect ... when title confidence is low"). A description
+  // match that disagrees with an existing structured match is noise
+  // (see this function's header comment, step 5c) -- dropped here,
+  // before it ever reaches categoryScores, rather than counted as a
+  // competing vote and then discounted.
+  const structuredCategories = new Set<RoleCategory>();
+  if (titleMatch) structuredCategories.add(titleMatch.category);
+  if (departmentMatch) structuredCategories.add(departmentMatch.category);
+  const descriptionMatch =
+    rawDescriptionMatch === undefined
+      ? undefined
+      : structuredCategories.size === 0 || structuredCategories.has(rawDescriptionMatch.category)
+        ? rawDescriptionMatch
+        : undefined;
 
   // Score each *category* independently -- a channel only contributes
   // its weight to the category it actually matched, never to whichever
@@ -173,11 +211,20 @@ export function classifyJob(input: ClassificationInput): ClassificationResult {
   // point at the same category, the winning category's raw score
   // overstates how sure we actually are -- the channels are telling us
   // *different* things about this job, not reinforcing each other. A
-  // 2-way split (e.g. title says A, department+description say B, or
-  // vice versa) discounts by 15%; a full 3-way split (title, department,
-  // and description each landing on a different category) discounts by
-  // 30%. Full agreement (or only one channel matched at all) applies no
-  // discount.
+  // 2-way split (e.g. title says A, department says B) discounts by
+  // 15%; a full 3-way split discounts by 30%.
+  //
+  // Under the H.1 guard above, description can never be the *source* of
+  // a third distinct category -- it only ever scores into a category
+  // title or department already matched, or stands alone when neither
+  // matched anything (a single-channel case, no disagreement possible
+  // either way). So distinctCategoriesMatched maxes out at 2
+  // (title-vs-department) in practice today. The `>= 3` branch below
+  // stays in the code for defensiveness -- e.g. if a future change adds
+  // another structured channel -- but is dead code under the current
+  // two-structured-channel design. Noted explicitly so a future reader
+  // doesn't mistake it for untested/forgotten rather than deliberately
+  // unreachable.
   const distinctCategoriesMatched = categoryScores.size;
   const disagreementMultiplier = distinctCategoriesMatched <= 1 ? 1.0 : distinctCategoriesMatched === 2 ? 0.85 : 0.7;
 

@@ -854,6 +854,390 @@ preamble) — single-tenant, public, no login, ever.
 
 ---
 
+## Milestone H — Signal-quality logic pass
+
+Spec §6.2 (classification), §7.1 (signal types), §7.2 (scoring), §5.2
+(reconciliation cadence). Originated from a targeted logic-quality
+review of `packages/domain` (classification/lifecycle/signal-score) and
+`apps/api/src/jobs/ingest-consumer.ts`'s wiring, run against what's
+actually on disk (not the ROADMAP's own status notes) per AGENTS.md's
+"fix and verify" policy. Found four concrete, real gaps — all four
+confirmed in scope with the user before starting:
+
+1. `computeNewJobScore` fixes Volume/Acceleration/Breadth at a constant
+   0.5 (55% of the formula's weight) — a documented v1 stub, no query
+   exists yet to compute them for real.
+2. Four of six signal types (`hiring_burst`, `role_acceleration`,
+   `multi_location`, `persistent_demand`) are typed in `signal.ts` and
+   fully specced in §7.1 but nothing ever creates them.
+3. `classifyJob` feeds raw, unbounded description text into the same
+   phrase-matcher as title/department, so an incidental mention of an
+   adjacent role in the description body can suppress a signal for a
+   job that title/department correctly and specifically identified.
+4. The score's freshness term anchors on `job.postedAt` rather than
+   "days since the signal's most recent evidence observation" (spec's
+   literal wording) — investigated below; concluded this is *not* a bug
+   to revert, but does expose a real missing piece (reconciliation).
+
+Ordered by dependency: H.1 is self-contained. H.2 is the shared data
+layer H.3 and H.4 both need, so it lands before either. H.5 is
+independent of H.1–H.4 and can land in any order relative to them.
+
+- [x] **H.1 — Classification: description-channel noise fix**
+  (`packages/domain/src/classification.ts`, spec §6.2)
+  - **Status (2026-07-29): done.** Implemented exactly as planned below:
+    a `structuredCategories` set (populated from `titleMatch`/
+    `departmentMatch`) gates whether a description match is scored at
+    all -- dropped unless it confirms a category already in that set, or
+    the set is empty (title+department both matched nothing, the
+    pre-existing last-resort path). Header doc comment gained a new
+    step 5c explaining the guard; the disagreement-penalty comment was
+    updated to note the `>= 3` branch is now structurally dead code
+    under the two-structured-channel design (kept for defensiveness, not
+    forgotten -- noted explicitly per this item's own instruction).
+  - Test changes: the old "applies the full 3-way disagreement discount"
+    test's expected value updated from `0.7*0.7` to `0.7*0.85` with a
+    comment explaining why (title-vs-department is still a real 2-way
+    conflict; description's disagreement no longer compounds it). Two
+    new regression tests added for the worked examples: title+department
+    full agreement surviving a disagreeing description (crosses 0.80,
+    the exact failure mode this item exists to close) and a confirming
+    description still adding its weight when it agrees with the
+    structured match. One test-construction bug caught and fixed during
+    verification, not shipped: an initial version of the
+    confirming-description test used title-only + description
+    (0.70 + 0.10), which hits `0.7999999999999999` in IEEE 754 floating
+    point -- just under `AUTO_CLASSIFY_THRESHOLD`'s `0.8` -- so
+    `autoClassified` came back `false` on a case that should pass. Not a
+    bug in `classifyJob` itself; fixed by adding a department channel to
+    the test's example so it clears the threshold with real margin
+    (1.0 vs 0.8) instead of sitting exactly on a float boundary.
+  - Verified: `pnpm --filter @hiring-signals/domain test` green (41/41,
+    up from 39 -- 2 new tests, 0 dropped), `typecheck`/`lint` clean;
+    `pnpm -r typecheck` clean across all 5 workspace projects afterward.
+  - Problem, precisely: title/department are "structured" channels — the
+    curated fields that describe the role's own identity. Description is
+    unstructured prose and routinely mentions *other* roles the person
+    will work alongside ("you'll collaborate with our Security team",
+    "reporting to the VP of Data"). The existing disagreement-penalty
+    logic (2026-07-28's L1 fix) treats a description-only disagreement
+    as equal evidence to title/department, so it can knock a correctly
+    classified job below `AUTO_CLASSIFY_THRESHOLD` purely on an
+    incidental phrase. Worked example: title="Software Engineer" +
+    department="Software Engineer" (0.7+0.2=0.9) with a description
+    mentioning "our Security team" currently discounts to
+    `0.9*0.85=0.765` — below the 0.80 threshold — even though two
+    structured fields fully agree.
+  - Fix: description only contributes to `categoryScores` when it (a)
+    confirms a category title or department already matched (pure
+    confirmation, no penalty), or (b) is the *only* evidence available
+    (title and department both matched nothing — the existing "last
+    resort" path, already covered by
+    `classification.test.ts`'s "department + description match without
+    a title match" case). A description-only disagreement with an
+    existing structured match is dropped, not counted as a competing
+    vote.
+  - Side effect to account for in tests: under this fix, description can
+    never be the *source* of a third distinct category — the maximum
+    `distinctCategoriesMatched` becomes 2 (title vs. department), so a
+    genuine 3-way disagreement is structurally unreachable. The existing
+    `distinctCategoriesMatched >= 3` branch (0.7 multiplier) stays in
+    the code for defensiveness (e.g. if a future change adds another
+    structured channel) but becomes dead code under the current
+    2-structured-channel design — note this explicitly in a code comment
+    so a future reader doesn't mistake it for untested/forgotten code.
+  - Test changes needed: the existing "applies the full 3-way
+    disagreement discount" test's expected value changes from `0.7*0.7`
+    to `0.7*0.85` (department still disagrees with title — a real
+    structured-channel conflict — but description's *additional*
+    disagreement no longer compounds it) — update the test's comment to
+    explain why, don't just silently change the assertion. Add a new
+    regression test for the worked example above (title+department
+    agreement surviving a disagreeing description, crossing 0.80).
+  - Verify: `pnpm --filter @hiring-signals/domain test`/`typecheck`/`lint`.
+
+- [x] **H.2 — Shared company-role activity stats query** (new file,
+  `packages/db/src/company-role-stats-repo.ts`)
+  - **Status (2026-07-29): done.** `getCompanyRoleActivityStats()`
+    implemented exactly as specced below, returning
+    `activeMatchingCount`/`newInLast14Days`/`newInPrior56Days`/
+    `distinctLocationCount` in one round trip via conditional
+    aggregation, `now` passed explicitly by the caller (not
+    `datetime('now')`) for determinism/testability. Registered in
+    `packages/db/src/index.ts`.
+  - Index check done for real, not assumed: built a scratch SQLite DB
+    from the actual migrations 0001-0004 + `seed-local-d1.sql`, ran
+    `EXPLAIN QUERY PLAN` against the exact query. Confirmed
+    `SEARCH jobs USING INDEX idx_jobs_filters (company_id=? AND
+    role_primary=?)` — no table scan. Migration 0001's existing index
+    already covers the WHERE clause; the windowed `first_seen_at` sums
+    are computed from the already-narrowed row set, so no new
+    `(company_id, role_primary, first_seen_at)` index was needed (this
+    item's own conditional — "if it's doing a scan" — wasn't met).
+  - Verified: `packages/db/test/company-role-stats-repo.test.ts` (4
+    tests: exact SQL/param shape, empty-result case returning zeros not
+    null/throw, real-aggregation case, explicit-zero-SUM case) —
+    17/17 green in `packages/db`. `pnpm --filter @hiring-signals/db
+    typecheck`/`lint` clean; `pnpm -r typecheck` clean workspace-wide.
+  - Foundation for H.3 and H.4 — both need "how much matching activity
+    does this company+role have right now," so compute it once, in one
+    query, rather than duplicating similar SQL in the scoring path and
+    the signal-generation path.
+  - `getCompanyRoleActivityStats(client, { companyId, roleCategory, now })`
+    returns:
+    - `activeMatchingCount`: count of `status IN ('active',
+      'possibly_closed')` jobs for `(company_id, role_primary)` — V input.
+    - `newInLast14Days` / `newInPrior56Days`: counts of jobs whose
+      `first_seen_at` falls in the most-recent-14-days window / the
+      56-day window immediately preceding it, for the same
+      `(company_id, role_primary)` — A input, matches spec §7.2's
+      literal $N_{14}$/$N_{56}$ windows exactly. Anchored on
+      `first_seen_at` (our own first-observation timestamp), not
+      `posted_at` — this is specifically counting "new matching role"
+      *detection* events, which is what `first_seen_at` represents by
+      construction (see `computeLifecycleTransition`'s `new_job`
+      branch); `posted_at` is a different concept (see H.5) and using
+      it here would double up two already-distinct things under one
+      anchor.
+    - `distinctLocationCount`: count of distinct
+      `(country_code, region_code, city, location_mode)` tuples among
+      currently-active matching jobs for the pair — B input, and also
+      the exact quantity `multi_location`'s trigger threshold (H.4)
+      checks.
+  - Index check: `idx_jobs_filters (company_id, role_primary, status,
+    last_seen_at DESC)` (migration 0001) covers the
+    `activeMatchingCount`/location query's WHERE clause but not
+    `first_seen_at`, which the two windowed counts filter and sort on.
+    Don't assume the existing index is enough — run `EXPLAIN QUERY PLAN`
+    against seeded data once this is implemented (same verification
+    discipline Milestone A.1 already established for `idx_source_due`),
+    and add a migration for
+    `(company_id, role_primary, first_seen_at)` if it's doing a scan.
+  - Verify: `packages/db/src/test/company-role-stats-repo.test.ts` using
+    the fake-`D1Client` double pattern (`signals-write-repo.test.ts`) —
+    exact SQL/param shape for all three fields, plus the empty-result
+    case (no jobs yet for a company+role, all three fields must return
+    0, not throw or return null); `pnpm --filter @hiring-signals/db
+    typecheck`/`lint`/`test`.
+
+- [x] **H.3 — Real V/A/B scoring** (`packages/domain/src/signal-score.ts`,
+  spec §7.2)
+  - **Status (2026-07-29): done.** `computeVolume`/`computeAcceleration`/
+    `computeBreadth` implemented exactly per the formulas below (shared
+    `clamp` helper extracted). `SCORE_FORMULA_VERSION` bumped `"v1"` ->
+    `"v2"`. `computeNewJobScore`'s input interface extended with H.2's
+    four stats fields, stays a pure function.
+  - Wired into `ingest-consumer.ts`'s `processNormalizedJob`: calls
+    `getCompanyRoleActivityStats` (H.2) right after classification
+    succeeds, using the just-classified `companyId`/`roleCategory`,
+    before `computeNewJobScore`. Comment notes H.4 will reuse this same
+    call rather than fetching twice.
+  - Test changes: `signal-score.test.ts` fully rewritten -- isolated
+    hand-computed tests per new function (`computeVolume`,
+    `computeAcceleration`, `computeBreadth`, including saturation/floor
+    edge cases), plus `computeNewJobScore` cases with realistic non-0.5
+    inputs, plus an explicit test proving V/A/B now vary with input
+    (disproving the old fixed-constant behavior). All hand-computed
+    arithmetic correct on first run -- no bugs found.
+  - `ingest-consumer.test.ts`'s fake D1 client gained a real routing
+    branch for H.2's query (previously fell through to `null` -> silent
+    all-zeros via the repo's null-coalescing, which would have made the
+    happy-path test pass without ever exercising real V/A/B). Caught and
+    fixed per this repo's own "verify for real" discipline rather than
+    left as a silent gap; one `no-useless-assignment` lint error this
+    introduced was also fixed.
+  - Verified: `pnpm --filter @hiring-signals/domain test` 52/52 (up from
+    41 -- signal-score.test.ts went from 9 to 20 tests), `typecheck`/
+    `lint` clean. `pnpm --filter @hiring-signals/api typecheck` clean,
+    `lint` clean (0 errors, only pre-existing warnings already noted
+    elsewhere in this file), `test` 18/18. `pnpm -r typecheck` clean
+    across all 5 workspace projects; `pnpm -r test` 117/117 passing
+    workspace-wide (domain 52, db 17, adapters 30, api 18).
+  - Replaces the `V1_NEUTRAL_COMPONENT = 0.5` stub. Three new pure
+    functions, each independently unit-testable without D1 (same
+    reasoning as `computeFreshness`):
+    - `computeVolume(activeMatchingCount)`: `clamp(activeMatchingCount / 5,
+      0, 1)`. No spec formula given for V; 5 is a documented v1 choice
+      (not derived from a spec threshold the way B is) — revisit once
+      real ingestion volume shows what a "high" active count actually
+      looks like in practice.
+    - `computeAcceleration(n14, n56)`: spec §7.2's exact formula,
+      `clamp((n14 - n56/4) / max(2, n56/4), 0, 1)`.
+    - `computeBreadth(distinctLocationCount)`: `clamp(distinctLocationCount
+      / 3, 0, 1)` — 3 is not arbitrary here, it's the same threshold
+      spec §7.1 uses to define the `multi_location` signal type itself,
+      so the score's B component and the signal-type trigger (H.4) stay
+      conceptually aligned instead of using two unrelated numbers for
+      "notable location breadth."
+  - `computeNewJobScore`'s input interface changes from
+    `{ daysSinceObservation, classificationConfidence }` to also accept
+    `{ activeMatchingCount, newInLast14Days, newInPrior56Days,
+    distinctLocationCount }` (H.2's output shape) — stays a pure
+    function; the caller (ingest-consumer) is responsible for fetching
+    H.2's stats before calling it, same D1-free-domain-logic pattern as
+    the rest of this package.
+  - **Bump `SCORE_FORMULA_VERSION` from `"v1"` to `"v2"`** — spec §7.2:
+    "Scores must be recomputable from persisted observations," which
+    requires being able to tell a v1-computed score (fixed 0.5 V/A/B)
+    apart from a v2-computed one (real counts) when reading
+    `signal_evidence` later.
+  - Wire into `apps/api/src/jobs/ingest-consumer.ts`'s
+    `processNormalizedJob`: call H.2's `getCompanyRoleActivityStats`
+    after classification succeeds, before `computeNewJobScore`.
+  - Test changes needed: `signal-score.test.ts`'s existing
+    hand-computed cases all assert `components.volume/acceleration/
+    breadth === 0.5` — every one needs updating to pass real counts and
+    hand-computed expected values instead. Keep at least one hand-worked
+    case per new function (`computeVolume`, `computeAcceleration`,
+    `computeBreadth`) in isolation, plus one combined
+    `computeNewJobScore` case with realistic counts.
+  - Verify: `pnpm --filter @hiring-signals/domain test`/`typecheck`,
+    `pnpm --filter @hiring-signals/api typecheck` (ingest-consumer call
+    site), `pnpm -r typecheck` after both.
+
+- [x] **H.4 — Company-level signal generation** (`hiring_burst`,
+  `role_acceleration`, `multi_location`, `persistent_demand` — spec
+  §7.1, §1.4)
+  - **Status (2026-07-29): done.** New `generateCompanySignals()` in
+    `ingest-consumer.ts`, called from `processNormalizedJob` right after
+    the primary `new_job`/`reopened_job` signal's evidence append.
+    Reuses H.2's `activityStats` and H.3's already-computed
+    `scoreResult.components.acceleration` -- no extra D1 round trip for
+    the trigger checks themselves. `buildHeadline`/`buildSummary`
+    widened from `"new_job" | "reopened_job"` to the full `SignalType`
+    union with a real case per new type. Dedup/refresh reused
+    `findActiveSignal`/`createSignal`/`refreshSignal`/
+    `appendSignalEvidence` unchanged, confirmed generic across
+    `signalType` by reading the actual repo file before writing any code
+    -- no `packages/db` changes needed, exactly as this item predicted.
+  - **Real bug caught and fixed during implementation, not shipped:**
+    the originally proposed `role_acceleration` cutoff (`>= 0.5`, this
+    item's own suggested value) turned out to be a false-positive trap,
+    caught by running the pre-existing test suite (3 failures, not
+    assumed passing) rather than only the new tests. `computeAcceleration`'s
+    `max(2, priorRate)` floor means a *single* newly observed job with
+    zero prior 56-day history scores exactly `0.5` by construction
+    (`(1-0)/max(2,0) = 0.5`) -- so every brand-new company+role pair's
+    very first tracked job would spuriously read as "accelerating" under
+    the proposed threshold. Fixed by raising the cutoff to `0.75`
+    (documented inline with the exact arithmetic) rather than loosening
+    any test; two new jobs in one run (`(2-0)/max(2,0) = 1.0`) still
+    correctly clears it.
+  - `persistent_demand`'s day-count is anchored on the primary signal's
+    `first_detected_at` (existing row's value when refreshing, or
+    `observedAt` itself -- 0 days old -- on a brand-new signal), per this
+    item's own "not `lastDetectedAt`" instruction.
+  - Verified: 5 new tests added to `ingest-consumer.test.ts`'s new
+    "H.4 company-level signal generation" describe block -- one per
+    threshold crossing (`hiring_burst` via 3 jobs in one run,
+    `multi_location` via 3 distinct `locationMode`s, `role_acceleration`
+    both the negative cold-start regression case and the positive
+    2-job-saturates-to-1.0 case, `persistent_demand` via a backdated
+    `first_detected_at` across two runs) -- each asserts the
+    corresponding `signal_type` row actually appears. All 5 passed on
+    first run. `pnpm --filter @hiring-signals/api typecheck` clean,
+    `lint` clean (0 errors, same 4 pre-existing warnings noted
+    elsewhere), `test` 23/23 (up from 18). `pnpm -r typecheck` clean
+    across all 5 workspace projects; `pnpm -r test` 122/122 passing
+    workspace-wide (domain 52, db 17, adapters 30, api 23).
+  - Currently 0% implemented — `signal.ts` types all six signal types
+    but only `new_job`/`reopened_job` are ever passed to `createSignal`.
+    These four are company-level/secondary context per spec §1.4, but
+    "not primary" isn't "not built" — the spec fully defines their
+    triggers and none of them exist.
+  - Using H.2's stats (already fetched once per job for H.3's scoring —
+    reuse the same call, don't fetch twice), after a `new_job`/
+    `reopened_job` event's own signal is created/refreshed, additionally
+    check:
+    - `hiring_burst`: `newInLast14Days >= 3` (spec's literal threshold,
+      §7.1's trigger table).
+    - `multi_location`: `distinctLocationCount >= 3` (spec's literal
+      threshold, same table).
+    - `role_acceleration`: H.3's computed `acceleration` component
+      exceeds a "material" cutoff — propose `>= 0.5` (documented v1
+      choice, not spec-derived, same caveat as `computeVolume`'s 5).
+    - `persistent_demand`: the company+role's active `new_job` signal
+      (already in scope from `findActiveSignal` in H.3's flow) has had
+      `first_detected_at` continuously active for `>= 30` days (spec's
+      literal threshold) — check against `now - firstDetectedAt`, not
+      `lastDetectedAt`, since "persistent" means it's stayed active
+      throughout, which `first_detected_at` anchors.
+  - Each needs its own `buildHeadline`/`buildSummary` case in
+    `ingest-consumer.ts` (currently only handles `"new_job" |
+    "reopened_job"` — widen the type union and switch).
+  - Dedup/refresh reuses `findActiveSignal`/`createSignal`/
+    `refreshSignal` (`packages/db/src/signals-write-repo.ts`) as-is —
+    already generic across `signalType`, no repo changes needed beyond
+    what H.2/H.3 add.
+  - Verify: extend `ingest-consumer.test.ts`'s fixture data so at least
+    one test case crosses each of the four thresholds and asserts the
+    corresponding signal row was created with the right `signal_type`;
+    `pnpm --filter @hiring-signals/api test`/`typecheck`.
+
+- [ ] **H.5 — Freshness anchor decision + reconciliation decay** (new,
+  spec §5.2, §7.2)
+  - Investigated whether the current `job.postedAt`-anchored freshness
+    (see the README's "Post-D fixes" note — a deliberate prior change,
+    not an oversight) is a bug against spec §7.2's literal wording
+    ("days since the signal's most recent evidence observation").
+    **Conclusion: it is not a bug, don't revert it.** It directly
+    reflects the product's own stated optimization target (spec §1.1:
+    detection latency — how soon after posting a match appears). Anchoring
+    on evidence-observation-time alone at creation time would make `d`
+    always ≈0 at the moment a signal is scored (since evidence is always
+    written "now"), making `R` constant at 1.0 for every signal with no
+    mechanism to ever differentiate or decay it — strictly worse than
+    what exists today.
+  - **The real gap**: nothing ever recomputes a signal's score after
+    creation unless a *new* job event (new_job/reopened_job/job_updated)
+    refreshes it. A signal that goes quiet — no new evidence for weeks —
+    keeps displaying its creation-time score forever, so a
+    `score_desc`-sorted feed never reflects a signal actually going
+    stale. This is where "days since most recent evidence observation"
+    *is* the correct read of spec §7.2 — for an unrefreshed signal,
+    `last_detected_at` genuinely is its most recent evidence observation.
+  - Plan:
+    - New pure function, `packages/domain/src/signal-score.ts`:
+      recomputes a score using the same formula/weights as
+      `computeNewJobScore`, but with freshness anchored on
+      days-since-`lastDetectedAt` instead of days-since-`postedAt`.
+      Reuse `computeFreshness`/`computeVolume`/`computeAcceleration`/
+      `computeBreadth` from H.3 rather than duplicating them.
+    - New repo query, `packages/db`: active signals whose
+      `last_detected_at` is older than a threshold — propose 24h,
+      matching the daily cadence spec §5.2 already establishes for job
+      reconciliation (reuse the same cadence concept rather than
+      inventing a new one).
+    - New orchestration file, `apps/api/src/jobs/reconciliation.ts`: for
+      each stale active signal, re-fetch H.2's company-role stats *fresh*
+      (not frozen at creation time — this is a real improvement, not
+      just a freshness recompute: V/A/B become current, not stale), 
+      recompute the score, `refreshSignal` (score/scoreVersion only —
+      deliberately NOT `lastDetectedAt`, since no new evidence arrived),
+      append a `score_recomputed` evidence row (spec §7.2's
+      recomputability requirement).
+    - New cron trigger in `apps/api/wrangler.toml` (daily, e.g.
+      `"0 6 * * *"` — within the free-tier's 3-per-Worker cron limit,
+      spec §5.2's table), branch on `event.cron` in
+      `apps/api/src/index.ts`'s `scheduled` handler between the existing
+      15-min ingest scheduler and this new daily reconciliation handler.
+  - **Scope note**: deliberately scoped down from full production
+    hardening. Log-and-continue per signal on failure, not the
+    ingest-consumer's full retry/backoff/dead-letter machinery (spec
+    §13.4) — that level of hardening for a brand-new pipeline stage is
+    Milestone G territory, not this "logic layer" pass. State this
+    explicitly in the file's header comment so it reads as a deliberate
+    v1 scope line, not an oversight.
+  - Verify: unit tests for the reconciliation score function (hand-
+    computed, at least 2 cases) in `packages/domain`; a repo test for
+    the staleness query (fake-`D1Client` pattern); an integration-style
+    test for `reconciliation.ts` itself (same in-memory `D1Client` fake
+    style as `ingest-consumer.test.ts`) asserting a stale signal's score
+    changes and a fresh one's doesn't; `pnpm -r typecheck`/`lint`/`test`
+    clean across the whole workspace after this lands.
+
+---
+
 ## Open questions to resolve before Milestone D is "done" (not blocking earlier milestones)
 
 Carried over from spec §22 ("Open decisions to resolve before

@@ -63,6 +63,39 @@ function makeFakeClient(state: FakeState) {
         const key = `${params[0]}::${params[1]}::${params[2]}`;
         return (state.signals.get(key) as T) ?? null;
       }
+      // H.3: getCompanyRoleActivityStats (packages/db/src/company-role-stats-repo.ts).
+      // Disambiguated from getJobsMissingFromRun's similar "status IN
+      // ('active', 'possibly_closed')" substring by SUM(CASE, which only
+      // this single-row conditional-aggregation query uses. Real
+      // (non-zero) counts here matter: without this branch the fake
+      // falls through to `return null`, and the repo's null-coalescing
+      // (`row?.x ?? 0`) would silently return all zeros -- the happy-path
+      // test would then never actually exercise real V/A/B computation,
+      // just quietly re-test the old v1 zero-equivalent path under a v2
+      // label. Counts derived from state.jobsById to reflect whatever
+      // the test's own fixtures have set up by this point in the run.
+      if (sql.includes("SUM(CASE WHEN status IN")) {
+        const companyId = params[params.length - 2] as string;
+        const roleCategory = params[params.length - 1] as string;
+        let activeMatchingCount = 0;
+        const locations = new Set<string>();
+        for (const row of state.jobsById.values()) {
+          if (row.company_id !== companyId || row.role_primary !== roleCategory) continue;
+          if (row.status === "active" || row.status === "possibly_closed") {
+            activeMatchingCount++;
+            locations.add(
+              `${row.country_code}::${row.region_code}::${row.city}::${row.location_mode}`,
+            );
+          }
+        }
+        const distinctLocationCount = locations.size;
+        return {
+          active_matching_count: activeMatchingCount,
+          new_in_last_14_days: activeMatchingCount, // fixtures are freshly created within the window
+          new_in_prior_56_days: 0,
+          distinct_location_count: distinctLocationCount,
+        } as T;
+      }
       return null;
     },
 
@@ -845,5 +878,151 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
     expect(retried).toEqual([]);
     expect(currentState.sourceRuns.get("run-1")?.status).toBe("failed");
     expect(fetchBoardImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)", () => {
+  it("hiring_burst: 3 new jobs for the same (company, role) in one run triggers a hiring_burst signal", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    normalizeImpl = vi.fn(() => [
+      makeNormalizedJob("job-ext-1"),
+      makeNormalizedJob("job-ext-2"),
+      makeNormalizedJob("job-ext-3"),
+    ]);
+    const { message, acked } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    expect(acked).toEqual([true]);
+    const signalTypes = [...currentState.signalsById.values()].map((s) => s.signal_type);
+    // new_job fires once per distinct job (each is its own external_job_id,
+    // so each is independently a "new_job" candidate); hiring_burst is a
+    // company-level signal, deduped once findActiveSignal matches on the
+    // 3rd job's stats crossing the >=3 threshold.
+    expect(signalTypes).toContain("new_job");
+    expect(signalTypes).toContain("hiring_burst");
+    expect(signalTypes.filter((t) => t === "hiring_burst")).toHaveLength(1);
+  });
+
+  it("multi_location: 3 distinct location_modes for the same (company, role) triggers a multi_location signal", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    normalizeImpl = vi.fn(() => [
+      { ...makeNormalizedJob("job-ext-1"), locationMode: "remote" as const },
+      { ...makeNormalizedJob("job-ext-2"), locationMode: "hybrid" as const },
+      { ...makeNormalizedJob("job-ext-3"), locationMode: "onsite" as const },
+    ]);
+    const { message, acked } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    expect(acked).toEqual([true]);
+    const signalTypes = [...currentState.signalsById.values()].map((s) => s.signal_type);
+    expect(signalTypes).toContain("multi_location");
+    expect(signalTypes.filter((t) => t === "multi_location")).toHaveLength(1);
+  });
+
+  it("role_acceleration: does NOT trigger on a single job's cold-start acceleration value (regression: false-positive fix)", async () => {
+    // computeAcceleration(1, 0) = (1-0)/max(2,0) = 0.5 exactly -- below
+    // ROLE_ACCELERATION_MIN_COMPONENT (0.75), so a lone new job must not
+    // spuriously read as "accelerating." This is the exact bug caught
+    // and fixed during H.4 implementation (threshold raised 0.5 -> 0.75).
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    normalizeImpl = vi.fn(() => [makeNormalizedJob("job-ext-1")]);
+    const { message } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    const signalTypes = [...currentState.signalsById.values()].map((s) => s.signal_type);
+    expect(signalTypes).not.toContain("role_acceleration");
+    expect(currentState.signalsById.size).toBe(1); // only the primary new_job signal
+  });
+
+  it("role_acceleration: 2 new jobs for the same (company, role) in one run saturates acceleration to 1.0 and triggers", async () => {
+    // computeAcceleration(2, 0) = (2-0)/max(2,0) = 1.0 -- clears the 0.75
+    // threshold. Verifies the trigger path actually fires, not just that
+    // it correctly stays silent (previous test).
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    normalizeImpl = vi.fn(() => [makeNormalizedJob("job-ext-1"), makeNormalizedJob("job-ext-2")]);
+    const { message } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    const signalTypes = [...currentState.signalsById.values()].map((s) => s.signal_type);
+    expect(signalTypes).toContain("role_acceleration");
+  });
+
+  it("persistent_demand: an active new_job signal continuously active >=30 days triggers persistent_demand on the next detection", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    normalizeImpl = vi.fn(() => [makeNormalizedJob("job-ext-1")]);
+
+    // Run 1: creates the primary new_job signal, first_detected_at = now.
+    await handleIngestMessage(
+      makeMessage({
+        version: 1,
+        sourceId: "src-1",
+        runId: "run-1",
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+      }).message,
+      makeFakeEnv().env,
+    );
+    const primarySignal = [...currentState.signalsById.values()].find((s) => s.signal_type === "new_job")!;
+    expect(primarySignal).toBeDefined();
+
+    // Backdate first_detected_at by 31 days to simulate the signal having
+    // stayed continuously active -- daysBetween(observedAt, first_detected_at)
+    // must clear PERSISTENT_DEMAND_MIN_DAYS_ACTIVE (30) on the next run.
+    const thirtyOneDaysAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    primarySignal.first_detected_at = thirtyOneDaysAgo;
+    primarySignal.last_detected_at = thirtyOneDaysAgo;
+
+    // Run 2: a content edit on the same job re-enters processNormalizedJob's
+    // classification/signal path only if it's still a new_job/reopened_job
+    // lifecycle candidate -- re-use a genuinely new external job id instead
+    // so the lifecycle candidateSignal is "new_job" again, keeping this test
+    // focused on the persistent_demand threshold rather than lifecycle edge
+    // cases already covered elsewhere.
+    normalizeImpl = vi.fn(() => [makeNormalizedJob("job-ext-2")]);
+    await handleIngestMessage(
+      makeMessage({
+        version: 1,
+        sourceId: "src-1",
+        runId: "run-2",
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+      }).message,
+      makeFakeEnv().env,
+    );
+
+    const signalTypes = [...currentState.signalsById.values()].map((s) => s.signal_type);
+    expect(signalTypes).toContain("persistent_demand");
   });
 });

@@ -147,19 +147,72 @@ describe("classifyJob", () => {
       expect(result.confidence).toBeCloseTo(0.3, 5);
     });
 
-    it("applies the full 3-way disagreement discount when title, department, and description each match a different category", () => {
+    it("H.1 fix: a disagreeing description no longer compounds a title/department disagreement into the 3-way discount", () => {
       // Title: software engineering (0.70). Department: cybersecurity
-      // (0.20). Description: data engineering (0.10). Three distinct
-      // categories matched -- the 30% 3-way discount applies to
-      // whichever category wins (title's, since it carries the most
-      // weight at 0.70 pre-discount).
+      // (0.20) -- a real structured-channel conflict, still discounted
+      // 15% as a 2-way split. Description: data engineering -- disagrees
+      // with BOTH structured channels, so under the H.1 guard it's
+      // dropped entirely (neither confirms an existing structured match
+      // nor is it the only evidence available) rather than counted as a
+      // third vote. Before the H.1 fix this was a genuine 3-way split
+      // (0.7*0.7=0.49); after the fix it's the same 2-way split as
+      // title-vs-department alone (0.7*0.85=0.595) -- description's
+      // disagreement no longer makes things worse.
       const result = classifyJob({
         title: "Software Engineer",
         department: "Security Analyst",
         descriptionText: "You will own our ETL pipelines end to end.",
       });
       expect(result.rolePrimary).toBe("software_engineering");
-      expect(result.confidence).toBeCloseTo(0.7 * 0.7, 5);
+      expect(result.confidence).toBeCloseTo(0.7 * 0.85, 5);
+    });
+
+    it("H.1 fix: description-only disagreement does not pull a fully-agreeing title+department below AUTO_CLASSIFY_THRESHOLD", () => {
+      // Worked example from ROADMAP.md Milestone H.1: title="Software
+      // Engineer" + department="Software Engineer" agree fully
+      // (0.7+0.2=0.9, structuredCategories={software_engineering}).
+      // Description mentions "our Security team", matching cybersecurity
+      // -- but cybersecurity isn't in structuredCategories and
+      // structuredCategories isn't empty, so under the H.1 guard this
+      // description match is dropped before scoring, not counted as a
+      // competing vote. Before the fix this discounted 0.9 by the 2-way
+      // multiplier (0.9*0.85=0.765), landing BELOW the 0.80 threshold
+      // despite both structured fields agreeing -- exactly the failure
+      // mode H.1 exists to close.
+      const result = classifyJob({
+        title: "Software Engineer",
+        department: "Software Engineer",
+        descriptionText: "You'll work closely with our Security team on access reviews.",
+      });
+      expect(result.rolePrimary).toBe("software_engineering");
+      expect(result.confidence).toBeCloseTo(0.9, 5);
+      expect(result.autoClassified).toBe(true);
+    });
+
+    it("H.1 fix: a description match confirming the winning structured category still adds its weight", () => {
+      // Title matches cybersecurity (0.70), department also matches
+      // cybersecurity (0.20) -- both structured channels already agree.
+      // Description also matches cybersecurity, confirming the
+      // structured match, so it still contributes its full weight (case
+      // (a) in the H.1 guard: confirmation is never dropped).
+      // 0.70 + 0.20 + 0.10 = 1.0, single category matched -> no
+      // disagreement discount. (A title-only + confirming-description
+      // variant of this case would sum to 0.70 + 0.10 = 0.7999999999999999
+      // in floating point -- just under AUTO_CLASSIFY_THRESHOLD's 0.8 --
+      // so this test adds the department channel too, both to give the
+      // worked example real margin over the threshold and because a
+      // title-only + description-confirms case wouldn't actually
+      // auto-classify regardless of the H.1 fix, since 0.70 alone is
+      // already below 0.80 before description's confirmation is even
+      // considered.)
+      const result = classifyJob({
+        title: "Security Engineer",
+        department: "Security Analyst",
+        descriptionText: "You will work as a security analyst on our SOC team.",
+      });
+      expect(result.rolePrimary).toBe("cybersecurity");
+      expect(result.confidence).toBeCloseTo(1.0, 5);
+      expect(result.autoClassified).toBe(true);
     });
 
     it("full agreement across all three channels still reaches 1.0 with no discount (no regression)", () => {

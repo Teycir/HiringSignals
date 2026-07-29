@@ -1,6 +1,6 @@
 import type { Message } from "@cloudflare/workers-types";
 import type { Bindings } from "../bindings";
-import type { AtsProvider, IngestMessage, NormalizedJob } from "@hiring-signals/domain";
+import type { AtsProvider, IngestMessage, NormalizedJob, SignalType } from "@hiring-signals/domain";
 import {
   atsProviderSchema,
   classifyJob,
@@ -26,6 +26,7 @@ import {
   createSignal,
   refreshSignal,
   appendSignalEvidence,
+  getCompanyRoleActivityStats,
   type SourceRow,
 } from "@hiring-signals/db";
 import { computeContentHash } from "../../../../lib/text/content-hash";
@@ -393,6 +394,120 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
   }
 }
 
+/** hiring_burst trigger threshold (spec §7.1's literal trigger table). */
+const HIRING_BURST_MIN_NEW_IN_14_DAYS = 3;
+/** multi_location trigger threshold (spec §7.1's literal trigger table; same 3 as computeBreadth's saturation point). */
+const MULTI_LOCATION_MIN_DISTINCT_LOCATIONS = 3;
+/** role_acceleration trigger cutoff on H.3's acceleration component (0-1). Documented v1 choice, not spec-derived -- same caveat as computeVolume's VOLUME_SCALE=5 (ROADMAP.md H.4). Deliberately above the formula's own cold-start value: with zero prior-56-day history, computeAcceleration's max(2, priorRate) floor means a single newly observed job already scores exactly 0.5 (1/2) and two jobs saturate to 1.0 -- a >=0.5 cutoff would flag every brand-new company+role pair as "accelerating" on its very first job, which isn't a meaningful signal. 0.75 requires more than one bare job's worth of cold-start momentum before triggering. */
+const ROLE_ACCELERATION_MIN_COMPONENT = 0.75;
+/** persistent_demand trigger threshold in days (spec §7.1's literal trigger table). */
+const PERSISTENT_DEMAND_MIN_DAYS_ACTIVE = 30;
+
+/**
+ * H.4: company-level/secondary signal generation (hiring_burst,
+ * role_acceleration, multi_location, persistent_demand -- spec §7.1,
+ * §1.4). Runs once per job, immediately after the primary new_job/
+ * reopened_job signal has been created/refreshed above, reusing that
+ * same H.2 activityStats fetch (no extra D1 round trip) plus H.3's
+ * already-computed acceleration component. Each of the four is
+ * independent -- a single job can trigger any subset of them (e.g. a
+ * job that's both the 3rd-in-14-days AND the 3rd distinct location
+ * triggers both hiring_burst and multi_location).
+ *
+ * persistent_demand is the one exception needing its own D1 read: its
+ * condition (`>= 30 days since first_detected_at, continuously active`)
+ * depends on the primary new_job/reopened_job signal's own
+ * first_detected_at, which is only known post-write (activeSignal's
+ * existing row, or the freshly created one's detectedAt if this is the
+ * very first occurrence -- a brand-new signal is 0 days old, so it can
+ * never itself satisfy the >=30 day threshold on its first write, but
+ * checking the freshly-created case explicitly keeps the logic uniform
+ * rather than special-casing "must already exist").
+ */
+async function generateCompanySignals(
+  client: ReturnType<typeof createD1Client>,
+  source: Pick<SourceRow, "company_id">,
+  roleCategory: Parameters<typeof findActiveSignal>[1]["roleCategory"],
+  activityStats: Awaited<ReturnType<typeof getCompanyRoleActivityStats>>,
+  accelerationComponent: number,
+  primarySignalFirstDetectedAt: string,
+  primaryScore: number,
+  primaryScoreVersion: string,
+  jobId: string,
+  jobTitle: string,
+  observedAt: string,
+): Promise<number> {
+  const triggered: SignalType[] = [];
+  if (activityStats.newInLast14Days >= HIRING_BURST_MIN_NEW_IN_14_DAYS) {
+    triggered.push("hiring_burst");
+  }
+  if (activityStats.distinctLocationCount >= MULTI_LOCATION_MIN_DISTINCT_LOCATIONS) {
+    triggered.push("multi_location");
+  }
+  if (accelerationComponent >= ROLE_ACCELERATION_MIN_COMPONENT) {
+    triggered.push("role_acceleration");
+  }
+  const daysActive = daysBetween(observedAt, primarySignalFirstDetectedAt);
+  if (daysActive >= PERSISTENT_DEMAND_MIN_DAYS_ACTIVE) {
+    triggered.push("persistent_demand");
+  }
+
+  let signalsCreated = 0;
+  for (const signalType of triggered) {
+    const activeSignal = await findActiveSignal(client, {
+      companyId: source.company_id,
+      roleCategory,
+      signalType,
+    });
+
+    let signalId: string;
+    if (activeSignal) {
+      signalId = activeSignal.id;
+      // Company-level signals don't have their own independent score
+      // formula yet (spec §7.1 defines triggers, not a distinct scoring
+      // function per type) -- reuse the primary new_job/reopened_job
+      // signal's freshly computed score (H.3) as a stand-in, refreshed
+      // alongside it. Revisit once a dedicated company-level scoring
+      // pass exists.
+      await refreshSignal(client, signalId, {
+        score: primaryScore,
+        scoreVersion: primaryScoreVersion,
+        lastDetectedAt: observedAt,
+      });
+    } else {
+      signalId = await createSignal(client, {
+        companyId: source.company_id,
+        roleCategory,
+        signalType,
+        score: primaryScore,
+        scoreVersion: primaryScoreVersion,
+        detectedAt: observedAt,
+        headline: buildHeadline(signalType, jobTitle),
+        summary: buildSummary(signalType, jobTitle),
+      });
+      signalsCreated += 1;
+    }
+
+    await appendSignalEvidence(client, {
+      signalId,
+      jobId,
+      evidenceType: signalType,
+      observedAt,
+      payload: {
+        signalType,
+        activeMatchingCount: activityStats.activeMatchingCount,
+        newInLast14Days: activityStats.newInLast14Days,
+        newInPrior56Days: activityStats.newInPrior56Days,
+        distinctLocationCount: activityStats.distinctLocationCount,
+        accelerationComponent,
+        daysActive,
+      },
+    });
+  }
+
+  return signalsCreated;
+}
+
 /**
  * One job's slice of the pipeline: upsert -> observation -> lifecycle
  * transition -> classification -> signal generation. Extracted from
@@ -524,9 +639,24 @@ async function processNormalizedJob(
     0,
     (new Date(observedAt).getTime() - new Date(anchorDate).getTime()) / 86_400_000,
   );
+
+  // H.3: real V/A/B inputs, fetched once per job via H.2's shared stats
+  // query (company_id + the just-classified role_primary), replacing the
+  // v1 fixed-0.5 neutral constant. Also reused by H.4's company-level
+  // signal triggers below -- one D1 round trip serves both.
+  const activityStats = await getCompanyRoleActivityStats(client, {
+    companyId: source.company_id,
+    roleCategory: classification.rolePrimary,
+    now: observedAt,
+  });
+
   const scoreResult = computeNewJobScore({
     daysSinceObservation,
     classificationConfidence: classification.confidence,
+    activeMatchingCount: activityStats.activeMatchingCount,
+    newInLast14Days: activityStats.newInLast14Days,
+    newInPrior56Days: activityStats.newInPrior56Days,
+    distinctLocationCount: activityStats.distinctLocationCount,
   });
 
   const activeSignal = await findActiveSignal(client, {
@@ -566,7 +696,31 @@ async function processNormalizedJob(
     payload: scoreResult,
   });
 
-  return createdNewSignal;
+  // H.4: company-level/secondary signals (hiring_burst, role_acceleration,
+  // multi_location, persistent_demand). Reuses activityStats (H.2) and
+  // scoreResult.components.acceleration (H.3) already computed above --
+  // no extra D1 round trip for the trigger checks themselves.
+  // primarySignalFirstDetectedAt: the existing row's first_detected_at
+  // when refreshing, or observedAt itself when this is a brand-new
+  // signal (0 days old -- can't satisfy persistent_demand's >=30 day
+  // threshold yet, but daysBetween(observedAt, observedAt) correctly
+  // evaluates to 0 rather than needing a separate branch).
+  const primarySignalFirstDetectedAt = activeSignal?.first_detected_at ?? observedAt;
+  const companySignalsCreated = await generateCompanySignals(
+    client,
+    source,
+    classification.rolePrimary,
+    activityStats,
+    scoreResult.components.acceleration,
+    primarySignalFirstDetectedAt,
+    scoreResult.score,
+    scoreResult.formulaVersion,
+    jobId,
+    job.title,
+    observedAt,
+  );
+
+  return createdNewSignal + companySignalsCreated;
 }
 
 /**
@@ -746,12 +900,36 @@ function computeNextPollAt(pollIntervalMinutes: number, sourceId: string): strin
   return new Date(ms).toISOString();
 }
 
-function buildHeadline(signalType: "new_job" | "reopened_job", jobTitle: string): string {
-  return signalType === "new_job" ? `New role: ${jobTitle}` : `Reopened: ${jobTitle}`;
+function buildHeadline(signalType: SignalType, jobTitle: string): string {
+  switch (signalType) {
+    case "new_job":
+      return `New role: ${jobTitle}`;
+    case "reopened_job":
+      return `Reopened: ${jobTitle}`;
+    case "hiring_burst":
+      return `Hiring burst: ${jobTitle}`;
+    case "role_acceleration":
+      return `Accelerating hiring: ${jobTitle}`;
+    case "multi_location":
+      return `Multi-location hiring: ${jobTitle}`;
+    case "persistent_demand":
+      return `Persistent demand: ${jobTitle}`;
+  }
 }
 
-function buildSummary(signalType: "new_job" | "reopened_job", jobTitle: string): string {
-  return signalType === "new_job"
-    ? `A new job posting was detected: "${jobTitle}".`
-    : `A previously closed job posting reappeared: "${jobTitle}".`;
+function buildSummary(signalType: SignalType, jobTitle: string): string {
+  switch (signalType) {
+    case "new_job":
+      return `A new job posting was detected: "${jobTitle}".`;
+    case "reopened_job":
+      return `A previously closed job posting reappeared: "${jobTitle}".`;
+    case "hiring_burst":
+      return `Three or more new postings for this role were detected in the last 14 days, most recently "${jobTitle}".`;
+    case "role_acceleration":
+      return `The pace of new postings for this role has increased notably, most recently "${jobTitle}".`;
+    case "multi_location":
+      return `This role is now actively posted across three or more distinct locations, most recently "${jobTitle}".`;
+    case "persistent_demand":
+      return `This role has stayed continuously active for 30+ days, most recently "${jobTitle}".`;
+  }
 }
