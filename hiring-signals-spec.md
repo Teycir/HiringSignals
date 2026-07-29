@@ -729,6 +729,90 @@ Allowed fields:
 
 The API must build parameterized SQL. Never concatenate raw query text into SQL.
 
+### 9.4 Semantic search (draft — added 2026-07-29, not yet built; see `ROADMAP.md` Milestone I)
+
+This section is a draft addendum, written before implementation, per
+this document's own role as the source of truth for behavior (`AGENTS.md`:
+"Source of truth for behavior is always `hiring-signals-spec.md`").
+Nothing below is built yet — `ROADMAP.md` Milestone I tracks the
+build-out task by task and must not be treated as settled behavior
+until this section is promoted out of draft status.
+
+**Two capabilities, staged:**
+
+1. **Free-text search over signals** (P0 for this addendum) — an
+   upgrade to the existing `q` parameter (§9.3), which today only
+   matches on company name. `q` is extended to also match job
+   title/description/role content by meaning, not just substring, so a
+   query like "remote rust backend" can surface a matching signal even
+   when none of those exact words appear in the company name. This is
+   an **additive** capability layered onto the existing keyword path,
+   not a replacement — a plain company-name substring match must keep
+   working exactly as it does today even if the semantic leg is
+   degraded or unavailable (see the availability requirement below).
+2. **Classification assist** (P1, explicitly deferred — see the
+   guardrail below and `ROADMAP.md` I.5) — semantic similarity as an
+   additional, optional input to §6.2's classification confidence
+   scoring, never a replacement for it.
+
+**Guardrail (binding on both capabilities, restated from §21):**
+_"Do not use a generic 'AI classifier' where deterministic rules are
+enough. Make any model-assisted classification opt-in, server-side,
+auditable, and non-blocking."_ Concretely for this feature:
+
+- §6.2's deterministic classification pipeline (phrase rules,
+  abbreviation matching, negative-term guards, the $C_{role}$ formula)
+  remains the only path that can set `role_primary` and
+  `classification_confidence`. Semantic similarity may only ever
+  *nudge* an already-computed confidence score inside an existing
+  low-confidence disambiguation path (§6.2 step 5) — it can never be
+  the sole basis for auto-classifying a job, and it can never be a
+  precondition for a job being classified at all.
+- Job ingestion, normalization, and classification must all succeed
+  identically whether or not Workers AI or the Vectorize index is
+  reachable at that moment. An embedding-generation failure is logged
+  and the job proceeds fully classified/scored/persisted through the
+  existing deterministic path — it is never a reason to fail, retry, or
+  degrade the ingestion pipeline (contrast with an ATS-fetch failure,
+  which does retry per §13.4; embedding failure does not lose the job,
+  only the job's searchability-by-meaning until a later backfill).
+- Both capabilities are read-path / search-time and post-classification
+  by construction — neither one can move earlier than "the job already
+  has a `role_primary` (or `null`, per §6.2 step 7) and is already
+  persisted."
+
+**Query contract (free-text search, capability 1):** the `q` parameter's
+type in §9.3's table does not change (`string`, still company-name
+matched as today) — its *implementation* gains a second, semantic leg
+run in parallel with the existing match and merged by score, the same
+`data`/`meta` response envelope as every other `/api/v1/signals`
+response (§9.1). No new query parameter is introduced for v1 of this
+addendum; a query that returns only a semantic match (no company-name
+substring hit) is a legitimate, expected result once this ships, not a
+bug. If a future revision needs an explicit "semantic-only" or
+"paste text to search" mode, it must be added here first as its own
+named parameter before being implemented (`ROADMAP.md` I.4 already
+flags a paste-text mode as an optional, lower-priority follow-on, not
+in scope for the initial build).
+
+**Non-goals for this addendum:**
+
+- No new authenticated surface. Embedding backfill/administration must
+  not reintroduce the `/api/v1/admin/*` HTTP surface this document
+  already removed (§9.2, §13.5, §14.1) — any backfill tooling is a
+  local ops script against Workers AI/Vectorize directly, the same
+  no-HTTP-admin-surface pattern §13.5 already establishes for source
+  management.
+- No change to what evidence is required to display a signal (§1.4's
+  closing paragraph) — a semantically-matched result still needs the
+  full evidence trail like every other signal; semantic matching only
+  changes *which* signals a query surfaces, not what's shown once
+  surfaced.
+- No guarantee of semantic-match explainability in v1 (e.g. "matched
+  because of X") — out of scope until there's a concrete UX need for
+  it; note it here as a known gap rather than silently deciding against
+  it.
+
 ---
 
 ## 10. Dashboard UX specification
@@ -741,7 +825,13 @@ The API must build parameterized SQL. Never concatenate raw query text into SQL.
 | `/signals`            | Main dense signal feed                  |
 | `/signals/[signalId]` | Deep-linkable signal evidence view      |
 | `/companies/[slug]`   | Company-level timeline and active roles |
-| `/admin`              | Protected ingestion/source management   |
+
+There is no `/admin` route in the deployed app. Adding/editing sources,
+triggering a manual ingestion run, and viewing source health are
+operator tasks run as a local script against D1
+(`infrastructure/scripts/`), not a page in this app — see §13.5/§14.1,
+which already settle this as the permanent access model, not a
+temporary posture.
 
 ### 10.2 Main dashboard layout
 

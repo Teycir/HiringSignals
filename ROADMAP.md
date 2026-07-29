@@ -1343,3 +1343,302 @@ Milestones A–D:
     Worth a fresh `.wrangler/state` before next relying on
     `wrangler d1 execute` locally, but didn't block verifying this fix.
     Test row cleaned up afterward, local D1 back to 20 companies.
+
+
+---
+
+## Milestone I — Semantic search (Workers AI + Vectorize)
+
+**Status (2026-07-29): spec drafted, implementation not started.**
+Added at the user's request, inspired by `ArxivExplorer`'s proven
+hybrid-search architecture (same account, same Cloudflare primitives —
+Workers AI `@cf/baai/bge-base-en-v1.5` embeddings + a Vectorize index
+queried alongside D1). **`hiring-signals-spec.md` §9.4 ("Semantic
+search") now exists**, written and inserted 2026-07-29, marked
+explicitly as a draft addendum not yet built — read it before starting
+I.1, it is the source of truth for this milestone's behavior going
+forward, this file's task list must stay consistent with it rather than
+drift into a separate de facto spec. (Original plan called this §9.5;
+landed as §9.4 since that slot was open right after the existing §9.3
+query-param table and before §10 — no functional difference, just note
+the correction so a reader cross-referencing an earlier draft of this
+milestone isn't confused by the number.)
+
+**Scope, decided with the user up front:**
+1. **Free-text search over signals/jobs** (e.g. "remote rust backend
+   roles") as a discovery feature layered onto the existing `q` param
+   (`signals.ts`'s `signalsQuerySchema` / spec §9.3's table). Confirmed
+   by reading both the spec and `signals-repo.ts`: `q` today is
+   **company-name search only** — a plain substring match, nothing
+   else. Spec §9.4 (new) keeps `q`'s documented type/contract unchanged
+   and adds a semantic leg alongside it (merged by score) rather than
+   redefining what `q` matches on — read §9.4 in full before writing
+   I.3's merge logic, it settles questions this bullet used to leave
+   open (query-param shape, response envelope, non-goals). This ships
+   first.
+2. **Classification assist**: semantic similarity as an *additional*
+   input alongside — never a replacement for — the deterministic
+   phrase/abbreviation rules in `packages/domain/src/classification.ts`.
+   This is explicitly out of scope until I.1–I.4 (the search feature)
+   are done and verified. Spec §6.2's opener is unambiguous ("Use
+   deterministic rules first. Do not make an LLM dependency necessary
+   for the ingestion pipeline") — I.5 below must not make embedding
+   generation a *requirement* for a job to be classified; it can only
+   ever nudge `classification_confidence` for a job the deterministic
+   path already handles, and the pipeline must keep working with
+   identical classification outcomes if Workers AI is down or the
+   Vectorize index is empty. Get this constraint into the spec
+   addendum in writing before touching `classification.ts`.
+
+**Why after Milestone H, not folded into F:** H is the current active
+logic-quality pass on scoring/signal-generation; this milestone doesn't
+depend on any of H's open items (H.5 is independent) but touches
+`apps/api` alongside it, so sequencing it after avoids two milestones
+editing `ingest-consumer.ts`/`apps/api/wrangler.toml` concurrently.
+Milestone F (dashboard UI) is still undetailed and `apps/web` is still
+near-scaffold (confirmed by listing the directory — only the Next.js
+default scaffold exists under `src/app`, no real routes/components
+yet) — I.4's search UI is written directly since there's nothing in F
+to fold into yet, not because it preempts F's own task-detailing pass.
+
+**UI inspiration source:** `ArxivExplorer/app/components/` —
+specifically `SearchBoxHome.tsx` (hero search input, URL-param-driven
+filter chips, active-filter count badge), `SearchFilters.tsx` (same
+chip-toggle pattern as a standalone panel, `useSearchParams`-driven so
+filters are shareable/bookmarkable URLs), `MoreLikeThisButton.tsx`
+(one-line `router.push` to a `?like=:id` query, no separate modal/page),
+`AbstractSearch.tsx` (paste-arbitrary-text semantic-only search mode,
+textarea with live char count + `⌘Enter` submit), and
+`RecentSearches.tsx` (`localStorage`-backed last-N-queries list, see
+`lib/searchHistory.ts`). **Reuse the UX patterns and interaction
+mechanics, not the visual styling** — ArxivExplorer's components are
+built for its neon-red cyberpunk aesthetic (`text-neon-red`,
+`bg-amber-950/20`, etc.), which conflicts with spec §11's Minimal
+Brutalist system (strict black/white, hard edges, one accent color for
+intentional actions only). Port the *shape* of each component (props,
+state, URL-param wiring, keyboard shortcuts) and restyle from scratch
+against §11's tokens — do not copy Tailwind classes verbatim.
+
+Spec: proposed §9.5 (new, see above), §6.2 (classification — I.5's
+guardrail), §9.3 (existing `q` param this extends), §11 (visual system
+— governs I.4's restyle), §13.1 (Workers AI/Vectorize as new bindings
+alongside existing D1/KV/Queue).
+
+- [ ] **I.1 — Provision Vectorize index + Workers AI binding**
+  (`apps/api/wrangler.toml`, spec §13.1)
+  - Add `[ai]` binding (`binding = "AI"`) and a `[[vectorize]]` block
+    (`binding = "VECTORIZE"`, a new index — do not reuse
+    ArxivExplorer's `arxiv-papers` index, different account resource,
+    different embedding domain). Follow `ArxivExplorer/wrangler.api.toml`
+    as the reference shape (already has both bindings working in
+    production on this same Cloudflare account).
+  - Embedding model: `@cf/baai/bge-base-en-v1.5`, same as ArxivExplorer
+    — reuse the proven choice rather than re-evaluating model options
+    from scratch, unless a concrete reason surfaces (e.g. a job-postings
+    domain benchmark) to deviate.
+  - Vector dimension **confirmed 2026-07-29 against Cloudflare's own
+    docs** (`developers.cloudflare.com/workers-ai/models/bge-base-en-v1.5/`
+    and `developers.cloudflare.com/vectorize/best-practices/create-indexes`):
+    `bge-base-en-v1.5` outputs 768-dimensional vectors, and Cloudflare's
+    own worked example for this exact model is
+    `wrangler vectorize create your-index-name --dimensions=768
+    --metric=cosine` — matches what this bullet already assumed, no
+    correction needed, but now cited rather than assumed (spec §21's
+    "verify source contracts first" discipline, satisfied for real).
+    `--preset @cf/baai/bge-base-en-v1.5` is also available and
+    auto-configures dimensions/metric — either flag form is fine, but
+    if using `--preset`, still record the resulting dimensions/metric
+    in this file once run (`wrangler vectorize get <index-name>`),
+    don't leave it implicit.
+  - **New gap found via docs check, not in the original plan:**
+    Vectorize metadata indexes (needed for I.2's `companyId`/
+    `roleCategory`/`locationMode`/`status`/`postedAt` filter fields)
+    "must exist before vectors are inserted" per Cloudflare's own intro
+    docs — filtering on a metadata field added *after* vectors already
+    exist does not retroactively apply. Run
+    `wrangler vectorize create-metadata-index <index-name>
+    --property-name=<field> --type=<string|number|boolean>` for each
+    of the five fields **immediately after index creation, in this same
+    task, before I.2 writes a single vector** — sequencing this after
+    I.2 would silently leave those fields unfilterable for every vector
+    already upserted by then. `status`/`locationMode`/`roleCategory`/
+    `companyId` are `string`; `postedAt` — decide `string` (ISO-8601,
+    matches how every other timestamp in this repo is stored, see
+    AGENTS.md/`jobs` schema) vs `number` (epoch, sortable/range-queryable
+    natively) before creating it, since this "cannot be changed after
+    creation" as unambiguously as dimensions/metric can't.
+  - `EMBEDDING_MODEL` as a `[vars]` entry (not hardcoded), same pattern
+    as ArxivExplorer's `wrangler.api.toml` — makes a future model swap a
+    config change, not a code change.
+  - Verify: `wrangler vectorize create <index-name> --dimensions=768
+    --metric=cosine` (confirmed correct above, not "or whichever metric"
+    as this bullet originally hedged) followed immediately by the five
+    `create-metadata-index` calls above, run against this repo's
+    Cloudflare account (`nvm use 24.18.0` first, same Node-version note
+    Milestone D's ops scripts already flagged); `wrangler vectorize get
+    <index-name>` confirms dimensions/metric/metadata-indexes all landed
+    as intended; `wrangler.toml` change confirmed with `wrangler deploy
+    --dry-run` or `wrangler dev` startup (binding resolves, no config
+    error).
+
+- [ ] **I.2 — Embedding write path: embed jobs at ingest time**
+  (`apps/api/src/jobs/ingest-consumer.ts`, `packages/db`)
+  - New function, `packages/domain/src/embedding-text.ts`:
+    `buildJobEmbeddingText(job): string` — deterministic, pure,
+    unit-testable function that assembles the text sent to Workers AI
+    from `title_raw` + `role_primary` (if classified) + `department_raw`
+    + `location_raw` + a truncated `description_text` (mirror
+    ArxivExplorer's `reembed-with-cf-ai.ts` pattern: title + body,
+    `.slice(0, 2000)` — job description text needs its own truncation
+    length decided from real data, don't assume 2000 chars is right for
+    this domain without checking a sample of `description_text` lengths
+    in the seed data first).
+  - Wire into `ingest-consumer.ts`'s `processNormalizedJob`, after
+    `upsertJob` succeeds (so the embedding always corresponds to a job
+    row that actually exists — never embed before the D1 write
+    confirms). Call `env.AI.run(EMBEDDING_MODEL, { text: [...] })`
+    then `env.VECTORIZE.upsert(...)` with vector ID = `job.id` (the
+    jobs table's own primary key, mirroring ArxivExplorer's "vector ID
+    = bare arXiv ID" choice) and metadata `{ companyId, roleCategory,
+    locationMode, status, postedAt }` — enough to build a Vectorize
+    metadata filter (spec's future date/location-scoped semantic query)
+    without a D1 round trip per candidate.
+  - **Must not become a hard dependency for ingestion to succeed** (the
+    I.5 guardrail, applied here too, one milestone early since I.2 is
+    where a Workers AI outage would first bite): wrap the
+    embed-and-upsert call in try/catch, log-and-continue on failure, do
+    NOT throw or retry the whole message — a job that fails to embed is
+    still fully ingested/classified/scored, just not semantically
+    searchable until a later backfill. This is a deliberate asymmetry
+    from spec §13.4's ATS-fetch failure handling (which does retry) —
+    document why inline: embedding failure doesn't lose the job, ATS
+    fetch failure does.
+  - Idempotency: `VECTORIZE.upsert` is naturally idempotent on vector ID
+    (a retry re-embeds and overwrites, doesn't duplicate) — confirm this
+    against Cloudflare's current Vectorize docs rather than assuming, and
+    note the confirmation in the commit, same discipline as I.1's
+    dimension check.
+  - Verify: extend `ingest-consumer.test.ts`'s fake environment with a
+    fake `AI`/`VECTORIZE` binding (same `unusedBinding<T>` Proxy pattern
+    `makeFakeEnv()` already uses for other unexercised bindings, per
+    Milestone D's 2026-07-29 hardening pass); a happy-path test
+    asserting `VECTORIZE.upsert` is called with the right vector ID and
+    metadata shape, and a failure-path test asserting an `AI.run`
+    rejection does not fail the overall message/job processing.
+    `pnpm --filter @hiring-signals/api typecheck`/`lint`/`test`.
+
+- [ ] **I.3 — Backfill script + query-side hybrid search**
+  (`infrastructure/scripts`, `packages/db`, `apps/api/src/routes`)
+  - `infrastructure/scripts/backfill-embeddings.mjs` — plain Node
+    `.mjs`, same `wrangler d1 execute --json` + a direct Workers AI/
+    Vectorize REST call pattern as the existing ops scripts (Milestone
+    D already established why: no live binding exists outside a
+    Worker). Modeled directly on
+    `ArxivExplorer/scripts/reembed-with-cf-ai.ts`'s shape (batch size
+    + delay-between-batches for rate-limit headroom, auth smoke-test
+    before the full run, ok/failed counters, safe to re-run) but calling
+    this repo's own ingest-consumer embedding logic's HTTP equivalent —
+    decide whether that means a small `/admin`-style-but-not-actually-
+    admin internal endpoint (careful: spec §13.5/§14.1 already
+    deliberately removed all `/admin/*` HTTP surface and auth — **do
+    not reintroduce an authenticated admin route to make this script's
+    life easier**; either the script drives embedding purely through
+    direct Workers AI + Vectorize API calls with an API token, no Worker
+    route involved, or it goes through the same
+    `update-source.mjs --run-now` style indirection of nudging the real
+    pipeline — pick whichever avoids recreating the admin surface spec
+    explicitly killed, and say so explicitly in the script's header
+    comment, same as `add-source.mjs`'s D1-access-approach note).
+  - `packages/db/src/signals-repo.ts`'s `listSignals` (confirmed
+    company-name-only `LIKE` today, per spec §9.4's now-settled
+    contract — no need to re-derive this from the code, the spec
+    addendum already states it) gains a semantic leg:
+    embed the query text via `env.AI`, query `env.VECTORIZE`, merge with
+    the existing keyword-matched rows by job/signal ID, weighted score
+    combination — same shape as ArxivExplorer's `search.ts`'s
+    `mergeResults`/`KEYWORD_WEIGHT`/`SEMANTIC_WEIGHT` constants, but
+    weights re-tuned for this domain from scratch (job titles are much
+    shorter/denser than paper abstracts — don't assume 0.25/0.75 ports
+    over unchanged; this needs its own tuning pass against real query
+    examples once seed data + backfilled embeddings exist).
+  - Cache query embeddings in KV (`env.CACHE`), same TTL-based pattern
+    as ArxivExplorer's `kvEmbed`/`TTL_EMBED` — avoids re-embedding
+    identical queries repeatedly given the free-read-tier's likely
+    query repetition (common role/location phrases).
+  - Verify: a repo-level test asserting the merge/dedup logic combines
+    keyword and semantic hits correctly (fake `D1Client` + fake
+    `VECTORIZE`/`AI`, same style as `signals-write-repo.test.ts`);
+    `pnpm --filter @hiring-signals/db typecheck`/`lint`/`test`; a real
+    query against local D1 + a real (not faked) Vectorize/Workers AI
+    call once I.1's index is provisioned and I.3's backfill has run
+    against the seed data, same "verify for real, not just typechecked"
+    bar the rest of this file holds every other milestone to.
+
+- [ ] **I.4 — Search UI** (`apps/web`, spec §11)
+  - `apps/web` is still near-scaffold (confirmed 2026-07-29 — only the
+    Next.js default app shell exists, no real routes yet), so this is
+    genuinely new UI, not a retrofit — same situation Milestone F's own
+    header already flags ("expand into task detail before starting").
+    This item front-loads only the search surface; the rest of F's
+    dashboard (signal cards, company pages, filters panel for the
+    existing `q`/`roles`/`locationMode`/etc. params) stays scoped to
+    Milestone F itself, sequenced by the person separately — don't let
+    I.4 silently become all of F.
+  - Port (not copy) from `ArxivExplorer/app/components/`, restyled
+    against spec §11's Minimal Brutalist tokens (black/white, hard
+    edges, monospace data, single accent color reserved for
+    high-priority/action states — semantic-search result highlighting
+    is a legitimate use of that one accent color, keyword-match
+    highlighting should not compete with it for the same color):
+    - `SearchBoxHome.tsx`'s shape → a signals-feed search bar: text
+      input, `router.push` to a query-param-driven URL, Enter-to-submit,
+      inline active-filter-count badge. Placeholder copy specific to
+      this product ("Try: remote rust backend, hybrid platform
+      engineer…"), not arXiv's.
+    - `SearchFilters.tsx`'s `useSearchParams`-driven chip-toggle
+      mechanics → apply to the *existing* filters
+      (`roles`/`locationMode`/`country`/`source`/`signalType`/`minScore`)
+      already defined in `signalsQuerySchema` — this reuses a proven
+      interaction pattern for filters that already exist server-side,
+      independent of whether semantic search itself is enabled.
+    - `MoreLikeThisButton.tsx`'s one-line `router.push(?like=:id)`
+      pattern → "similar roles" on a signal detail view, resolving via
+      Vectorize `getByIds([jobId])` + `query(...)` the same way
+      ArxivExplorer's `handleMoreLikeThis` does (I.3's merge logic can
+      likely share code with this rather than duplicating the
+      Vectorize-query-and-D1-batch-fetch shape — check once I.3 is
+      written).
+    - `RecentSearches.tsx` + `lib/searchHistory.ts`'s `localStorage`
+      pattern → reusable close to verbatim (client-only, no backend
+      dependency, no design-system conflict since it's logic not
+      visual chrome) — port the logic file directly, restyle only the
+      rendered list to match §11.
+    - `AbstractSearch.tsx`'s paste-text-to-search mode is **optional,
+      lower priority** for this product — a job seeker pasting their
+      own resume/skills blurb to find matching-by-meaning signals is a
+      plausible feature but wasn't part of the scope decided with the
+      user; flag it as a follow-on idea in this bullet rather than
+      building it now, since I.1–I.4 as scoped don't require it.
+  - Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`
+    clean; a manual `pnpm --filter @hiring-signals/web dev` smoke check
+    that search-with-filters round-trips through the URL correctly
+    (bookmarkable/shareable, same property ArxivExplorer's
+    `useSearchParams`-driven approach guarantees) and that a semantic
+    hit and a keyword hit both render through the same signal-card
+    component without a type split.
+
+- [ ] **I.5 — Classification assist (explicitly deferred until I.1–I.4
+  verified)**
+  - Not detailed task-by-task yet — deliberately, per this milestone's
+    scope decision. When started: semantic similarity between a job's
+    embedding and each role category's centroid/exemplar set becomes an
+    *additional* signal `classifyJob` can optionally consult only in the
+    already-existing "low title confidence, need department/description
+    disambiguation" path (spec §6.2 step 5) — never a gate on whether
+    classification runs at all, and never able to push a job to
+    `autoClassified: true` on its own if the deterministic channels
+    (title/department/description per H.1's structured-channel guard)
+    disagree. Expand this into real sub-tasks, spec-cited against the
+    new §9.5 addendum's classification-assist section, before writing
+    any `classification.ts` change — same "expand before starting"
+    discipline this file already applies to Milestones F and G.

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- **Milestone I — Semantic search (Workers AI + Vectorize):** Scoped in `ROADMAP.md`, not started. Hybrid keyword+semantic search over signals/jobs using `@cf/baai/bge-base-en-v1.5` embeddings and a new Vectorize index, patterned on `ArxivExplorer`'s proven search architecture. Ships in two phases: (1) free-text search feature, (2) classification assist — the latter strictly additive to the existing deterministic classification rules (spec §6.2), never a dependency for them. Spec addendum drafted at `hiring-signals-spec.md` §9.4 ("Semantic search"), marked explicitly as not-yet-built.
+
+### Fixed
+
+- **Spec/reality drift in `hiring-signals-spec.md` §10.1's route table:** removed a stale `/admin` row ("Protected ingestion/source management") left over from before the no-auth decision (§13.5/§14.1) and Milestone D's removal of `/api/v1/admin/*`. Replaced with a note pointing to §13.5/§14.1: source management is a local CLI script against D1, never a route in the deployed app. §13.5/§14.1 themselves were already correct — only §10.1's table had drifted.
+
 ### Added
 
 - **Milestone E — Lever ATS adapter:** Full implementation following same pattern as Greenhouse (location inference, fixture-driven tests, malformed payload handling). Ingestion pipeline now supports both Greenhouse and Lever providers.
