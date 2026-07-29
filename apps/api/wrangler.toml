@@ -28,11 +28,13 @@ queue = "hiring-signals-ingest"
 max_batch_size = 10
 max_batch_timeout = 30
 
-# Cron only finds due sources and enqueues messages -- it must never fetch
-# provider endpoints itself (spec 5.2). Real per-source cadence lives in
-# sources.poll_interval_minutes, computed from the free-tier budget formula.
+# Cron routes:
+# - */15 * * * *: find due sources and enqueue ingest messages; never fetch providers here.
+# - 0 6 * * *: recompute stale active-signal scores; also no provider fetches.
+# Real per-source cadence lives in sources.poll_interval_minutes, computed
+# from the free-tier budget formula.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/15 * * * *", "0 6 * * *"]
 
 [vars]
 # Non-secret config only. Secrets go through `wrangler secret put`.

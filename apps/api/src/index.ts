@@ -10,6 +10,7 @@ import { companiesRoute } from "./routes/companies";
 import { facetsRoute } from "./routes/facets";
 import { handleScheduled } from "./jobs/scheduler";
 import { handleIngestMessage } from "./jobs/ingest-consumer";
+import { handleReconciliation } from "./jobs/reconciliation";
 import type { IngestMessage } from "@hiring-signals/domain";
 
 const app = new Hono<AppEnv>();
@@ -45,9 +46,15 @@ app.route("/api/v1/facets", facetsRoute);
 export default {
   fetch: app.fetch,
 
-  // Cron trigger: only identifies due sources and enqueues work.
-  // Must never fetch provider endpoints directly (spec 5.2/13.1).
+  // Cron triggers:
+  // - every 15 minutes: identify due sources and enqueue ingest work
+  // - daily: recompute stale active-signal scores without fetching ATS providers
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+    if (event.cron === "0 6 * * *") {
+      ctx.waitUntil(handleReconciliation(env));
+      return;
+    }
+
     ctx.waitUntil(handleScheduled(event, env));
   },
 
