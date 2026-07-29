@@ -41,14 +41,23 @@ export interface JobRow {
  * ingest-consumer.ts; moved here so a future column rename is caught by
  * `pnpm --filter db typecheck`/test instead of silently breaking a query
  * string that lives outside packages/db.
+ *
+ * Also includes role_primary: the consumer's F4 content-change-as-
+ * evidence path needs the job's already-classified role category to look
+ * up an active signal to attach a job_updated evidence row to, without a
+ * second SELECT (classification for *this* run happens later in the
+ * pipeline, only for new_job/reopened_job candidates -- role_primary here
+ * is whatever a *prior* run classified it as).
  */
 export async function getJobByExternalId(
   client: D1Client,
   sourceId: string,
   externalJobId: string,
-): Promise<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at"> | null> {
-  return client.first<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at">>(
-    `SELECT id, status, missing_run_count, first_seen_at FROM jobs WHERE source_id = ? AND external_job_id = ?`,
+): Promise<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at" | "role_primary"> | null> {
+  return client.first<
+    Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at" | "role_primary">
+  >(
+    `SELECT id, status, missing_run_count, first_seen_at, role_primary FROM jobs WHERE source_id = ? AND external_job_id = ?`,
     [sourceId, externalJobId],
   );
 }
@@ -109,6 +118,22 @@ export interface UpsertJobInput {
   observedAt: string;
 }
 
+/** Result of upsertJob: the row's id plus whether this call changed its content_hash. */
+export interface UpsertJobResult {
+  id: string;
+  /**
+   * True when an existing row's content_hash differed from the newly
+   * computed one (a real edit to title/description/department/
+   * employment type/location -- see lib/text/content-hash.ts for exactly
+   * which fields feed the hash). False for a brand-new job (nothing to
+   * compare against) and false when an existing row's hash is unchanged.
+   * Callers use this to decide whether a `job_updated` evidence row is
+   * warranted (spec F4: a content change on an already-signaled role is
+   * itself evidence worth surfacing, distinct from new_job/reopened_job).
+   */
+  contentChanged: boolean;
+}
+
 /**
  * Upserts one job keyed on the schema's own `UNIQUE(source_id,
  * external_job_id)` constraint (spec §5.3: "use a unique job key of
@@ -124,11 +149,13 @@ export interface UpsertJobInput {
  * made by a different code path in the same request.
  *
  * Returns the row's id (existing or newly generated) so the caller can
- * pass it to insertJobObservation without a second SELECT.
+ * pass it to insertJobObservation without a second SELECT, plus
+ * contentChanged (see UpsertJobResult) so the caller can decide whether
+ * to record a job_updated evidence row without a second query.
  */
-export async function upsertJob(client: D1Client, input: UpsertJobInput): Promise<string> {
-  const existing = await client.first<Pick<JobRow, "id">>(
-    `SELECT id FROM jobs WHERE source_id = ? AND external_job_id = ?`,
+export async function upsertJob(client: D1Client, input: UpsertJobInput): Promise<UpsertJobResult> {
+  const existing = await client.first<Pick<JobRow, "id" | "content_hash">>(
+    `SELECT id, content_hash FROM jobs WHERE source_id = ? AND external_job_id = ?`,
     [input.sourceId, input.externalJobId],
   );
 
@@ -160,7 +187,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
         existing.id,
       ],
     );
-    return existing.id;
+    return { id: existing.id, contentChanged: existing.content_hash !== input.contentHash };
   }
 
   const id = crypto.randomUUID();
@@ -197,7 +224,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
       input.contentHash,
     ],
   );
-  return id;
+  return { id, contentChanged: false };
 }
 
 export interface InsertJobObservationInput {
