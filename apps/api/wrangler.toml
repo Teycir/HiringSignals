@@ -28,6 +28,26 @@ queue = "hiring-signals-ingest"
 max_batch_size = 10
 max_batch_timeout = 30
 
+# --- Workers AI: embedding generation for semantic search (Milestone I,
+# spec 9.4). Model id lives in [vars] below, not hardcoded, so a future
+# model swap is a config change. ---
+[ai]
+binding = "AI"
+
+# --- Vectorize: job-embedding index for semantic search (spec 9.4).
+# Index provisioned out-of-band via `wrangler vectorize create
+# hiring-signals-jobs --dimensions=768 --metric=cosine` (768-dim matches
+# @cf/baai/bge-base-en-v1.5's output, confirmed against Cloudflare's own
+# docs 2026-07-29). Metadata indexes (companyId/roleCategory/
+# locationMode/status/postedAt, all string) created before this binding
+# was added and before any vectors exist -- Vectorize metadata filters
+# only apply to vectors inserted after the metadata index exists, per
+# Cloudflare's own docs, so this ordering is load-bearing, not
+# incidental. ---
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "hiring-signals-jobs"
+
 # Cron routes:
 # - */15 * * * *: find due sources and enqueue ingest messages; never fetch providers here.
 # - 0 6 * * *: recompute stale active-signal scores; also no provider fetches.
@@ -39,3 +59,4 @@ crons = ["*/15 * * * *", "0 6 * * *"]
 [vars]
 # Non-secret config only. Secrets go through `wrangler secret put`.
 ENVIRONMENT = "development"
+EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"

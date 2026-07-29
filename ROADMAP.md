@@ -1465,8 +1465,42 @@ guardrail), §9.3 (existing `q` param this extends), §11 (visual system
 — governs I.4's restyle), §13.1 (Workers AI/Vectorize as new bindings
 alongside existing D1/KV/Queue).
 
-- [ ] **I.1 — Provision Vectorize index + Workers AI binding**
+- [x] **I.1 — Provision Vectorize index + Workers AI binding**
   (`apps/api/wrangler.toml`, spec §13.1)
+  - **Status (2026-07-29): done.** Found the index (`hiring-signals-jobs`,
+    768-dim, cosine) already existing on the account, created
+    ~1hr earlier in an untracked session — same silently-incomplete
+    pattern this file has caught before (`seed-local-d1.sql`,
+    `add-company.mjs`, `ingest-consumer.test.ts`) — but the follow-up
+    metadata-index step had *not* run (`wrangler vectorize
+    list-metadata-index hiring-signals-jobs` returned zero indexes).
+    Since no vectors exist yet (I.2 not started), this was still safely
+    fixable rather than a "too late, non-retroactive" gap. Ran all five
+    `create-metadata-index` calls (`companyId`/`roleCategory`/
+    `locationMode`/`status`/`postedAt`, all `string` — see this item's
+    own postedAt discussion below; picked `string`/ISO-8601 for
+    consistency with every other timestamp in this repo's schema, since
+    Vectorize itself does no range math on the field, D1 already owns
+    that), confirmed via `list-metadata-index` (not just the "enqueued"
+    message) that all five landed. `[ai]`/`[[vectorize]]` bindings and
+    `EMBEDDING_MODEL` (`[vars]`) added to `wrangler.toml`; `Bindings`
+    interface (`apps/api/src/bindings.ts`) updated to match (`AI: Ai`,
+    `VECTORIZE: VectorizeIndex`, `EMBEDDING_MODEL: string`) per that
+    file's own "keep in sync with wrangler.toml" header comment.
+  - **Fallout fixed, not left broken:** adding required fields to
+    `Bindings` broke typecheck on all 3 test files whose `makeFakeEnv()`
+    helpers construct a `Bindings` object by hand
+    (`ingest-consumer.test.ts`, `scheduler.test.ts`,
+    `reconciliation.test.ts`) — fixed each using the same
+    `unusedBinding<T>()` throwing-Proxy pattern already established in
+    this repo for bindings a given test doesn't legitimately exercise
+    (Milestone D's 2026-07-29 hardening pass).
+  - Verified for real: `pnpm -r typecheck`/`lint`/`test` clean (131/131
+    tests, up from 122 pre-pull — the +9 came from H.5's
+    `reconciliation.test.ts` landing via `git pull`, not from this
+    task); `wrangler deploy --dry-run` confirms all 7 bindings resolve
+    (`DB`, `CACHE`, `INGEST_QUEUE`, `VECTORIZE` → `hiring-signals-jobs`,
+    `AI`, `ENVIRONMENT`, `EMBEDDING_MODEL`) with no config error.
   - Add `[ai]` binding (`binding = "AI"`) and a `[[vectorize]]` block
     (`binding = "VECTORIZE"`, a new index — do not reuse
     ArxivExplorer's `arxiv-papers` index, different account resource,

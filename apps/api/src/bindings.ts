@@ -12,7 +12,13 @@ export interface Bindings {
   DB: D1Database;
   CACHE: KVNamespace;
   INGEST_QUEUE: Queue;
+  /** Workers AI, used to generate job/query embeddings for semantic search (spec 9.4, Milestone I). */
+  AI: Ai;
+  /** Vectorize index `hiring-signals-jobs` (768-dim, cosine), holding one vector per job keyed on jobs.id. */
+  VECTORIZE: VectorizeIndex;
   ENVIRONMENT: "development" | "staging" | "production";
+  /** Workers AI model id used for embeddings; config not code, so a model swap doesn't require a redeploy of logic. */
+  EMBEDDING_MODEL: string;
 }
 
 /** Per-request context values set by middleware (spec 13.2), e.g. requestId. */

@@ -58,7 +58,10 @@ function makeFakeEnv(): Bindings {
     DB: unusedBinding<Bindings["DB"]>("DB"),
     CACHE: unusedBinding<Bindings["CACHE"]>("CACHE"),
     INGEST_QUEUE: unusedBinding<Bindings["INGEST_QUEUE"]>("INGEST_QUEUE"),
+    AI: unusedBinding<Bindings["AI"]>("AI"),
+    VECTORIZE: unusedBinding<Bindings["VECTORIZE"]>("VECTORIZE"),
     ENVIRONMENT: "development",
+    EMBEDDING_MODEL: "@cf/baai/bge-base-en-v1.5",
   };
 }
 

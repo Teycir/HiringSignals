@@ -85,7 +85,10 @@ function makeFakeEnv(): { env: Bindings; sent: Array<{ message: IngestMessage; d
         sent.push({ message, delaySeconds: options?.delaySeconds });
       },
     } as unknown as Bindings["INGEST_QUEUE"],
+    AI: unusedBinding<Bindings["AI"]>("AI"),
+    VECTORIZE: unusedBinding<Bindings["VECTORIZE"]>("VECTORIZE"),
     ENVIRONMENT: "development" as const,
+    EMBEDDING_MODEL: "@cf/baai/bge-base-en-v1.5",
   };
   return { env, sent };
 }
