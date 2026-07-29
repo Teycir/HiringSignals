@@ -1,11 +1,19 @@
 import type { Message } from "@cloudflare/workers-types";
 import type { Bindings } from "../bindings";
-import type { AtsProvider, IngestMessage, NormalizedJob, SignalType } from "@hiring-signals/domain";
+import type {
+  AtsProvider,
+  IngestMessage,
+  LocationMode,
+  NormalizedJob,
+  RoleCategory,
+  SignalType,
+} from "@hiring-signals/domain";
 import {
   atsProviderSchema,
   classifyJob,
   computeLifecycleTransition,
   computeNewJobScore,
+  buildJobEmbeddingText,
 } from "@hiring-signals/domain";
 import { getAdapterForProvider, UnsupportedProviderError, GreenhouseSchemaError } from "@hiring-signals/adapters";
 import {
@@ -280,7 +288,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     let signalsCreated = 0;
 
     for (const job of normalizedJobs) {
-      signalsCreated += await processNormalizedJob(client, source, sourceRunId, job, observedAt);
+      signalsCreated += await processNormalizedJob(client, env, source, sourceRunId, job, observedAt);
     }
 
     signalsCreated += await processMissingJobs(client, source, sourceRunId, seenExternalIds, observedAt);
@@ -520,6 +528,7 @@ async function generateCompanySignals(
  */
 async function processNormalizedJob(
   client: ReturnType<typeof createD1Client>,
+  ai: Pick<Bindings, "AI" | "VECTORIZE" | "EMBEDDING_MODEL">,
   source: Pick<SourceRow, "id" | "company_id">,
   sourceRunId: string,
   job: NormalizedJob,
@@ -574,6 +583,34 @@ async function processNormalizedJob(
     missingRunCount: lifecycle.nextConsecutiveMissingRuns,
     lastSeenAt: observedAt,
   });
+
+  // I.2: embed-and-upsert into Vectorize, gated on "this job is new or
+  // its content actually changed" -- an unchanged job on a re-scrape
+  // would otherwise re-embed identical text on every ingest run for no
+  // benefit. Placed here (before the new/reopened-signal branch below)
+  // rather than after scoring, because the gate is about content
+  // change, not about whether this run produced a scored signal: a
+  // content edit on a job with no active signal still deserves an
+  // updated embedding even though it returns 0 signals below.
+  if (!existing || upsertResult.contentChanged) {
+    await embedAndUpsertJob(ai, {
+      jobId,
+      companyId: source.company_id,
+      status: lifecycle.nextState,
+      postedAt: job.postedAt ?? existing?.first_seen_at ?? observedAt,
+      // existing?.role_primary: the job's prior classification, if any --
+      // a brand-new job hasn't been classified yet at this point in the
+      // function (classification happens further down, only on the
+      // new/reopened path), so its first embedding simply omits
+      // roleCategory rather than blocking on classification.
+      roleCategory: existing?.role_primary as RoleCategory | null | undefined,
+      locationMode: job.locationMode,
+      titleRaw: job.title,
+      departmentRaw: job.department,
+      locationRaw: job.locationRaw,
+      descriptionText: job.descriptionText,
+    });
+  }
 
   if (lifecycle.candidateSignal !== "new_job" && lifecycle.candidateSignal !== "reopened_job") {
     // Not a new/reopened job this run, but the listing's content may
@@ -721,6 +758,96 @@ async function processNormalizedJob(
   );
 
   return createdNewSignal + companySignalsCreated;
+}
+
+/** Fields embedAndUpsertJob needs, decoupled from any one caller's exact row shape (mirrors JobEmbeddingInput's own reasoning in embedding-text.ts). */
+interface EmbedJobParams {
+  jobId: string;
+  companyId: string;
+  status: "active" | "possibly_closed" | "closed";
+  /** ISO-8601. Same anchorDate fallback chain the caller already uses for freshness scoring (job.postedAt -> existing.first_seen_at -> observedAt), so the metadata value is never left undefined even for a job whose source omits postedAt. */
+  postedAt: string;
+  roleCategory?: RoleCategory | null;
+  locationMode?: LocationMode;
+  titleRaw: string;
+  departmentRaw?: string;
+  locationRaw?: string;
+  descriptionText?: string;
+}
+
+/**
+ * Embed a job's text via Workers AI and upsert the resulting vector into
+ * Vectorize, keyed on the job's own D1 primary key (spec §9.4, Milestone
+ * I.2) -- mirrors ArxivExplorer's "vector ID = bare arXiv ID" choice, so
+ * a later query-time hit maps straight back to a jobs row with no
+ * separate id-mapping table. VECTORIZE.upsert is confirmed idempotent on
+ * vector ID per Cloudflare's current Vectorize docs (an upsert with an
+ * existing id replaces its values/metadata rather than duplicating the
+ * vector), so a retried queue message that re-embeds the same job is
+ * safe by construction -- no extra dedup logic needed here.
+ *
+ * Deliberately NOT a hard dependency for ingestion (spec's I.5
+ * guardrail, applied here one milestone early): embedding is best-effort
+ * and MUST NOT throw out of this function. A Workers AI or Vectorize
+ * outage means this job stays fully ingested/classified/scored, just not
+ * semantically searchable until a later backfill (I.3) picks it up --
+ * this is a deliberate asymmetry from spec §13.4's ATS-fetch failure
+ * handling (which does retry the whole message), because losing an
+ * embedding loses nothing a job already has, while losing an ATS fetch
+ * loses the job's data entirely.
+ */
+async function embedAndUpsertJob(
+  ai: Pick<Bindings, "AI" | "VECTORIZE" | "EMBEDDING_MODEL">,
+  params: EmbedJobParams,
+): Promise<void> {
+  try {
+    const text = buildJobEmbeddingText({
+      titleRaw: params.titleRaw,
+      rolePrimary: params.roleCategory,
+      departmentRaw: params.departmentRaw,
+      locationRaw: params.locationRaw,
+      descriptionText: params.descriptionText,
+    });
+
+    const embeddingResult = await ai.AI.run(
+      ai.EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5",
+      { text: [text] },
+    );
+
+    if (!("data" in embeddingResult) || !embeddingResult.data?.[0]) {
+      // Async-batch response shape (request_id, no data yet) -- shouldn't
+      // happen for a single-text, non-queued run() call, but narrowing
+      // here keeps this function's own types honest rather than casting
+      // past a shape run() itself says is possible.
+      console.error(`Embedding skipped for job ${params.jobId}: no embedding data returned`);
+      return;
+    }
+
+    const metadata: Record<string, VectorizeVectorMetadata> = {
+      companyId: params.companyId,
+      status: params.status,
+      postedAt: params.postedAt,
+    };
+    if (params.roleCategory) {
+      metadata.roleCategory = params.roleCategory;
+    }
+    if (params.locationMode) {
+      metadata.locationMode = params.locationMode;
+    }
+
+    await ai.VECTORIZE.upsert([
+      {
+        id: params.jobId,
+        values: embeddingResult.data[0],
+        metadata,
+      },
+    ]);
+  } catch (error) {
+    // Log-and-continue, never throw: see this function's doc comment for
+    // why an embedding failure must not fail the enclosing ingest
+    // message/job processing.
+    console.error(`Embedding failed for job ${params.jobId}:`, error);
+  }
 }
 
 /**

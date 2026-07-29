@@ -9,3 +9,4 @@ export * from "./role-rules";
 export * from "./classification";
 export * from "./lifecycle";
 export * from "./signal-score";
+export * from "./embedding-text";

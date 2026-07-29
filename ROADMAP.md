@@ -1556,8 +1556,84 @@ alongside existing D1/KV/Queue).
     --dry-run` or `wrangler dev` startup (binding resolves, no config
     error).
 
-- [ ] **I.2 — Embedding write path: embed jobs at ingest time**
+- [x] **I.2 — Embedding write path: embed jobs at ingest time**
   (`apps/api/src/jobs/ingest-consumer.ts`, `packages/db`)
+  - **Status (2026-07-29): done.** `buildJobEmbeddingText` (already
+    landed in an earlier session, `packages/domain/src/embedding-text.ts`,
+    re-exported via `packages/domain/src/index.ts`) wired into
+    `ingest-consumer.ts` via a new `embedAndUpsertJob` helper, its own
+    named function rather than inlined into `processNormalizedJob` (that
+    function was already flagged in its own doc comment as the largest
+    single stage of a 359-line original — not the place to grow further).
+    Called immediately after `applyLifecycleTransition`, gated on
+    `!existing || upsertResult.contentChanged`, **before** the
+    new/reopened-signal branch below it — deliberately not after
+    scoring, because the gate is about content change, not about
+    whether this run produced a scored signal; a content edit on a job
+    with no active signal (0 signals returned) still gets a fresh
+    embedding. `roleCategory` metadata reads `existing?.role_primary`
+    (the job's *prior* classification, if any) rather than
+    `classification.rolePrimary`, since `classifyJob` hasn't run yet at
+    this point in the function for a brand-new job — its first embedding
+    simply omits `roleCategory`, not a bug, documented inline.
+    `postedAt` metadata reuses the same `job.postedAt ?? existing?.first_seen_at
+    ?? observedAt` fallback chain the caller already uses for freshness
+    scoring, so it's never left undefined for a source that omits
+    `postedAt`. `roleCategory`/`locationMode` keys are omitted from the
+    metadata object entirely when absent, rather than passed as
+    `undefined` (`VectorizeVectorMetadata` doesn't accept it).
+  - **Types verified against the actually-installed
+    `@cloudflare/workers-types@4.20260702.1`** (spec §21 discipline, not
+    assumed): `Ai_Cf_Baai_Bge_Base_En_V1_5_Input` is `{ text: string |
+    string[], pooling?: "mean"|"cls" }`; its output is `{ shape?,
+    data?: number[][], pooling? } | { request_id }` (an async-batch
+    variant `embedAndUpsertJob` narrows against defensively, logging
+    and returning rather than crashing, since it shouldn't occur for a
+    single-text non-queued `run()` call but the type says it's
+    possible). `Bindings["VECTORIZE"]` resolves to the **beta**
+    `VectorizeIndex` class (synchronous `upsert(vectors):
+    Promise<VectorizeVectorMutation>`), not the newer async `Vectorize`
+    class — confirmed no mismatch between what `bindings.ts` declares
+    and what I.2's code calls.
+  - **Idempotency confirmed against Cloudflare's current Vectorize docs**
+    (not assumed, same discipline as I.1's dimension check):
+    "[a]n upsert operation will insert vectors into the index if
+    vectors with the same ID do not exist, and overwrite vectors with
+    the same ID... the upserted vector replaces the existing vector in
+    full" (developers.cloudflare.com/vectorize/reference/client-api),
+    and "[i]f the same vector id is upserted twice... the index would
+    reflect the vector that was added last"
+    (developers.cloudflare.com/vectorize/best-practices/insert-vectors)
+    — a retried queue message that re-embeds the same job overwrites
+    cleanly, no duplicate-vector or merge-of-old-and-new-metadata risk.
+  - **Must-not-become-a-hard-dependency guardrail implemented**: the
+    entire embed-and-upsert body runs inside a try/catch;
+    `console.error`-and-return on failure, never throws out of the
+    function, so an `AI.run`/`VECTORIZE.upsert` failure never fails the
+    enclosing `processNormalizedJob` call or retries the queue message
+    — confirmed by the failure-path test below, which asserts the
+    message is still acked (not retried) and the job/signal are still
+    fully written to D1 despite the embedding failure.
+  - **Verified for real**: extended `ingest-consumer.test.ts`'s
+    `makeFakeEnv()` with real recording fakes for `AI`/`VECTORIZE`
+    (`aiRunCalls`/`vectorizeUpsertCalls`, an overridable `aiRunImpl` for
+    the failure-path test) — the other two test files sharing this
+    `Bindings` shape (`scheduler.test.ts`, `reconciliation.test.ts`)
+    were confirmed to never call `processNormalizedJob`/
+    `handleIngestMessage` at all, so their existing `unusedBinding<T>`
+    throwing-Proxy placeholders for `AI`/`VECTORIZE` were left
+    untouched rather than needlessly upgraded. Added a happy-path test
+    (asserts `AI.run`'s model/input text, and `VECTORIZE.upsert`'s
+    vector ID = the job's own D1 id, 768-length values, and the
+    documented metadata shape with `roleCategory` correctly absent on a
+    first-ever embed) and a failure-path test (`AI.run` rejects ->
+    message still acked/not retried, job+signal still written, failure
+    logged via `console.error`, `VECTORIZE.upsert` never reached).
+    `pnpm -r typecheck`/`lint`/`test` clean across all 5 workspace
+    projects: 63 (domain) + 19 (db) + 30 (adapters) + 28 (api, up from
+    26 pre-change) = 140 tests passing, 0 lint errors (same 4
+    pre-existing warnings as the pre-I.2 baseline, confirmed via
+    `git stash` diff — none newly introduced).
   - New function, `packages/domain/src/embedding-text.ts`:
     `buildJobEmbeddingText(job): string` — deterministic, pure,
     unit-testable function that assembles the text sent to Workers AI

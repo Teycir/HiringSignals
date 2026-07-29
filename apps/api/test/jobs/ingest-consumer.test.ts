@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { Message } from "@cloudflare/workers-types";
+import type { Message, VectorizeVector } from "@cloudflare/workers-types";
 import type { IngestMessage } from "@hiring-signals/domain";
 import type { Bindings } from "../../src/bindings";
 
@@ -430,8 +430,25 @@ function unusedBinding<T>(name: string): T {
   ) as T;
 }
 
+/**
+ * Records of calls into the fake AI/VECTORIZE bindings, reset per test
+ * via makeFakeEnv() (fresh arrays each call, same pattern as `sent`
+ * below for INGEST_QUEUE). Module-level so I.2's happy/failure-path
+ * tests can inspect them without makeFakeEnv() needing to return yet
+ * another destructured field that every other existing test in this
+ * file would then have to ignore.
+ */
+let aiRunCalls: Array<{ model: string; inputs: unknown }> = [];
+let vectorizeUpsertCalls: Array<VectorizeVector[]> = [];
+/** Overridable per-test: defaults to a realistic 768-dim embedding success; I.2's failure-path test replaces this with a rejection. */
+let aiRunImpl: () => Promise<{ data: number[][] }> = async () => ({
+  data: [new Array(768).fill(0.01)],
+});
+
 function makeFakeEnv(): { env: Bindings; sent: Array<{ message: IngestMessage; delaySeconds?: number }> } {
   const sent: Array<{ message: IngestMessage; delaySeconds?: number }> = [];
+  aiRunCalls = [];
+  vectorizeUpsertCalls = [];
   const env = {
     DB: unusedBinding<Bindings["DB"]>("DB"),
     CACHE: unusedBinding<Bindings["CACHE"]>("CACHE"),
@@ -440,8 +457,18 @@ function makeFakeEnv(): { env: Bindings; sent: Array<{ message: IngestMessage; d
         sent.push({ message, delaySeconds: options?.delaySeconds });
       },
     } as unknown as Bindings["INGEST_QUEUE"],
-    AI: unusedBinding<Bindings["AI"]>("AI"),
-    VECTORIZE: unusedBinding<Bindings["VECTORIZE"]>("VECTORIZE"),
+    AI: {
+      run: async (model: string, inputs: unknown) => {
+        aiRunCalls.push({ model, inputs });
+        return aiRunImpl();
+      },
+    } as unknown as Bindings["AI"],
+    VECTORIZE: {
+      upsert: async (vectors: VectorizeVector[]) => {
+        vectorizeUpsertCalls.push(vectors);
+        return { ids: vectors.map((v) => v.id), count: vectors.length };
+      },
+    } as unknown as Bindings["VECTORIZE"],
     ENVIRONMENT: "development" as const,
     EMBEDDING_MODEL: "@cf/baai/bge-base-en-v1.5",
   };
@@ -473,6 +500,7 @@ beforeEach(() => {
   currentState = createFakeState();
   fetchBoardImpl = vi.fn(async () => ({ httpStatus: 200, rawBody: { jobs: [] } }));
   normalizeImpl = vi.fn(() => [makeNormalizedJob()]);
+  aiRunImpl = async () => ({ data: [new Array(768).fill(0.01)] });
 });
 
 describe("handleIngestMessage - happy path", () => {
@@ -512,6 +540,92 @@ describe("handleIngestMessage - happy path", () => {
     // source_runs row closed out as success.
     const run = currentState.sourceRuns.get("run-1");
     expect(run?.status).toBe("success");
+  });
+
+  it("I.2: embeds a new job and upserts the vector with the documented metadata shape (spec §9.4)", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    const { message, acked } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+
+    await handleIngestMessage(message, env);
+
+    expect(acked).toEqual([true]);
+
+    // AI.run called once with the model from EMBEDDING_MODEL and the
+    // built embedding text as a single-element array (per
+    // buildJobEmbeddingText/Ai_Cf_Baai_Bge_Base_En_V1_5_Input's `text:
+    // string | string[]` shape).
+    expect(aiRunCalls).toHaveLength(1);
+    expect(aiRunCalls[0]!.model).toBe("@cf/baai/bge-base-en-v1.5");
+    expect(aiRunCalls[0]!.inputs).toEqual({
+      text: ["Site Reliability Engineer\nSite Reliability Engineer\nRemote - US\nJoin our infra team."],
+    });
+
+    // VECTORIZE.upsert called once, vector ID = the job's own D1 id
+    // (mirrors ArxivExplorer's "vector ID = bare arXiv ID" choice),
+    // metadata carrying the documented filter fields. roleCategory is
+    // absent here: at embed time (right after applyLifecycleTransition,
+    // before classifyJob runs) this is a brand-new job's *first*
+    // embedding, so it has no prior classification to report yet --
+    // that's expected, not a bug (see embedAndUpsertJob's doc comment).
+    expect(vectorizeUpsertCalls).toHaveLength(1);
+    const [vector] = vectorizeUpsertCalls[0]!;
+    const job = [...currentState.jobsByKey.values()][0]!;
+    expect(vector!.id).toBe(job.id);
+    expect(vector!.values).toHaveLength(768);
+    expect(vector!.metadata).toMatchObject({
+      companyId: "co-1",
+      status: "active",
+      locationMode: "remote",
+    });
+    expect(vector!.metadata).not.toHaveProperty("roleCategory");
+    expect(typeof vector!.metadata!.postedAt).toBe("string");
+  });
+
+  it("I.2: an AI.run rejection is logged and does not fail the job/message (log-and-continue)", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+    const { message, acked, retried } = makeMessage({
+      version: 1,
+      sourceId: "src-1",
+      runId: "run-1",
+      requestedAt: new Date().toISOString(),
+      attempt: 1,
+    });
+    const { env } = makeFakeEnv();
+    aiRunImpl = async () => {
+      throw new Error("Workers AI outage");
+    };
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await handleIngestMessage(message, env);
+
+    // Message still acked, not retried: an embedding failure must not
+    // be treated like an ATS-fetch failure (spec's I.5 guardrail,
+    // applied one milestone early -- see embedAndUpsertJob's doc
+    // comment for why this is a deliberate asymmetry).
+    expect(acked).toEqual([true]);
+    expect(retried).toEqual([]);
+
+    // Job still fully ingested/classified/scored despite the embedding
+    // failure -- this is the entire point of log-and-continue.
+    expect(currentState.jobsByKey.size).toBe(1);
+    expect(currentState.signalsById.size).toBe(1);
+
+    // Vectorize never reached (AI.run failed first), and the failure
+    // was logged rather than silently swallowed.
+    expect(vectorizeUpsertCalls).toHaveLength(0);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("Embedding failed for job"),
+      expect.any(Error),
+    );
+
+    consoleError.mockRestore();
   });
 
   it("is idempotent: retrying the same runId does not duplicate observations or signals", async () => {
