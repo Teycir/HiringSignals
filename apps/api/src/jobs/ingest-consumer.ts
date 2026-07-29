@@ -420,7 +420,7 @@ async function processNormalizedJob(
 
   const existing = await getJobByExternalId(client, source.id, job.externalJobId);
 
-  const jobId = await upsertJob(client, {
+  const upsertResult = await upsertJob(client, {
     sourceId: source.id,
     companyId: source.company_id,
     externalJobId: job.externalJobId,
@@ -437,6 +437,7 @@ async function processNormalizedJob(
     contentHash,
     observedAt,
   });
+  const jobId = upsertResult.id;
 
   await insertObservationIdempotent(client, {
     jobId,
@@ -460,6 +461,34 @@ async function processNormalizedJob(
   });
 
   if (lifecycle.candidateSignal !== "new_job" && lifecycle.candidateSignal !== "reopened_job") {
+    // Not a new/reopened job this run, but the listing's content may
+    // still have changed (title/description/department/employment
+    // type/location -- whatever upsertJob's content_hash comparison
+    // covers). A relaxed requirement, a remote->onsite flip, etc. on a
+    // role we're already tracking is itself meaningful evidence (F4),
+    // distinct from and cheaper than a full re-score: only recorded when
+    // there's an existing active signal for this (company, role) to
+    // attach it to -- a content edit on a job with no active signal has
+    // nothing to provide evidence *for* yet.
+    if (upsertResult.contentChanged && existing?.role_primary) {
+      const activeSignalForEdit = await findActiveSignal(client, {
+        companyId: source.company_id,
+        // role_primary is stored as TEXT in D1 (JobRow's `string | null`)
+        // but is always written from RoleCategory by updateJobClassification
+        // -- same cast pattern this file already uses for existing?.status.
+        roleCategory: existing.role_primary as Parameters<typeof findActiveSignal>[1]["roleCategory"],
+        signalType: "new_job",
+      });
+      if (activeSignalForEdit) {
+        await appendSignalEvidence(client, {
+          signalId: activeSignalForEdit.id,
+          jobId,
+          evidenceType: "job_updated",
+          observedAt,
+          payload: { contentHash },
+        });
+      }
+    }
     return 0;
   }
 

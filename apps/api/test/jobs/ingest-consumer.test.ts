@@ -34,6 +34,7 @@ function createFakeState() {
     signals: new Map<string, Row>(), // "companyId::role::type" -> active signal row
     signalsById: new Map<string, Row>(),
     evidenceCount: 0,
+    evidenceRows: [] as Row[],
   };
 }
 
@@ -45,12 +46,12 @@ function makeFakeClient(state: FakeState) {
       if (sql.includes("FROM sources WHERE id")) {
         return (state.sources.get(params[0] as string) as T) ?? null;
       }
-      if (sql.includes("SELECT id FROM jobs WHERE source_id")) {
+      if (sql.includes("SELECT id, content_hash FROM jobs WHERE source_id")) {
         const key = `${params[0]}::${params[1]}`;
         const row = state.jobsByKey.get(key);
-        return row ? ({ id: row.id } as T) : null;
+        return row ? ({ id: row.id, content_hash: row.content_hash } as T) : null;
       }
-      if (sql.includes("SELECT id, status, missing_run_count, first_seen_at FROM jobs")) {
+      if (sql.includes("SELECT id, status, missing_run_count, first_seen_at, role_primary FROM jobs")) {
         const key = `${params[0]}::${params[1]}`;
         return (state.jobsByKey.get(key) as T) ?? null;
       }
@@ -272,6 +273,16 @@ function makeFakeClient(state: FakeState) {
       // --- signal_evidence insert (appendSignalEvidence) ---
       if (sql.includes("INSERT INTO signal_evidence")) {
         state.evidenceCount++;
+        const [, signalId, jobId, evidenceType, observedAt, payloadJson] = params as [
+          string, string, string | null, string, string, string,
+        ];
+        state.evidenceRows.push({
+          signal_id: signalId,
+          job_id: jobId,
+          evidence_type: evidenceType,
+          observed_at: observedAt,
+          payload_json: payloadJson,
+        });
         return { changes: 1 };
       }
 
@@ -498,6 +509,100 @@ describe("handleIngestMessage - happy path", () => {
 
     // Only one source_runs row exists for this runId across both attempts.
     expect(currentState.sourceRuns.size).toBe(1);
+  });
+
+  it("records job_updated evidence on an active signal when a tracked job's content changes (F4)", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+
+    // Run 1: job seen for the first time -- creates the new_job signal
+    // (same setup as the happy-path test).
+    normalizeImpl = vi.fn(() => [makeNormalizedJob("job-ext-1")]);
+    await handleIngestMessage(
+      makeMessage({
+        version: 1,
+        sourceId: "src-1",
+        runId: "run-1",
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+      }).message,
+      makeFakeEnv().env,
+    );
+
+    expect(currentState.signalsById.size).toBe(1);
+    const signalId = [...currentState.signalsById.keys()][0]!;
+    const evidenceAfterRun1 = currentState.evidenceCount;
+
+    // Run 2: same external job id, but the description text changed --
+    // still present (not absent, not reopened), so this run's lifecycle
+    // candidateSignal is undefined and the pipeline would otherwise
+    // return early with no evidence at all.
+    normalizeImpl = vi.fn(() => [
+      { ...makeNormalizedJob("job-ext-1"), descriptionText: "Now fully remote, 0-2 years experience." },
+    ]);
+    await handleIngestMessage(
+      makeMessage({
+        version: 1,
+        sourceId: "src-1",
+        runId: "run-2",
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+      }).message,
+      makeFakeEnv().env,
+    );
+
+    // No new signal was created or duplicated -- still the same one row.
+    expect(currentState.signalsById.size).toBe(1);
+    expect([...currentState.signalsById.keys()][0]).toBe(signalId);
+
+    // Exactly one additional evidence row was appended, typed job_updated,
+    // attached to the existing signal.
+    expect(currentState.evidenceCount).toBe(evidenceAfterRun1 + 1);
+    const lastEvidence = currentState.evidenceRows[currentState.evidenceRows.length - 1]!;
+    expect(lastEvidence.signal_id).toBe(signalId);
+    expect(lastEvidence.evidence_type).toBe("job_updated");
+  });
+
+  it("does not record job_updated evidence when content changes but nothing is classified/tracked yet", async () => {
+    currentState.sources.set("src-1", makeSourceRow("src-1"));
+
+    // Run 1: a job whose title/department don't clear the auto-classify
+    // threshold, so no signal is ever created for it (role_primary stays
+    // null on the row -- see updateJobClassification).
+    normalizeImpl = vi.fn(() => [
+      { ...makeNormalizedJob("job-ext-1"), title: "Mystery Role", department: undefined },
+    ]);
+    await handleIngestMessage(
+      makeMessage({
+        version: 1,
+        sourceId: "src-1",
+        runId: "run-1",
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+      }).message,
+      makeFakeEnv().env,
+    );
+
+    expect(currentState.signalsById.size).toBe(0);
+    const evidenceAfterRun1 = currentState.evidenceCount;
+
+    // Run 2: content changes, but there's still no active signal to
+    // attach evidence to -- the F4 path must be a no-op here.
+    normalizeImpl = vi.fn(() => [
+      { ...makeNormalizedJob("job-ext-1"), title: "Mystery Role", department: undefined, descriptionText: "Updated." },
+    ]);
+    await handleIngestMessage(
+      makeMessage({
+        version: 1,
+        sourceId: "src-1",
+        runId: "run-2",
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+      }).message,
+      makeFakeEnv().env,
+    );
+
+    expect(currentState.evidenceCount).toBe(evidenceAfterRun1);
+    expect(currentState.signalsById.size).toBe(0);
   });
 
   it("stays active after one absence, then becomes possibly_closed after a second consecutive absence (spec 5.4)", async () => {
