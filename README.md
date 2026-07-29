@@ -76,44 +76,27 @@ infrastructure/  D1 migrations (0001_initial_schema.sql landed) + deploy scripts
 - **Validation**: Zod schemas
 - **Code Quality**: ESLint, Prettier, strict TypeScript
 
-## Status: Phase 0 complete, Phase 1 (D1 + read paths) in progress
+## Status: Phase 0, Phase 1, Milestones A-E complete — ingestion pipeline running
 
 Done:
 
-- pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base
-- `apps/web`: Next.js 16 + Tailwind + TS scaffold, `lib/api-client.ts` wired
-  to call the Worker API only (never ATS providers directly, spec 12.1)
-- `apps/api`: Hono Worker with request-id/security-headers/error-handler
-  middleware chain, a cron scheduler stub and queue-consumer stub,
-  `wrangler.toml` with D1/KV/Queues bindings and the 15-minute scheduler
-  cron (spec 13.1)
-- `packages/domain`: role taxonomy, ATS provider enum, NormalizedJob/Signal/
-  IngestMessage Zod schemas, API envelope helpers
-- `infrastructure/d1/migrations/0001_initial_schema.sql`: full schema from
-  spec 8.2 (companies, sources, source_runs, jobs, job_observations, signals,
-  signal_evidence + the three feed/lookup indexes)
-- `packages/db`: parameterized D1 client wrapper (spec 14.1) plus
-  `signals-repo`, `companies-repo`, `facets-repo` -- cursor-paginated signal
-  feed (score_desc/newest/company_asc), signal detail with evidence,
-  company autocomplete + detail + recent signals, and KV-cached facet counts
-- `apps/api` routes `GET /api/v1/signals`, `/signals/:id`, `/companies`,
-  `/companies/:slug`, `/facets` now query D1 for real (no longer stubs)
+- **Phase 0 — Scaffolding:** pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base, Next.js 16 + Tailwind `apps/web`, Hono Worker `apps/api` with middleware chain, `packages/domain` core schemas, provisioned D1/KV/Queue resources, anti-abuse middleware wired
+- **Phase 1 — D1 schema + read paths:** Full schema (migrations 0001-0004), parameterized D1 client, cursor-paginated signal feed (score_desc/newest/company_asc), company autocomplete/detail/recent-signals, KV-cached facet counts, all GET routes (`/api/v1/signals`, `/signals/:id`, `/companies`, `/companies/:slug`, `/facets`) query D1, locationMode/country/source filters via EXISTS subqueries
+- **Milestone A — Write-path repositories:** `sources-repo.ts` (getDueSources, createSource, updateSource, recordSourceRun, markSourceSuccess/Failure), `jobs-repo.ts` (upsertJob, insertJobObservation, getJobsMissingFromRun, applyLifecycleTransition), seed fixtures (`seed-local-d1.sql`)
+- **Milestone B — Classification engine:** Lifecycle state machine (active→possibly_closed→closed→reopened), signal classification (new_matching_role/reopened_role/still_active_role/hiring_burst/demand_acceleration/multi_location_expansion), `computeNewJobScore` with freshness decay
+- **Milestone C — Wiring:** `apps/api/src/jobs/scheduler.ts` (getDueSources + enqueue with per-source jitter), `apps/api/src/jobs/ingest-consumer.ts` (full fetch→validate→normalize→upsert→observe→lifecycle→classify→score→signal pipeline, idempotent per (sourceId, runId), retry on 429/5xx with exponential backoff, skip retry on 4xx/schema errors)
+- **Milestone D — Source management ops:** `infrastructure/scripts/add-source.mjs`, `update-source.mjs`, `source-health.mjs` (shell out to `wrangler d1 execute --json`, no admin HTTP surface per no-auth decision)
+- **Milestone E — Adapters:** Greenhouse adapter with location inference, Lever adapter. Both fixture-tested, handle malformed payloads gracefully
+- **Post-D fixes:** Signal freshness anchored on job.postedAt (not scrape time), active-signal dedup bounded to 28-day lookback, test files isolated into per-package test/ folders, isUniqueConstraintError centralized in lib/d1/, ingest consumer skips retry on programmer/config errors, DB/CACHE test bindings replaced with throwing Proxy
 
-Not yet done (tracked against spec section 20):
+Test coverage: 94 tests passing workspace-wide (`pnpm -r test`).
 
-- Running the migration against an actual D1 database (needs real
-  `database_id` in `wrangler.toml`, currently `REPLACE_WITH_D1_DATABASE_ID`)
-  and seed fixtures (Phase 0 item 5) -- deferred deliberately per project
-  decision
-- Per-provider adapter implementations (Phase 1/3, spec 5.3, 20), and the
-  `sources`/`jobs` write-path repos the ingestion consumer needs
-- Wiring the cron scheduler + queue consumer to real D1 queries (still stubs)
-- Source-management ops scripts (spec 13.5) -- add/edit source, manual
-  ingestion trigger, source health -- not yet written; there is no admin
-  HTTP surface by design (the app is public/free, no login, ever)
-- `locationMode`/`country` filters on `GET /api/v1/signals` are accepted but
-  not yet applied (need a join to jobs/signal_evidence to filter by location)
+Not yet done:
+
+- Remaining ATS adapters (9 providers: Workday, Lever, SmartRecruiters, Ashby, JazzHR, BambooHR, Breezy, Recruitee, Bullhorn — spec §5.3)
 - Brutalist design tokens / dashboard UI (Phase 2)
+- CSV export endpoint (spec §10.6)
+- Production deployment (Cloudflare Pages + Workers)
 
 ## 🚀 Key Features
 
