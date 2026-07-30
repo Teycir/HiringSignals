@@ -7,47 +7,58 @@ Hiring Signals Intelligence is a web dashboard that surfaces genuine, matching I
 - **Frontend**: Next.js 16, TypeScript 5.x, Tailwind CSS
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
+- **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5`) + Vectorize (write path only so far)
 - **Package Manager**: pnpm workspace
 - **Deployment**: Cloudflare Pages (UI) + Cloudflare Workers (API)
 
 ## Architecture
 ```
-apps/web/        Next.js 16 UI -> Cloudflare Pages
-apps/api/        Cloudflare Worker API + scheduled ingestion (Hono)
-packages/domain/ Zod schemas, shared types, role/provider taxonomies
-packages/adapters/ AtsAdapter interface; per-provider implementations
-packages/db/     D1 client + repository functions
+apps/web/        Next.js 16 UI -> Cloudflare Pages (still near-scaffold, no dashboard yet)
+apps/api/        Cloudflare Worker API: routes, cron scheduler, queue consumer,
+                  daily reconciliation job, semantic-search service
+packages/domain/ Zod schemas, taxonomies, classification, lifecycle,
+                  signal scoring (v2), embedding-text, search-merge
+packages/adapters/ AtsAdapter interface; greenhouse + lever implemented, 9 more P0 pending
+packages/db/     D1 client + read/write repository functions
 packages/ui/     Optional shared UI primitives
-infrastructure/  D1 migrations + deploy scripts
+infrastructure/  D1 migrations (0001-0004) + ops scripts (add-source, update-source,
+                  add-company, source-health, backfill-embeddings)
 ```
 
-## Current Status
-**Phase 0 complete, Phase 1 (D1 + read paths) in progress**
+## Current Status (2026-07-30)
+**Phases 0-1 complete. Milestones A-E, H, and I.1-I.2 complete. Dashboard UI (Milestone F) and query-side semantic search (I.3-I.5) not started.**
+Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in sync with it.
 
 **Done:**
 - pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base
-- Next.js 16 + Tailwind + TS scaffold with API client wired to Worker API
-- Hono Worker with middleware chain, cron scheduler stub, queue-consumer stub
+- Next.js 16 + Tailwind + TS scaffold with API client wired to Worker API (UI itself not built)
+- Hono Worker with full middleware chain, real cron scheduler, real queue consumer, daily reconciliation cron
 - Role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas
-- Full D1 schema (companies, sources, source_runs, jobs, job_observations, signals, signal_evidence + indexes)
-- Parameterized D1 client wrapper with signals/companies/facets repositories
-- API routes querying D1 for real (GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets)
+- Full D1 schema (companies, sources, source_runs, jobs, job_observations, signals, signal_evidence + indexes), migrations 0001-0004
+- Parameterized D1 client wrapper with read (signals/companies/facets) and write (sources/jobs/signals/companies) repositories
+- API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources
+- Full ingestion pipeline: fetch -> validate -> normalize -> upsert -> observe -> lifecycle -> classify -> score -> signal, idempotent per (sourceId, runId)
+- Real Volume/Acceleration/Breadth signal scoring (score_version v2) and all four company-level signal types (hiring_burst, role_acceleration, multi_location, persistent_demand)
+- Jobs embedded into a Vectorize index at ingest time (semantic search write path); query-side hybrid search is implemented as a service but not yet called from the live route
+- `/api/v1/admin/*`: three secret-bearer-token-gated idempotent pipeline triggers (source-run, scheduler-flush, reconcile) -- not a login a user sees, never called from apps/web
+- 163 tests passing workspace-wide (`pnpm -r test`); `pnpm -r typecheck`/`pnpm -r lint` clean
 
 **Not yet done:**
-- Running migration against actual D1 database (needs real database_id in wrangler.toml)
-- Per-provider adapter implementations
-- Wiring cron scheduler + queue consumer to real D1 queries
-- Auth (Cloudflare Access)
-- locationMode/country filters on GET /api/v1/signals
-- Brutalist design tokens / dashboard UI
+- 9 remaining P0 ATS adapters (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR)
+- Brutalist design tokens / dashboard UI (Phase 2 / Milestone F) -- apps/web has no real routes yet
+- Query-side semantic search wiring, embedding backfill script, search UI (Milestone I.3/I.4)
+- Classification assist from embeddings (I.5, deferred until I.3/I.4 ship)
+- CSV export endpoint (spec §10.6)
+- Production deployment (Cloudflare Pages + Workers)
+- No authentication anywhere in this app, by permanent design decision (spec §3/§13.5/§14.1) -- not a gap to fill
 
 ## Key Features
 - **Role-level signals**: New matching roles, reopened roles, still active roles
-- **Company-level signals**: Hiring bursts, demand acceleration, multi-location expansion
+- **Company-level signals**: Hiring bursts, demand acceleration, multi-location expansion, persistent demand
 - **Evidence trails**: Source platform, canonical public URL, source job identifier, timestamps
-- **Filtering**: By role, location, and company
-- **Export**: CSV export of filtered signal list
-- **Scheduled ingestion**: Cloudflare Worker cron triggers with adaptive cadence per provider
+- **Filtering**: By role, location mode, country, source, signal type, score, and company; keyword search on company/headline/summary
+- **Export**: CSV export of filtered signal list (spec §10.6, not yet built)
+- **Scheduled ingestion**: Cloudflare Worker cron triggers (15-min source scheduler, daily reconciliation) with adaptive cadence per provider
 
 ## Non-goals for v1
 - No collection of private profiles or personal data

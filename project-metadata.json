@@ -11,65 +11,61 @@
   "framework": "Next.js 16",
   "backendFramework": "Hono",
   "database": "Cloudflare D1 (SQLite)",
+  "search": "Workers AI (@cf/baai/bge-base-en-v1.5) + Vectorize -- write path (embed-at-ingest) live, query-side hybrid search implemented but not yet wired into GET /api/v1/signals",
   "deployment": {
     "frontend": "Cloudflare Pages",
     "backend": "Cloudflare Workers"
   },
   "architecture": {
-    "apps/web": "Next.js 16 UI -> Cloudflare Pages",
-    "apps/api": "Cloudflare Worker API + scheduled ingestion (Hono)",
-    "packages/domain": "Zod schemas, shared types, role/provider taxonomies",
-    "packages/adapters": "AtsAdapter interface; per-provider implementations",
-    "packages/db": "D1 client + repository functions",
+    "apps/web": "Next.js 16 UI -> Cloudflare Pages (still near-scaffold, no dashboard yet)",
+    "apps/api": "Cloudflare Worker API: routes, cron scheduler, queue consumer, daily reconciliation job, semantic-search service (Hono)",
+    "packages/domain": "Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge",
+    "packages/adapters": "AtsAdapter interface; greenhouse + lever implemented, 9 more P0 providers pending",
+    "packages/db": "D1 client + read/write repository functions",
     "packages/ui": "Optional shared UI primitives",
-    "infrastructure": "D1 migrations + deploy scripts"
+    "infrastructure": "D1 migrations (0001-0004) + ops scripts (add-source, update-source, add-company, source-health, backfill-embeddings)"
   },
   "status": {
-    "phase": "Phase 1",
-    "phaseDescription": "D1 + read paths in progress",
+    "phase": "Milestones A-E, H, I.1-I.2 complete",
+    "phaseDescription": "Ingestion, classification, scoring, and daily reconciliation running end-to-end. Dashboard UI (Milestone F) and query-side semantic search (I.3-I.5) not started. Full task-by-task detail in ROADMAP.md.",
+    "asOf": "2026-07-30",
     "completed": [
-      "pnpm workspace setup",
-      "strict TypeScript base config",
-      "Prettier and shared ESLint base",
-      "Next.js 16 + Tailwind + TS scaffold",
-      "API client wired to Worker API",
-      "Hono Worker with middleware chain",
-      "cron scheduler stub and queue-consumer stub",
-      "role taxonomy and ATS provider enum",
-      "NormalizedJob/Signal/IngestMessage Zod schemas",
-      "full D1 schema with indexes",
-      "parameterized D1 client wrapper",
-      "signals/companies/facets repositories",
-      "API routes querying D1 for real",
-      "locationMode/country/source EXISTS filters on GET /api/v1/signals",
-      "opaque cursor pagination (score_desc/newest/company_asc) on GET /api/v1/signals",
-      "URL-safe UTF-8 cursor encoding (fixes InvalidCharacterError on non-ASCII company names)",
-      "signal_evidence(signal_id), signal_evidence(job_id), jobs(status,location_mode,country_code) indexes (migration 0002)",
-      "observedSince ISO-8601 datetime validation on GET /api/v1/signals",
-      "q free-text search (headline/summary/company name) on GET /api/v1/signals",
-      "try/catch around JSON.parse(payload_json) in getSignalDetail (degrades per-row, not 500)",
-      "toListItem enum validation via domain zod schemas (CorruptSignalRowError on bad data)",
-      "packages/domain eslint aligned to ^10.8.0 (matches root/db/api/adapters)",
-      "LIKE wildcard escaping in searchCompanies q filter (same class of bug as signals q, found during self-audit)",
-      "remote Cloudflare D1 database provisioned (hiring-signals, region EEUR) and migrations 0001+0002 applied and verified",
-      "remote KV namespace provisioned (CACHE) and wired in wrangler.toml",
-      "remote Queue provisioned (hiring-signals-ingest, producer+consumer) and wired in wrangler.toml",
-      "wrangler deploy --dry-run passes with all bindings resolved (DB/CACHE/INGEST_QUEUE/ENVIRONMENT)",
-      "R2 removed from the architecture entirely (was requiring Cloudflare billing/credit card) -- raw source-payload archive + export artifacts now live in CACHE KV under TTL-based keys (apps/api/src/services/raw-payload-store.ts), spec/README/AGENTS.md updated to match",
-      "migration 0003: renamed source_runs.raw_payload_r2_key -> raw_payload_key, applied and verified on local + remote D1"
+      "pnpm workspace setup, strict TypeScript base config, Prettier, shared ESLint base",
+      "Next.js 16 + Tailwind + TS scaffold with API client wired to Worker API (UI itself not built)",
+      "Hono Worker with full middleware chain, real cron scheduler, real queue consumer, daily reconciliation cron",
+      "role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas",
+      "full D1 schema with indexes, migrations 0001-0004",
+      "parameterized D1 client wrapper; read repos (signals/companies/facets) and write repos (sources/jobs/signals/companies)",
+      "API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources",
+      "locationMode/country/source EXISTS filters, cursor pagination (score_desc/newest/company_asc), q free-text search on GET /api/v1/signals",
+      "full ingestion pipeline: fetch -> validate -> normalize -> upsert -> observe -> lifecycle -> classify -> score -> signal, idempotent per (sourceId, runId)",
+      "greenhouse and lever ATS adapters, fixture-tested with location inference and malformed-payload handling",
+      "real Volume/Acceleration/Breadth signal scoring (score_version v2) replacing the v1 fixed-0.5 stub",
+      "all four company-level signal types implemented: hiring_burst, role_acceleration, multi_location, persistent_demand",
+      "daily reconciliation job recomputing stale active signals' scores without altering last_detected_at",
+      "description-channel classification-noise fix (Milestone H.1)",
+      "Vectorize index (hiring-signals-jobs, 768-dim, cosine) + Workers AI binding provisioned; jobs embedded and upserted at ingest time, best-effort/non-blocking",
+      "query-side semantic-search service and merge logic implemented (apps/api/src/services/semantic-search.ts, packages/domain/src/signal-search-merge.ts) but not yet called from the live GET /api/v1/signals route",
+      "/api/v1/admin/* re-added as a narrow, secret-bearer-token-gated set of 3 idempotent pipeline triggers (source-run, scheduler-flush, reconcile) -- never a login a user sees, never called from apps/web",
+      "local ops scripts: add-source.mjs, update-source.mjs, add-company.mjs, source-health.mjs, backfill-embeddings.mjs",
+      "163 tests passing workspace-wide (pnpm -r test); pnpm -r typecheck and pnpm -r lint clean across all 5 workspace projects"
     ],
     "pending": [
-      "per-provider adapter implementations",
-      "wiring cron scheduler + queue consumer to real D1 queries",
-      "Cloudflare Access authentication",
-      "brutalist design tokens / dashboard UI",
-      "apps/web still on eslint-config-next -> eslint 9 chain (eslint-config-next hasn't caught up to eslint 10 yet; unrelated to domain fix)"
+      "9 remaining P0 ATS adapters: Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR",
+      "brutalist design tokens / dashboard UI (Phase 2 / Milestone F) -- apps/web has no real routes yet",
+      "query-side hybrid search wiring into GET /api/v1/signals, embedding backfill run, search UI (Milestone I.3/I.4)",
+      "classification assist from embeddings (I.5, explicitly deferred until I.3/I.4 ship)",
+      "CSV export endpoint (spec section 10.6)",
+      "production deployment (Cloudflare Pages + Workers)"
+    ],
+    "explicitlyNotPlanned": [
+      "authentication of any kind -- the app is public/free permanently by deliberate design decision (spec sections 3, 13.5, 14.1), not a gap awaiting Cloudflare Access or similar"
     ]
   },
   "features": {
     "signals": {
       "roleLevel": ["new matching roles", "reopened roles", "still active roles"],
-      "companyLevel": ["hiring bursts", "demand acceleration", "multi-location expansion"]
+      "companyLevel": ["hiring bursts", "role acceleration", "multi-location expansion", "persistent demand"]
     },
     "evidence": {
       "fields": [
@@ -82,9 +78,9 @@
         "department"
       ]
     },
-    "filtering": ["by role", "by location", "by company"],
-    "export": "CSV export of filtered signal list",
-    "ingestion": "Cloudflare Worker cron triggers with adaptive cadence per provider"
+    "filtering": ["by role", "by location mode", "by country", "by source", "by signal type", "by score", "by company", "keyword search on company/headline/summary"],
+    "export": "CSV export of filtered signal list (spec section 10.6, not yet built)",
+    "ingestion": "Cloudflare Worker cron triggers (15-min source scheduler, daily reconciliation) with adaptive cadence per provider"
   },
   "nonGoals": [
     "no collection of private profiles or personal data",

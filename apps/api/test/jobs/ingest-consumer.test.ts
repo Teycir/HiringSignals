@@ -454,6 +454,7 @@ function makeFakeEnv(): { env: Bindings; sent: Array<{ message: IngestMessage; d
     CACHE: unusedBinding<Bindings["CACHE"]>("CACHE"),
     RAW_PAYLOADS: unusedBinding<Bindings["RAW_PAYLOADS"]>("RAW_PAYLOADS"),
     ABUSE_LOGS: unusedBinding<Bindings["ABUSE_LOGS"]>("ABUSE_LOGS"),
+    ADMIN_SECRET: "unused-in-this-test",
     INGEST_QUEUE: {
       send: async (message: IngestMessage, options?: { delaySeconds?: number }) => {
         sent.push({ message, delaySeconds: options?.delaySeconds });

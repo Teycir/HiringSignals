@@ -11,7 +11,8 @@
 > **AI Agent Discovery**: This project includes optimized metadata for AI agents. See [`llm.txt`](llm.txt) for machine-readable project summary and [`project-metadata.json`](project-metadata.json) for structured metadata.
 
 Build spec: `hiring-signals-spec.md` at repo root. Read that first — this
-README only tracks scaffolding status.
+README only tracks implementation status; `ROADMAP.md` has the full
+task-by-task breakdown this file summarizes.
 
 ---
 
@@ -44,7 +45,7 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 - [Use Cases](#-use-cases)
 - [Tech Stack](#-tech-stack)
 - [Layout](#layout)
-- [Status](#status-phase-0-complete-phase-1-d1--read-paths-in-progress)
+- [Status](#status-2026-07-30-phases-0-1--milestones-a-e-h-i1-i2-complete--ingestion-scoring-and-reconciliation-running-dashboard-ui-and-query-side-semantic-search-not-started)
 - [Key Features](#key-features)
 - [Local dev](#local-dev)
 - [AI Agent Metadata](#ai-agent-metadata)
@@ -57,13 +58,19 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 ## Layout
 
 ```
-apps/web/        Next.js 16 UI -> Cloudflare Pages
-apps/api/        Cloudflare Worker API + scheduled ingestion (Hono)
-packages/domain/ Zod schemas, shared types, role/provider taxonomies
-packages/adapters/ AtsAdapter interface (spec 5.3); per-provider impls land in Phase 1
-packages/db/     D1 client + repository functions (signals/companies/facets read paths)
+apps/web/        Next.js 16 UI -> Cloudflare Pages (still near-scaffold; dashboard is Milestone F)
+apps/api/        Cloudflare Worker API: routes, middleware, cron scheduler,
+                  queue consumer, reconciliation job, semantic-search service
+packages/domain/ Zod schemas, taxonomies, classification, lifecycle,
+                  signal scoring (v2), embedding-text, search-merge logic
+packages/adapters/ AtsAdapter interface (spec 5.3); greenhouse + lever implemented,
+                  9 more P0 providers not yet built
+packages/db/     D1 client + repository functions -- read paths (signals/
+                  companies/facets), write paths (sources/jobs/signals),
+                  company-role activity stats
 packages/ui/     Optional shared UI primitives (not scaffolded; see its README)
-infrastructure/  D1 migrations (0001_initial_schema.sql landed) + deploy scripts
+infrastructure/  D1 migrations (0001-0004 landed), ops scripts (add-source,
+                  update-source, add-company, source-health, backfill-embeddings)
 ```
 
 ## 🛠 Tech Stack
@@ -71,30 +78,37 @@ infrastructure/  D1 migrations (0001_initial_schema.sql landed) + deploy scripts
 - **Frontend**: Next.js 16, TypeScript 5.x, Tailwind CSS
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
+- **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize (semantic search, write path only -- query path not yet wired into the live route)
 - **Package Manager**: pnpm workspace
 - **Deployment**: Cloudflare Pages (UI) + Cloudflare Workers (API)
 - **Validation**: Zod schemas
 - **Code Quality**: ESLint, Prettier, strict TypeScript
 
-## Status: Phase 0, Phase 1, Milestones A-E complete — ingestion pipeline running
+## Status (2026-07-30): Phases 0-1 + Milestones A-E, H, I.1-I.2 complete — ingestion, scoring, and reconciliation running; dashboard UI and query-side semantic search not started
+
+See `ROADMAP.md` for the full task-by-task breakdown; this is a summary,
+kept in sync with it rather than a competing status source.
 
 Done:
 
-- **Phase 0 — Scaffolding:** pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base, Next.js 16 + Tailwind `apps/web`, Hono Worker `apps/api` with middleware chain, `packages/domain` core schemas, provisioned D1/KV/Queue resources, anti-abuse middleware wired
-- **Phase 1 — D1 schema + read paths:** Full schema (migrations 0001-0004), parameterized D1 client, cursor-paginated signal feed (score_desc/newest/company_asc), company autocomplete/detail/recent-signals, KV-cached facet counts, all GET routes (`/api/v1/signals`, `/signals/:id`, `/companies`, `/companies/:slug`, `/facets`) query D1, locationMode/country/source filters via EXISTS subqueries
-- **Milestone A — Write-path repositories:** `sources-repo.ts` (getDueSources, createSource, updateSource, recordSourceRun, markSourceSuccess/Failure), `jobs-repo.ts` (upsertJob, insertJobObservation, getJobsMissingFromRun, applyLifecycleTransition), seed fixtures (`seed-local-d1.sql`)
-- **Milestone B — Classification engine:** Lifecycle state machine (active→possibly_closed→closed→reopened), signal classification (new_matching_role/reopened_role/still_active_role/hiring_burst/demand_acceleration/multi_location_expansion), `computeNewJobScore` with freshness decay
-- **Milestone C — Wiring:** `apps/api/src/jobs/scheduler.ts` (getDueSources + enqueue with per-source jitter), `apps/api/src/jobs/ingest-consumer.ts` (full fetch→validate→normalize→upsert→observe→lifecycle→classify→score→signal pipeline, idempotent per (sourceId, runId), retry on 429/5xx with exponential backoff, skip retry on 4xx/schema errors)
-- **Milestone D — Source management ops:** `infrastructure/scripts/add-source.mjs`, `update-source.mjs`, `source-health.mjs` (shell out to `wrangler d1 execute --json`, no admin HTTP surface per no-auth decision)
-- **Milestone E — Adapters:** Greenhouse adapter with location inference, Lever adapter. Both fixture-tested, handle malformed payloads gracefully
-- **Post-D fixes:** Signal freshness anchored on job.postedAt (not scrape time), active-signal dedup bounded to 28-day lookback, test files isolated into per-package test/ folders, isUniqueConstraintError centralized in lib/d1/, ingest consumer skips retry on programmer/config errors, DB/CACHE test bindings replaced with throwing Proxy
+- **Phase 0 — Scaffolding:** pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base, Next.js 16 + Tailwind `apps/web`, Hono Worker `apps/api` with middleware chain, `packages/domain` core schemas, provisioned D1/KV/Queue/Vectorize/Workers AI resources, anti-abuse middleware wired
+- **Phase 1 — D1 schema + read paths:** Full schema (migrations 0001-0004), parameterized D1 client, cursor-paginated signal feed (score_desc/newest/company_asc), company autocomplete/detail/recent-signals, KV-cached facet counts, all GET routes (`/api/v1/signals`, `/signals/:id`, `/companies`, `/companies/:slug`, `/facets`, `/sources`) query D1, locationMode/country/source filters via EXISTS subqueries
+- **Milestone A — Write-path repositories:** `sources-repo.ts`, `jobs-repo.ts`, `companies-repo.ts` (createCompany added post-A), seed fixtures (`seed-local-d1.sql`)
+- **Milestone B — Classification & lifecycle:** Deterministic title/department/description classification with confidence scoring, negative-term guards, lifecycle state machine (active→possibly_closed→closed→reopened)
+- **Milestone C — Signal generation (new_job):** `computeNewJobScore`, `signals-write-repo.ts` (createSignal/refreshSignal/findActiveSignal/appendSignalEvidence)
+- **Milestone D — Scheduler, queue consumer, ops scripts:** `apps/api/src/jobs/scheduler.ts` (due-source enqueue with per-source jitter, never fetches), `apps/api/src/jobs/ingest-consumer.ts` (full fetch→validate→normalize→upsert→observe→lifecycle→classify→score→signal pipeline, idempotent per (sourceId, runId), every §13.4 failure branch handled), `infrastructure/scripts/` ops CLIs (add-source, update-source, add-company, source-health)
+- **Milestone E — Adapters:** Greenhouse and Lever, both fixture-tested with location inference and malformed-payload handling. 9 more P0 providers (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR) not yet built
+- **Milestone H — Signal-quality logic pass:** real Volume/Acceleration/Breadth scoring (`score_version` v2, replacing the v1 fixed-0.5 stub), company-level signal generation (`hiring_burst`, `role_acceleration`, `multi_location`, `persistent_demand` — previously typed but never created), a description-channel classification-noise fix, and a daily reconciliation job (`apps/api/src/jobs/reconciliation.ts`) that recomputes stale active signals' scores without touching `last_detected_at`
+- **Milestone I.1-I.2 — Semantic search, write path only:** `hiring-signals-jobs` Vectorize index (768-dim, cosine) + Workers AI binding provisioned; jobs are embedded and upserted into Vectorize at ingest time (`embedAndUpsertJob` in `ingest-consumer.ts`), best-effort and non-blocking (an embedding failure never fails ingestion). The query-side service (`apps/api/src/services/semantic-search.ts`) and merge logic (`packages/domain/src/signal-search-merge.ts`) are both implemented but **not yet called from `GET /api/v1/signals`** — see Milestone I.3 in `ROADMAP.md`
+- **`/api/v1/admin/*` (spec §13.5a):** re-added after the earlier no-auth removal, but as a narrow, secret-bearer-token-gated set of three idempotent pipeline triggers (source-run, scheduler-flush, reconcile) — never a login a user sees, never reachable from `apps/web`, and source add/edit still lives only in the local ops scripts
 
-Test coverage: 94 tests passing workspace-wide (`pnpm -r test`).
+Test coverage: 163 tests passing workspace-wide (`pnpm -r test`; domain 70, adapters 30, db 35, api 28). `pnpm -r typecheck` and `pnpm -r lint` both clean across all 5 workspace projects (lint: 0 errors, 3 pre-existing `consistent-type-imports` warnings in test files).
 
 Not yet done:
 
-- Remaining ATS adapters (9 providers: Workday, Lever, SmartRecruiters, Ashby, JazzHR, BambooHR, Breezy, Recruitee, Bullhorn — spec §5.3)
-- Brutalist design tokens / dashboard UI (Phase 2)
+- 9 remaining P0 ATS adapters (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR — spec §4.1/§5.3)
+- Brutalist design tokens / dashboard UI (Phase 2 / Milestone F) — `apps/web` is still the default Next.js scaffold, no real routes yet
+- Query-side hybrid search wiring + backfill script + search UI (Milestone I.3/I.4) and classification assist (I.5, deferred until I.3/I.4 ship)
 - CSV export endpoint (spec §10.6)
 - Production deployment (Cloudflare Pages + Workers)
 
@@ -103,15 +117,15 @@ Not yet done:
 ### Signal Detection
 
 - **Role-level signals**: New matching roles, reopened roles, still active roles
-- **Company-level signals**: Hiring bursts, demand acceleration, multi-location expansion
+- **Company-level signals**: Hiring bursts, role acceleration, multi-location expansion, persistent demand
 - **Evidence trails**: Source platform, canonical public URL, source job identifier, timestamps
 
 ### Core Functionality
 
 - **Multi-ATS integration**: Official documented ATS API adapters (no scraping)
 - **Real-time monitoring**: Scheduled ingestion with adaptive cadence per provider
-- **Filtering**: By role, location, and company
-- **Export**: CSV export of filtered signal list
+- **Filtering**: By role, location, source, signal type, and company (query params live; keyword `q` search on company/headline/summary works today, semantic search is write-path only — see Status)
+- **Export**: CSV export of filtered signal list (spec §10.6, not yet built)
 - **Health isolation**: Per-source error isolation prevents cascading failures
 
 ### Design Philosophy
@@ -129,11 +143,16 @@ pnpm --filter @hiring-signals/web dev     # Next.js dev server
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
 ```
 
-`apps/api`'s `wrangler.toml` is wired to real Cloudflare D1/KV/Queue
-resources (`hiring-signals` D1 database, `CACHE` KV namespace,
-`hiring-signals-ingest` queue) -- raw source-response archival and export
-artifacts live in KV under TTL-based keys rather than R2, so the project
-doesn't require Cloudflare billing/a credit card on the account.
+`apps/api`'s `wrangler.toml` is wired to real Cloudflare resources: the
+`hiring-signals` D1 database; three separate KV namespaces (`CACHE` for
+facet/rate-limit/query-embedding caching, `RAW_PAYLOADS` for the 30-day
+TTL raw source-response archive, `ABUSE_LOGS` for the abuse/audit event
+log -- split into separate namespaces so IAM can scope read access
+narrowly, per a security review); the `hiring-signals-ingest` queue; and
+the `hiring-signals-jobs` Vectorize index + Workers AI binding for
+semantic search (write path only so far -- see Status). Raw payloads
+live in KV under TTL-based keys rather than R2, so the project doesn't
+require Cloudflare billing/a credit card on the account.
 
 ---
 

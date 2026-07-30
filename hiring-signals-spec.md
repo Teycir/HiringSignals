@@ -698,9 +698,19 @@ Error envelope:
 | `GET`   | `/api/v1/facets`              | Role, company, source, location counts           |
 | `GET`   | `/api/v1/export/signals.csv`  | Server-generated CSV of the current filtered query |
 
-There is no `/api/v1/admin/*` HTTP surface. Adding/editing sources,
-triggering a manual ingestion run, and viewing source health are done
-via a local script against D1 (§13.5), not a Worker route.
+`GET /api/v1/sources` is also public/unauthenticated — a read-only
+listing (source, provider, company) alongside the table above, same
+rate-limit tier as every other route here.
+
+`/api/v1/admin/*` (spec §13.5a) is the one exception: an
+**operator-only, secret-gated** surface, never reachable from `apps/web`
+or any user-facing flow, and never a login a user sees. It exists to
+trigger the same pipelines the cron already runs (source ingest,
+scheduler flush, reconciliation) without shell access to `wrangler`; it
+creates no capability the local ops scripts (§13.5) don't already have,
+and it never touches read-path data or pricing — the product has no
+paywall, full stop. Source *write* management (add/edit a source) still
+lives only as a local ops script, not this route or any other.
 
 ### 9.3 Signal list query
 
@@ -797,12 +807,14 @@ in scope for the initial build).
 
 **Non-goals for this addendum:**
 
-- No new authenticated surface. Embedding backfill/administration must
-  not reintroduce the `/api/v1/admin/*` HTTP surface this document
-  already removed (§9.2, §13.5, §14.1) — any backfill tooling is a
-  local ops script against Workers AI/Vectorize directly, the same
-  no-HTTP-admin-surface pattern §13.5 already establishes for source
-  management.
+- Embedding backfill specifically stays a local ops script calling
+  Workers AI/Vectorize directly (§13.5's pattern), not a new admin
+  route added just for this feature — I.3's backfill doesn't need
+  `/api/v1/admin/*`'s pipeline-trigger capability (§13.5a) and
+  shouldn't grow the admin surface's scope beyond what §13.5a already
+  documents. This is a scoping note for I.3, not a blanket ban on
+  admin routes generally — that ban was narrowed to a documented
+  exception in §13.5a; read that section for the current rule.
 - No change to what evidence is required to display a signal (§1.4's
   closing paragraph) — a semantically-matched result still needs the
   full evidence trail like every other signal; semantic matching only
@@ -1149,6 +1161,69 @@ access to the Cloudflare account), that reopens the access-control
 question this section currently closes -- treat it as a new decision,
 not a default reversion to Cloudflare Access.
 
+### 13.5a Operator-triggered pipeline runs (`/api/v1/admin/*`, decided 2026-07-30)
+
+The decision above (no HTTP admin surface) covered *source write
+management* specifically -- add/edit a source, change its schedule.
+This subsection is the "new decision" that §13.5 said would be needed
+if an operational need arose: triggering the pipelines the cron already
+runs (one source's ingest, a scheduler flush, reconciliation)
+on-demand, without shell access to `wrangler d1 execute`.
+
+This does **not** reopen or weaken §14.1's core rule -- the product
+remains public, free, no paywall, no login a user ever sees, forever.
+`/api/v1/admin/*` is reachable only with a secret (`ADMIN_SECRET`, a
+Worker secret, never a browser-visible value) via `Authorization:
+Bearer <secret>`; `apps/web` never calls it and never will (verify:
+`apps/web` has no reference to `/admin` anywhere in its source). It is
+an operator convenience layered *next to* the public API, not a
+gate in front of it.
+
+Routes (`apps/api/src/routes/admin.ts`):
+
+- `POST /api/v1/admin/sources/:sourceId/run` -- enqueue one source's
+  ingest immediately, bypassing its poll schedule. Enqueues only, same
+  as the scheduler (spec §5.2's "never fetch" rule still applies).
+- `POST /api/v1/admin/scheduler/flush` -- run the due-source enqueue
+  pass out-of-band (same function the 15-minute cron calls).
+- `POST /api/v1/admin/reconcile` -- run the daily stale-signal score
+  recompute out-of-band (same function the daily cron calls).
+
+None of these create new capability -- each is a remote trigger for a
+pipeline that already exists and already runs unattended on its own
+cron. The only thing this section adds is *on-demand* triggering for an
+operator who doesn't want to wait for the next tick or reach for
+`wrangler`.
+
+Abuse protection for this surface (`apps/api/src/middleware/admin-auth.ts`),
+modeled on ArxivExplorer's own hardened admin pattern (same account,
+proven in production):
+
+1. Fail-closed: if `ADMIN_SECRET` is unset, every admin route returns
+   403 regardless of what's sent -- there is no way to accidentally
+   deploy this open.
+2. `crypto.subtle.timingSafeEqual` comparison, never `===`, so a wrong
+   guess can't be narrowed via response-time side channels.
+3. Per-IP strike counter (SHA-256-hashed IP as the KV key -- raw IPs
+   never appear in a key string) in the `ABUSE_LOGS` KV namespace
+   (separate from `CACHE`/`RAW_PAYLOADS` so an IAM policy can scope
+   abuse-log read access independently).
+4. 3-strike / 60-second lockout on repeated failures.
+5. Every auth event (success, wrong secret, lockout, secret-unset) is
+   fire-and-forget audit-logged, never blocking the response.
+
+This is strictly *more* hardened than the equivalent surface on the
+sibling ArxivExplorer project, not a weaker imitation of it -- see that
+project's `src/api-worker/routes/admin.ts` for the pattern this was
+modeled on and improved on (that version uses a flat per-IP KV counter
+without the hashed-key or fail-closed-on-unset properties).
+
+Write-scope note: admin auth is a *gate*, not a bypass. Every repo-level
+write these routes trigger still goes through the same
+company-scoped/IDOR-safe queries as everywhere else in the app -- an
+admin route enqueuing a source-run cannot touch data outside that
+source's own company, same as if the cron had triggered it.
+
 ---
 
 ## 14. Security, privacy, and compliance
@@ -1157,7 +1232,12 @@ not a default reversion to Cloudflare Access.
 
 - All data APIs are intentionally public and unauthenticated -- this is
   the permanent operating mode, not a temporary demo posture. Do not add
-  an auth step in front of `/api/v1/*` read routes.
+  an auth step in front of any `/api/v1/*` **read** route, and never put
+  a login or paywall in front of anything `apps/web` calls. The one
+  exception is the operator-only `/api/v1/admin/*` surface (§13.5a),
+  secret-gated and never reachable from the public UI -- it triggers
+  pipeline runs, not data access, and does not change this rule for
+  every other route.
 - Parameterize every SQL query.
 - Validate all external payloads.
 - Escape/sanitize untrusted job descriptions. Do not render source HTML with `dangerouslySetInnerHTML`.

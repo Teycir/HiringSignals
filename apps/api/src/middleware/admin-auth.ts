@@ -52,7 +52,14 @@ async function sha256Hex(input: string): Promise<string> {
   const bytes = new Uint8Array(digest);
   let out = "";
   for (let i = 0; i < bytes.length; i++) {
-    out += bytes[i].toString(16).padStart(2, "0");
+    // noUncheckedIndexedAccess: bytes[i] is number | undefined even though
+    // the loop bound guarantees it's in range -- a real fallback (not a
+    // non-null assertion) per this repo's own indexed-access rule
+    // (AGENTS.md). digest bytes are never actually undefined here since i
+    // < bytes.length always holds, but 0 keeps the hex string well-formed
+    // (two hex chars) even in a hypothetical out-of-bounds case rather
+    // than emitting "undefined" into what becomes a KV key/log field.
+    out += (bytes[i] ?? 0).toString(16).padStart(2, "0");
   }
   return out;
 }
@@ -85,10 +92,10 @@ interface StrikeState {
   resetAt: number;
 }
 
-async function loadAndIncrementStrikes(
+async function loadStrikes(
   kv: AppEnv["Bindings"]["ABUSE_LOGS"],
   ipHash: string,
-): Promise<StrikeState> {
+): Promise<StrikeState & { key: string; ttl: number; windowStartSec: number }> {
   const nowSec = Math.floor(Date.now() / 1000);
   const key = `${ADMIN_RL_KEY_PREFIX}${ipHash}`;
   const ttl = ADMIN_RL_WINDOW_SECONDS + 5;
@@ -116,31 +123,38 @@ async function loadAndIncrementStrikes(
     existing && nowSec - existing.windowStartSec < ADMIN_RL_WINDOW_SECONDS
       ? existing.windowStartSec
       : nowSec;
-  const priorStrikes =
+  const strikes =
     existing && nowSec - existing.windowStartSec < ADMIN_RL_WINDOW_SECONDS
       ? Math.max(0, Math.floor(existing.strikes))
       : 0;
 
-  const newStrikes = priorStrikes + 1;
-  const lockedOut = priorStrikes >= ADMIN_RL_STRIKE_LIMIT;
-
-  if (!lockedOut) {
-    try {
-      await kv.put(
-        key,
-        JSON.stringify({ strikes: newStrikes, windowStartSec }),
-        { expirationTtl: ttl },
-      );
-    } catch {
-      // write degradation: still enforce via local priorStrikes decision
-    }
-  }
-
   return {
-    strikes: newStrikes,
-    lockedOut,
+    strikes,
+    lockedOut: strikes >= ADMIN_RL_STRIKE_LIMIT,
     resetAt: (windowStartSec + ADMIN_RL_WINDOW_SECONDS) * 1000,
+    key,
+    ttl,
+    windowStartSec,
   };
+}
+
+async function addStrike(
+  kv: AppEnv["Bindings"]["ABUSE_LOGS"],
+  s: Awaited<ReturnType<typeof loadStrikes>>,
+): Promise<number> {
+  if (s.lockedOut) return s.strikes;
+  const next = s.strikes + 1;
+  try {
+    await kv.put(
+      s.key,
+      JSON.stringify({ strikes: next, windowStartSec: s.windowStartSec }),
+      { expirationTtl: s.ttl },
+    );
+  } catch {
+    // KV write degraded — return local count (best-effort lockout still
+    // enforced by in-flight loadStrikes.lockedOut check above on next call).
+  }
+  return next;
 }
 
 export function adminAuth(): MiddlewareHandler<AppEnv> {
@@ -160,7 +174,7 @@ export function adminAuth(): MiddlewareHandler<AppEnv> {
       throw new HTTPException(403, { message: "Admin access disabled." });
     }
 
-    const strikeState = await loadAndIncrementStrikes(c.env.ABUSE_LOGS, ipHash);
+    const strikeState = await loadStrikes(c.env.ABUSE_LOGS, ipHash);
     if (strikeState.lockedOut) {
       c.header("Retry-After", String(Math.max(1, Math.ceil((strikeState.resetAt - Date.now()) / 1000))));
       logAbuse(c, {
@@ -175,12 +189,13 @@ export function adminAuth(): MiddlewareHandler<AppEnv> {
 
     const authHeader = c.req.header("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      const afterStrike = await addStrike(c.env.ABUSE_LOGS, strikeState);
       logAbuse(c, {
         type: AbuseEventType.ADMIN_WRITE_UNVERIFIED,
         ip,
         route,
         detail: "401 admin: missing or malformed Authorization header",
-        meta: { ip_hash: ipHash, strikes: strikeState.strikes },
+        meta: { ip_hash: ipHash, strikes: afterStrike },
       });
       c.header("WWW-Authenticate", "Bearer");
       throw new HTTPException(401, { message: "Admin credentials required." });
@@ -189,12 +204,13 @@ export function adminAuth(): MiddlewareHandler<AppEnv> {
     const provided = authHeader.slice("Bearer ".length);
     const ok = await timingSafeEqualStrings(provided, c.env.ADMIN_SECRET);
     if (!ok) {
+      const afterStrike = await addStrike(c.env.ABUSE_LOGS, strikeState);
       logAbuse(c, {
         type: AbuseEventType.ADMIN_WRITE_UNVERIFIED,
         ip,
         route,
         detail: "403 admin: wrong ADMIN_SECRET",
-        meta: { ip_hash: ipHash, strikes: strikeState.strikes },
+        meta: { ip_hash: ipHash, strikes: afterStrike },
       });
       throw new HTTPException(403, { message: "Invalid admin credentials." });
     }
@@ -204,7 +220,7 @@ export function adminAuth(): MiddlewareHandler<AppEnv> {
       ip,
       route,
       detail: "admin auth success",
-      meta: { ip_hash: ipHash },
+      meta: { ip_hash: ipHash, strikes: strikeState.strikes },
     });
 
     await next();

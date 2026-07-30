@@ -560,6 +560,24 @@ into "a running pipeline." Depends on all three being done first.
     `apps/api/src/bindings.ts` returns nothing, and `lib/http/` contains
     only `circuit-breaker.ts`, `rate-limit.ts`, `security-headers.ts` —
     no `turnstile.ts`.
+  - **Superseded (2026-07-30): `routes/admin.ts` now exists again, by a
+    new and deliberate decision — see spec §13.5a.** This is not a
+    silent reversal of the bullet above; it's a different design for a
+    different job. What was removed here was a **cookie/Turnstile-based
+    write tier** (`protectedWriteTier`) sitting in front of write
+    routes generally — that removal stands, and neither
+    `protectedWriteTier` nor `turnstile.ts` has come back. What exists
+    now is a narrow, **secret-bearer-token, operator-only** trigger
+    surface (`ADMIN_SECRET` via `Authorization: Bearer`, never a
+    cookie, never a CAPTCHA, never anything `apps/web` calls) exposing
+    exactly three idempotent pipeline triggers (source-run,
+    scheduler-flush, reconcile) — no source create/edit, which stays a
+    local ops script only, per spec §13.5 unchanged. Confirmed
+    `apps/web` has zero references to `/admin` anywhere in its source
+    (`grep -rn "admin" apps/web` returns nothing) before accepting this
+    as compatible with "no login a user ever sees." See spec §13.5a for
+    the full decision record and rationale (modeled on, and hardened
+    beyond, ArxivExplorer's own admin pattern).
 
 - [x] Source management ops scripts (spec §13.5) — the sub-item bundled
       under the admin-route-removal bullet above, split out here since

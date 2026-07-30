@@ -13,10 +13,16 @@
  * access to ABUSE_LOGS alone.
  *
  * One policy: freeReadTier() -> generous per-IP rate limit, no CAPTCHA,
- * no auth. Applied to every route -- the app has no login and no
- * state-changing HTTP surface (spec 3, 13.5, 14.1), so there is nothing
- * that needs a stricter "write tier." Source management is a local ops
- * script against D1, not a Worker route (see infrastructure/scripts/).
+ * no auth. Applied to every public route -- the product itself has no
+ * login and no paywall, ever (spec 3, 14.1). The one exception is
+ * /api/v1/admin/* (spec 13.5a), an operator-only, secret-gated trigger
+ * surface guarded instead by its own middleware (adminAuth(), see
+ * middleware/admin-auth.ts -- a 3-strike/60s lockout on failed auth
+ * attempts, not this file's per-IP request-volume limiter); apps/web
+ * never calls it and it is never a login a user sees. Source *write*
+ * management (add/edit a source) still stays a local ops script
+ * against D1, not a Worker route (spec 13.5, see
+ * infrastructure/scripts/).
  *
  * All decisions are fire-and-forget logged to the ABUSE_LOGS KV namespace
  * via the audit-abuse helper so an operator can inspect trends locally.

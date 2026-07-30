@@ -21,8 +21,11 @@ const app = new Hono<AppEnv>();
 //   1. request id
 //   2. client ip + default verdict
 //   3. security headers / CORS
-//   4. per-route rate limit (anti-abuse tier -- no auth step; every route
-//      is public/unauthenticated by design, spec 3/13.5/14.1)
+//   4. per-route rate limit (anti-abuse tier -- no auth step; every
+//      public/user-facing route is unauthenticated by design, spec
+//      3/13.5/14.1). /api/v1/admin/* is the one exception (spec
+//      13.5a): operator-only, secret-gated via adminAuth(), never
+//      reachable from apps/web, never a login a user sees.
 //   5. zod validation (per-route)
 //   6. handler
 //   7. structured error mapping
