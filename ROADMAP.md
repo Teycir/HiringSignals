@@ -849,7 +849,34 @@ caught before it's copy-pasted into the next nine.
     `pnpm --filter @hiring-signals/adapters lint`, and
     `pnpm --filter @hiring-signals/adapters test` (43/43 adapter tests,
     including 13 new Ashby tests) pass.
-- [ ] `smartrecruiters`
+- [x] `smartrecruiters` — `packages/adapters/src/smartrecruiters.ts` + fixtures + tests
+  - **Status (2026-07-30): done.** Official SmartRecruiters Posting API docs
+    verified before implementation (spec §21): the public Posting API exposes
+    `/postings` for searching postings and `/postings/{postingId}` for detail
+    under `https://api.smartrecruiters.com/v1/companies/{companyIdentifier}`.
+    A live direct fetch from this container was blocked by the network proxy
+    (`curl: (56) CONNECT tunnel failed, response 403`), so the adapter is based
+    on current first-party docs plus public shape references rather than an
+    unverified remembered payload.
+  - `SmartRecruitersSchemaError` mirrors the existing provider adapters: bad
+    payloads throw a typed schema error instead of being normalized to an
+    ambiguous empty board. The schema accepts both the documented
+    `{ content, totalFound, limit, offset }` list envelope and a flat posting
+    array because public references describe both shapes for this public feed.
+  - Stable keys prefer `uuid`, then `id`, then the public action URL; canonical
+    evidence URL prefers `actions.details.url` before `actions.apply.url`.
+    Postings with no public action URL throw because `NormalizedJob` requires a
+    canonical evidence URL. `location.remote` is trusted when true, otherwise
+    location mode falls back to text inference from structured city/region/
+    country or address fields. `releasedDate` maps to `postedAt`; `updatedOn`
+    maps to `updatedAt` with `releasedDate` as the fallback.
+  - `smartRecruitersAdapter` is registered in `registry.ts` and re-exported
+    from `index.ts`; the ops script provider list already included
+    `smartrecruiters`, so no script enum change was required.
+  - Verified: `pnpm --filter @hiring-signals/adapters typecheck`,
+    `pnpm --filter @hiring-signals/adapters lint`, and
+    `pnpm --filter @hiring-signals/adapters test` (58/58 adapter tests,
+    including 15 new SmartRecruiters tests) pass.
 - [ ] `workable`
 - [ ] `recruitee`
 - [ ] `personio`
