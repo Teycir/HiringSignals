@@ -1,5 +1,5 @@
 {
-  "name": "@hiring-signals/db",
+  "name": "@hiring-signals/test-support",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,19 +7,12 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "@hiring-signals/domain": "workspace:*",
-    "zod": "^3.24.1"
+    "lint": "eslint ."
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250127.0",
-    "@hiring-signals/test-support": "workspace:*",
     "@types/node": "^24.13.3",
     "eslint": "^10.8.0",
-    "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
+    "typescript": "^5.7.3"
   }
 }

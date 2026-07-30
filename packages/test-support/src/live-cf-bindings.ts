@@ -1,9 +1,9 @@
 /**
- * Real `AI`, `VECTORIZE`, and `CACHE` (KV) bindings for tests -- per
- * AGENTS.md's "zero mocks, zero fakes" policy, same reasoning as
- * live-d1-client.ts in this directory. There is no way to construct a
- * live `Ai`/`VectorizeIndex`/`KVNamespace` binding outside a deployed
- * Worker, so each of these shells out to a real Cloudflare-facing CLI:
+ * Real `AI`, `VECTORIZE`, and KV bindings for tests -- per AGENTS.md's
+ * "zero mocks, zero fakes" policy, same reasoning as live-d1-client.ts
+ * in this package. There is no way to construct a live
+ * `Ai`/`VectorizeIndex`/`KVNamespace` binding outside a deployed Worker,
+ * so each of these shells out to a real Cloudflare-facing CLI:
  *
  * - AI + VECTORIZE: `wrangler`'s dev/remote HTTP surface isn't scriptable
  *   for a one-off run() the way D1/KV are, so these two go through the
@@ -11,12 +11,19 @@
  *   already established (Authorization: Bearer CF_TOKEN from
  *   .env.local, deliberately scoped to Workers AI: Edit + Vectorize:
  *   Edit only -- see .env.local's own header comment for why).
- * - CACHE (KV): unlike AI/Vectorize, `wrangler kv key put/get/delete`
- *   IS a real scriptable CLI surface (confirmed via `wrangler kv key
- *   --help`, 2026-07-30) -- so per the "use wrangler CLI for KV too,
- *   like D1" decision, this piggybacks on wrangler's own login instead
- *   of widening CF_TOKEN's scope to include KV, keeping that token
- *   exactly as narrowly scoped as .env.local's header documents.
+ * - KV: unlike AI/Vectorize, `wrangler kv key put/get/delete` IS a real
+ *   scriptable CLI surface (confirmed via `wrangler kv key --help`,
+ *   2026-07-30) -- so per the "use wrangler CLI for KV too, like D1"
+ *   decision, this piggybacks on wrangler's own login instead of
+ *   widening CF_TOKEN's scope to include KV, keeping that token exactly
+ *   as narrowly scoped as .env.local's header documents.
+ *
+ * Lives in `@hiring-signals/test-support` (a real workspace package),
+ * not inside `apps/api/test/lib/` where it originated (2026-07-30) --
+ * same reasoning as live-d1-client.ts's header comment: `packages/db`
+ * needs this too, and neither `apps/api` (wrong dependency direction)
+ * nor repo-root `lib/` (documented project-agnostic, zero
+ * `@hiring-signals/*` imports) is the right home.
  *
  * Node-version note: same as live-d1-client.ts -- run under
  * `nvm use 24.18.0`, wrangler requires >=22.
@@ -28,11 +35,22 @@ import * as fs from "node:fs";
 import type { Ai, VectorizeIndex, VectorizeMatches, VectorizeVector, KVNamespace } from "@cloudflare/workers-types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const API_DIR = path.resolve(__dirname, "../..");
-const REPO_ROOT = path.resolve(API_DIR, "../..");
+// packages/test-support/src -> repo root -> apps/api. Same "exactly one
+// wrangler.toml in the repo" reasoning as live-d1-client.ts's API_DIR.
+const REPO_ROOT = path.resolve(__dirname, "../../..");
+const API_DIR = path.join(REPO_ROOT, "apps/api");
 
 const CF_ACCOUNT_ID = "c62f54368e3f6a1f503afa434771b7e4"; // wrangler.toml's account_id
-const KV_CACHE_NAMESPACE_ID = "eed9bc4587124ff8b55ee274a0a2c66e"; // wrangler.toml's CACHE binding id
+// wrangler.toml's three KV namespace ids (CACHE/RAW_PAYLOADS/ABUSE_LOGS)
+// -- kept as a lookup table, not one hardcoded constant, so
+// createLiveKvNamespace can serve any of the three bindings, not just
+// CACHE (2026-07-30 generalization; see ROADMAP.md Milestone J).
+const KV_NAMESPACE_IDS = {
+  CACHE: "eed9bc4587124ff8b55ee274a0a2c66e",
+  RAW_PAYLOADS: "ca20113fb0cf427f87310007f96f2cb5",
+  ABUSE_LOGS: "4222eb727bff4cec8aee8b2442f71a13",
+} as const;
+export type LiveKvBinding = keyof typeof KV_NAMESPACE_IDS;
 
 /** Reads CF_TOKEN from .env.local if not already in the environment --
  * same inline parser backfill-embeddings.mjs uses. */
@@ -64,19 +82,24 @@ function runWrangler(args: string[]): Promise<{ code: number; stdout: string; st
 }
 
 /**
- * Real `KVNamespace` backed by the live, remote `CACHE` KV namespace via
- * `wrangler kv key put/get/delete --namespace-id ... --remote`. Only
- * implements the three methods ttl-store.ts's makeTtlStore actually
- * calls (get with "text" type, put with expirationTtl, delete) --
- * narrower than the full KVNamespace interface on purpose, cast to it
- * below since that's all any current caller needs.
+ * Real `KVNamespace` backed by one of the three live, remote KV
+ * namespaces (`CACHE`/`RAW_PAYLOADS`/`ABUSE_LOGS`, see wrangler.toml)
+ * via `wrangler kv key put/get/delete --namespace-id ... --remote`.
+ * Defaults to `CACHE` (this function's original single-namespace
+ * behavior, before the 2026-07-30 generalization) so existing call
+ * sites written as `createLiveKvNamespace()` keep working unchanged.
+ * Only implements the three methods ttl-store.ts's makeTtlStore
+ * actually calls (get with "text" type, put with expirationTtl,
+ * delete) -- narrower than the full KVNamespace interface on purpose,
+ * cast to it below since that's all any current caller needs.
  *
  * get() on a missing key: confirmed live (2026-07-30) that `wrangler kv
  * key get` on a nonexistent key exits non-zero with a 404 from
  * Cloudflare's API, not an empty success -- translated to `null` below
  * to match KVNamespace.get's own documented behavior for a missing key.
  */
-export function createLiveKvNamespace(): KVNamespace {
+export function createLiveKvNamespace(binding: LiveKvBinding = "CACHE"): KVNamespace {
+  const namespaceId = KV_NAMESPACE_IDS[binding];
   return {
     async get(key: string, _type?: unknown): Promise<string | null> {
       const { code, stdout, stderr } = await runWrangler([
@@ -85,7 +108,7 @@ export function createLiveKvNamespace(): KVNamespace {
         "get",
         key,
         "--namespace-id",
-        KV_CACHE_NAMESPACE_ID,
+        namespaceId,
         "--remote",
         "--text",
       ]);
@@ -99,7 +122,7 @@ export function createLiveKvNamespace(): KVNamespace {
     },
 
     async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
-      const args = ["kv", "key", "put", key, value, "--namespace-id", KV_CACHE_NAMESPACE_ID, "--remote"];
+      const args = ["kv", "key", "put", key, value, "--namespace-id", namespaceId, "--remote"];
       if (options?.expirationTtl) args.push("--ttl", String(options.expirationTtl));
       const { code, stdout, stderr } = await runWrangler(args);
       if (code !== 0) {
@@ -118,7 +141,7 @@ export function createLiveKvNamespace(): KVNamespace {
         "delete",
         key,
         "--namespace-id",
-        KV_CACHE_NAMESPACE_ID,
+        namespaceId,
         "--remote",
       ]);
       if (code !== 0) {

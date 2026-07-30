@@ -9,6 +9,19 @@
  * `D1Database` binding outside a deployed Worker -- confirmed by that
  * file's own header comment, same constraint applies here).
  *
+ * Lives in `@hiring-signals/test-support` (a real workspace package),
+ * not inside `apps/api/test/lib/` where it originated (2026-07-30) --
+ * `packages/db/test/*.test.ts` needs this exact same client and
+ * `packages/db` cannot import from `apps/api` (wrong dependency
+ * direction; `apps/api` depends on `packages/db`, not the reverse), and
+ * this can't live in repo-root `lib/` either since that directory is
+ * explicitly documented (`lib/README.md`) as project-agnostic with zero
+ * `@hiring-signals/*` imports -- this file is neither. A real workspace
+ * package under `packages/*` (already a pnpm-workspace.yaml glob, no
+ * config change needed) is the correct fit: both `apps/api` and
+ * `packages/db` (and any future test file) import it the same way any
+ * other workspace dependency is imported.
+ *
  * `wrangler d1 execute --command` has no bound-parameter flag (confirmed
  * via `wrangler d1 execute --help`, 2026-07-30 -- only `--command`/
  * `--file`, no parameter-binding option), so this client inlines values
@@ -33,12 +46,27 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import type { D1Client } from "@hiring-signals/db";
+// Imported from lib/d1/client.ts directly, NOT from @hiring-signals/db
+// (which re-exports the same type -- see packages/db/src/d1-client.ts's
+// own header comment: "if you're fixing a bug here, fix it in
+// lib/d1/client.ts, not here"). Importing the type from its true source
+// avoids a `db -> test-support -> db` cycle in the pnpm workspace graph
+// now that packages/db/test/*.test.ts also depends on test-support
+// (ROADMAP.md Milestone J) -- pnpm's cycle detection doesn't distinguish
+// dependencies from devDependencies, so the only real fix is not having
+// the edge at all. lib/ is project-agnostic and has zero
+// @hiring-signals/* imports of its own (lib/README.md), so this adds no
+// new cycle risk going forward.
+import type { D1Client } from "../../../lib/d1/client";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// apps/api/test/lib -> apps/api (where wrangler.toml's D1 binding lives,
-// same cwd requirement infrastructure/scripts/lib/d1-exec.mjs documents).
-const API_DIR = path.resolve(__dirname, "../..");
+// packages/test-support/src -> repo root -> apps/api (where
+// wrangler.toml's D1 binding lives, same cwd requirement
+// infrastructure/scripts/lib/d1-exec.mjs documents). This must resolve
+// to apps/api regardless of which package's test imports this file --
+// there is exactly one wrangler.toml with this D1 binding in the repo.
+const REPO_ROOT = path.resolve(__dirname, "../../..");
+const API_DIR = path.join(REPO_ROOT, "apps/api");
 
 /** Escapes one JS value into a SQL literal for inline substitution into
  * a `--command` string. Mirrors infrastructure/scripts/lib/d1-exec.mjs's

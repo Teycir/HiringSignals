@@ -100,6 +100,48 @@ oversight to "fix" later:
   still fine to construct in a test — the rule is about not faking the
   systems that store/serve data, not about banning literal string
   constants in test code.
+- **Two decided, documented exceptions (2026-07-30), narrower than the
+  rule above suggests — both apply only to `apps/api/test/jobs/*.test.ts`,
+  neither weakens the D1/AI/Vectorize/KV rule itself:**
+  - **ATS adapter mocking (`vi.mock("@hiring-signals/adapters")` in
+    `ingest-consumer.test.ts`).** Accepted, not a violation. This mocks
+    `getAdapterForProvider` so `fetchBoard`/`normalize` return scripted
+    values (a canned job payload, or a scripted HTTP status like
+    429/503/404) to `handleIngestMessage`. The distinction from a
+    forbidden fake: `fetchBoard` calls a real third-party ATS board over
+    HTTP (Greenhouse, Lever, etc.) — there is no Cloudflare account
+    resource backing it the way there is for D1/AI/Vectorize/KV, and no
+    way to make a real board return 429/503/404 on demand for a test.
+    What `ingest-consumer.test.ts` actually needs to verify is
+    orchestration (retry/backoff/idempotency given an HTTP outcome), not
+    "is a real board shaped the way we expect" — that question is
+    already covered, with zero mocking, by `packages/adapters/test/*
+    .test.ts`'s static JSON fixtures (`greenhouse.test.ts` et al., which
+    call `normalize()` directly against real recorded board-response
+    shapes). A scripted `fetchBoard` return value here is the same kind
+    of fixture input the rule above already permits ("a query string, a
+    role filter"), just shaped like an HTTP outcome instead of a string.
+  - **`INGEST_QUEUE` (`Bindings["INGEST_QUEUE"]`, the
+    `hiring-signals-ingest` Cloudflare Queue).** Accepted as a
+    documented, permanent exception to the zero-fake rule — capture
+    `send()` calls into an in-memory array (`sent: []`, same pattern
+    `scheduler.test.ts`/`ingest-consumer.test.ts` already use), never
+    call the real binding. Reasoning: unlike D1/AI/Vectorize/KV, a real
+    `queue.send()` isn't a read/write against a resource the test itself
+    observes — it hands a message to the *same* queue the real deployed
+    consumer is subscribed to, which would actually dequeue and process
+    it (re-triggering `handleIngestMessage` from inside a test of
+    `handleIngestMessage`, or causing `scheduler.test.ts` to trigger real
+    fetches against real ATS boards). No wrangler command exists to send
+    without delivering (`wrangler queues pause-delivery` is
+    account/queue-global, not per-test-run scoped, and would stall the
+    real production cron pipeline while tests run — confirmed via
+    `wrangler queues --help`, 2026-07-30). A second, test-only queue was
+    considered and rejected: it would resolve the delivery problem but
+    directly contradicts this policy's own "shared instance, not
+    isolated" principle for every other resource, trading one
+    inconsistency for another. Capturing sends in-memory is therefore
+    the accepted trade-off, not a gap to close later.
 
 **Follow-up, tracked, not done today:** migrating the existing 163
 tests off their in-memory fakes onto this policy is a real, separate

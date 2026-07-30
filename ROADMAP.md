@@ -2057,20 +2057,196 @@ reviewing `seed-local-d1.sql`'s documented baseline later would tell
 distinctly, e.g. `test-*`, is a plausible starting point — not decided
 yet, don't assume it without confirming).
 
-- [ ] Inventory every existing test file's current fake/mock usage
-      (`packages/db/test/*.test.ts`: `d1-client`, `signals-write-repo`,
-      `sources-repo`, `companies-repo`, `company-role-stats-repo`;
-      `apps/api/test/jobs/*.test.ts`: `ingest-consumer`, `scheduler`,
-      `reconciliation`) and classify each assertion as "tests real
-      repo/domain logic against fake storage" (the common case, needs
-      migrating) vs. anything that was actually asserting something
-      about the fake itself (should not exist, but confirm none do).
-- [ ] Decide + document the live-D1-from-Vitest access pattern (see
-      above) and build one shared test helper other test files reuse,
-      rather than each file reinventing its own `wrangler d1 execute`
-      wrapper.
-- [ ] Decide + document the live-AI/VECTORIZE-from-Vitest access
-      pattern, same reasoning.
+### Inventory (2026-07-30) — every test file's current fake/mock usage
+
+Corrects the milestone intro's own file list: `sources-repo.test.ts` is
+named above (and in `AGENTS.md`) as needing migration, but **no such
+file exists on disk** (`packages/db/src/sources-repo.ts` has no test
+file at all, confirmed via `find`). That's a pre-existing gap, not
+something this migration creates — noted here rather than silently
+dropped, out of scope to fix as part of Milestone J itself (writing a
+new test file for `sources-repo.ts` would be new test coverage, not a
+migration of existing coverage).
+
+**`packages/db/test/*.test.ts` (4 files, all the same fake shape):**
+Each defines its own local `createFakeClient()` — a plain `D1Client`
+object literal (not `vi.fn()`-wrapped, so the interface's generic method
+signatures survive) that records every call into a `calls` array and
+returns either `null`/`[]` or a caller-seeded canned value. The large
+majority of assertions in all four files check **the fake's captured SQL
+text and bind-parameter shape** (`calls[0].sql).toContain("INSERT INTO
+companies")`, exact positional `params` arrays, `ORDER BY` clause
+substrings) — not real database behavior. This category cannot survive
+a mechanical migration: a live `D1Client` backed by
+`wrangler d1 execute --remote` has no "what SQL string was I sent"
+introspection point the way an injected fake does. Each such assertion
+needs to become either (a) a behavioral assertion against real seeded
+D1 state (e.g., instead of asserting the `INSERT` statement's param
+order, seed nothing, call `createCompany`, then `SELECT` the row back
+for real and assert on its columns), or (b) dropped if it was only ever
+testing "did the repo function build this exact SQL string" with no
+behavioral consequence.
+  - `companies-repo.test.ts` — `createCompany`. Mixed: 2 tests assert
+    real output shape (`row.id`, `row.created_at === row.updated_at`,
+    empty-string-to-null normalization) alongside the SQL/param capture
+    — those output-shape assertions carry over directly against a real
+    inserted+read-back row. The `DuplicateCompanyError` test
+    (`opts.runThrows`) needs a real UNIQUE violation instead — insert
+    the same slug twice for real and assert on the thrown error type.
+  - `company-role-stats-repo.test.ts` — `getCompanyRoleActivityStats`.
+    Mostly behavioral already (seeds a canned aggregate row via
+    `seededFirstResult`, asserts the returned zero-defaulting shape) —
+    the "real" version needs actual `jobs` rows seeded in D1 spanning
+    the date windows the function aggregates over, not one canned
+    `first()` return value. The one pure-SQL-shape test (asserting
+    `now` is bound 4 times in a specific param order) either drops or
+    becomes "seed jobs at known timestamps, call the function, assert
+    the returned counts are correct" — which is a strictly better test
+    of the same date-window logic.
+  - `signals-repo.test.ts` — `listSignals`, `findSignalsByJobIds`,
+    `toListItem`. The largest file (235 lines) and the most consequential
+    since this is the route this session is actively building I.3's test
+    for. `toListItem`'s 3 tests are a pure function, no `D1Client`
+    involved at all — zero migration needed, leave as-is. `listSignals`'s
+    cursor-pagination test (`nextCursor` set/not-set at the `limit+1`
+    boundary) and corrupt-row-skip test are genuinely behavioral and
+    migrate cleanly to real seeded rows. The `q`/`ORDER BY`/`status='active'`
+    SQL-substring tests need to become "seed two signals where only one
+    matches `q`, call `listSignals` for real, assert the right one comes
+    back" — behaviorally stronger than the current substring check, which
+    would pass even if the `LIKE` were subtly wrong (e.g. matching
+    `summary` instead of `headline`) as long as the substring text
+    happened to still appear somewhere in the built SQL.
+  - `signals-write-repo.test.ts` — `findActiveSignal`, `createSignal`,
+    `refreshSignal`, `updateSignalScore`, `listSignalsNeedingReconciliation`,
+    `appendSignalEvidence`. Same shape as the others: SQL-substring/param
+    assertions dominate. `listSignalsNeedingReconciliation`'s test is
+    worth calling out specifically — it currently only asserts the SQL
+    text contains `LEFT JOIN jobs j`, `NOT EXISTS`, etc., never actually
+    exercising the `MAX(j.classification_confidence)` aggregation or the
+    staleness filter against real rows. A live-seeded version (real
+    stale signal + real jobs row) is a materially better test of this
+    function, not just a policy-compliance rewrite.
+
+**`apps/api/test/jobs/*.test.ts` (3 files, three different fake shapes
+— NOT interchangeable, confirmed by reading all three in full):**
+  - `scheduler.test.ts` — `vi.mock("@hiring-signals/db")` replacing
+    `createD1Client` with a minimal fake (`all()` returns a
+    test-seeded `dueRows` array, everything else a no-op), plus
+    `unusedBinding<T>()` Proxy stand-ins for `DB`/`CACHE`/`RAW_PAYLOADS`/
+    `ABUSE_LOGS`/`AI`/`VECTORIZE` (the Proxy throws loudly if the code
+    under test ever reads a property on them — a deliberate "fail loud,
+    not silent" design worth keeping the *spirit* of even after
+    migration). `INGEST_QUEUE` is faked as a plain in-memory `sent[]`
+    array capturing `{ message, delaySeconds }` — this one has no live
+    equivalent decided yet (see Queue note below). Migratable today:
+    the D1 mock, once real `sources` rows are seeded in D1 and
+    `getDueSources` runs for real via `live-d1-client.ts`. Blocked:
+    the `INGEST_QUEUE.send` assertions (jitter determinism, "only
+    enqueues due sources") depend on capturing exactly what's sent
+    without actually enqueueing it — a real `Queue.send()` has no
+    "capture, don't deliver" mode.
+  - `reconciliation.test.ts` — the cleanest fake of the three, but the
+    one most clearly forbidden even under the *original* (pre-2026-07-30)
+    policy: `vi.mock("@hiring-signals/db")` replaces the package's
+    exported **functions** directly (`listSignalsNeedingReconciliation`,
+    `getCompanyRoleActivityStats`, `updateSignalScore`,
+    `appendSignalEvidence`), not a fake `D1Client` underneath them —
+    this is mocking this repo's own logic, not just swapping the storage
+    layer beneath real logic. Migrates most directly of the three job
+    tests: seed one real stale signal (+ backing `jobs` rows) via
+    `live-d1-client.ts`, call the real `handleReconciliation` against a
+    real `Bindings` object whose `DB` is `createD1Client(liveD1Database)`
+    — no per-function mocking at all once this is live. `INGEST_QUEUE`/
+    `AI`/`VECTORIZE` stay as `unusedBinding()` Proxies here since
+    `handleReconciliation` never legitimately touches them (confirmed by
+    reading the file — genuinely unused, not a coverage gap).
+  - `ingest-consumer.test.ts` — by far the largest and riskiest (1148
+    lines, 17 tests). Three independent fakes, three independent
+    problems:
+    1. A hand-written ~25-branch in-memory D1 engine
+       (`makeFakeClient`/`createFakeState`) routing on SQL substrings —
+       same category as `packages/db`'s fakes, same migration approach
+       (seed real rows via `live-d1-client.ts`, assert on real
+       read-back state), but this file's assertions chain *multiple*
+       repo calls per test (upsert → observation → lifecycle →
+       classification → signal creation, all in one
+       `handleIngestMessage` call) so the seeded live-D1 state needs to
+       support the *sequence*, not just one function's isolated
+       before/after.
+    2. `vi.mock("@hiring-signals/adapters")` replacing
+       `getAdapterForProvider` so `fetchBoard`/`normalize` return
+       scripted values (a canned Greenhouse-shaped job, or a scripted
+       HTTP status like 429/503/404 for the failure-branch tests).
+       **This is a different category AGENTS.md's superseded-policy
+       section never actually addresses** — that section's rule is
+       specifically "no fake `D1Database`/`Ai`/`VectorizeIndex`/KV
+       namespace," not "no fake of any external system." An adapter
+       fetches a *real third-party ATS board over HTTP* (Greenhouse,
+       Lever, etc.) — there is no "live Cloudflare resource" for that
+       the way there is for D1/AI/Vectorize/KV, and deliberately
+       provoking a real Greenhouse board into returning 429/503/404 on
+       demand for a test isn't achievable at all, let alone reliably.
+       This needs its own explicit decision, not an assumed answer —
+       flagged as open, not resolved by this inventory.
+    3. `vi.mock("../../src/services/raw-payload-store")` — fakes this
+       repo's own `storeRawPayload` function (writes into the
+       `RAW_PAYLOADS` KV namespace). Unlike the adapter mock, this one
+       *does* fall cleanly under the existing D1/AI/Vectorize/KV policy
+       once `live-cf-bindings.ts`'s KV client is generalized past just
+       `CACHE` (see Queue/KV note below) — no new category of problem,
+       just needs that one prerequisite.
+    Also uses `INGEST_QUEUE` fakes for the 429/503 backoff-requeue
+    assertions — same blocked-on-Queue-decision status as
+    `scheduler.test.ts`.
+
+**Cross-cutting blockers surfaced by this inventory — both now decided
+(2026-07-30), full reasoning in `AGENTS.md`'s policy section, not
+duplicated here:**
+  - **`live-cf-bindings.ts`'s KV client is hardcoded to the `CACHE`
+    namespace only** (`createLiveKvNamespace()` takes no namespace-id
+    argument) — still an open, undecided mechanical gap (not a policy
+    question like the two below), needed before `ingest-consumer.test.ts`
+    migration can start, since its inline `storeRawPayload` mock needs
+    `RAW_PAYLOADS`, not `CACHE`.
+  - **`INGEST_QUEUE` — decided: accepted as a permanent, documented
+    exception to the zero-fake policy.** Continue capturing `send()`
+    calls in-memory (`sent: []`), never call the real binding — a real
+    send would deliver to the same queue the real deployed consumer is
+    subscribed to, with no wrangler-level way to send without delivery.
+    See `AGENTS.md` for the full reasoning and the rejected alternative
+    (a second, test-only queue).
+  - **ATS-adapter mocking (`vi.mock("@hiring-signals/adapters")`) —
+    decided: accepted, not a policy violation.** `fetchBoard` calls a
+    real third-party HTTP endpoint with no Cloudflare-account resource
+    backing it; `ingest-consumer.test.ts`'s job is verifying
+    orchestration given a scripted HTTP outcome, not re-proving a real
+    board's shape (already covered, unmocked, by
+    `packages/adapters/test/*.test.ts`'s static fixtures). See
+    `AGENTS.md` for the full reasoning.
+
+- [x] Inventory every existing test file's current fake/mock usage — see
+      the inventory sub-section immediately above (2026-07-30). Surfaced
+      two cross-cutting policy questions (Queue, ATS-adapter mocking),
+      both since decided — see below and `AGENTS.md`.
+- [x] Decide + document the live-D1-from-Vitest access pattern — done,
+      `apps/api/test/lib/live-d1-client.ts` (shells out to
+      `wrangler d1 execute --remote --json`, confirmed working against
+      the real `hiring-signals` D1 database).
+- [x] Decide + document the live-AI/VECTORIZE-from-Vitest access
+      pattern — done, `apps/api/test/lib/live-cf-bindings.ts`
+      (`createLiveAiBinding`/`createLiveVectorizeIndex`, direct REST per
+      `backfill-embeddings.mjs`'s established pattern; `createLiveKvNamespace`
+      also done for the `CACHE` namespace specifically via
+      `wrangler kv key put/get/delete --remote`, confirmed working
+      end-to-end 2026-07-30 — still needs generalizing past `CACHE` only,
+      see cross-cutting blockers above).
+- [ ] **Next, not yet started:** generalize `createLiveKvNamespace` to
+      accept a namespace id (currently hardcoded to `CACHE`) before
+      migrating `ingest-consumer.test.ts` specifically (its inline
+      `storeRawPayload` mock needs `RAW_PAYLOADS`, not `CACHE`) — the
+      only remaining mechanical gap; both policy questions (Queue,
+      ATS-adapter mocking) are now decided, see above and `AGENTS.md`.
 - [ ] Migrate `packages/db/test/*.test.ts` first (smaller, more
       self-contained than the `apps/api` job tests which chain multiple
       repo calls together) — one file at a time, verified
