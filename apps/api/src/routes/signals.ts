@@ -3,17 +3,23 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   atsProviderSchema,
+  mergeSignalMatches,
   roleCategorySchema,
   signalTypeSchema,
+  type KeywordMatch,
 } from "@hiring-signals/domain";
 import type { AppEnv } from "../bindings";
 import {
   createD1Client,
+  CorruptSignalRowError,
   getSignalDetail,
   InvalidCursorError,
   listSignals,
+  toListItem,
+  type SignalListItem,
 } from "@hiring-signals/db";
 import { freeReadTier } from "../middleware/anti-abuse";
+import { findSemanticSignalMatches } from "../services/semantic-search";
 
 // Query schema mirrors spec 9.3. Enforced here even though Phase 0 has no
 // D1-backed data yet, so the contract is real from the start.
@@ -92,12 +98,91 @@ signalsRoute.get("/", async (c) => {
     throw err;
   }
 
+  // Semantic leg (spec 9.4, Milestone I.3): additive to the keyword match
+  // above, run only when `q` is present. Deliberately page-1-only (no
+  // cursor) -- mergeSignalMatches produces a bounded, relevance-ranked
+  // list (matchScore) with no cursor semantics of its own, and spec 9.4
+  // doesn't describe paginating a semantic merge; a request with a cursor
+  // is already mid-pagination through the plain keyword/sort order
+  // (listSignals above), so extending it with a fresh semantic ranking
+  // would silently change what "page 2" means between requests. A
+  // request with both `q` and a `cursor` therefore still gets a fully
+  // correct, unchanged keyword-only page from listSignals -- the
+  // semantic leg simply doesn't run, not an error.
+  //
+  // findSemanticSignalMatches never throws (see its own header comment)
+  // -- an empty array here just means "no semantic leg this request"
+  // (Workers AI/Vectorize degraded, or genuinely no semantic hits), and
+  // the response silently falls back to the keyword-only result, per
+  // spec 9.4's availability requirement.
+  let searchMode: "keyword" | "hybrid" = "keyword";
+  let items: SignalListItem[] = result.items;
+
+  if (parsed.q && !parsed.cursor) {
+    const semanticMatches = await findSemanticSignalMatches(client, c.env, parsed.q, {
+      roles: parsed.roles,
+      company: parsed.company,
+      locationMode: parsed.locationMode,
+      country: parsed.country,
+      source: parsed.source,
+      signalType: parsed.signalType,
+      minScore: parsed.minScore,
+      observedSince: parsed.observedSince,
+    });
+
+    if (semanticMatches.length > 0) {
+      // Re-derive keyword matches as SignalRow so both legs share the
+      // same MergeableSignal shape mergeSignalMatches expects -- result.items
+      // is already the API-shaped SignalListItem, which also has an `id`,
+      // so it satisfies MergeableSignal directly (no re-fetch needed).
+      const keywordMatches: KeywordMatch<SignalListItem>[] = result.items.map((signal) => ({
+        signal,
+      }));
+
+      // Semantic matches come back as SignalRow (raw D1 shape, per
+      // findSignalsByJobIds) -- convert to the same SignalListItem shape
+      // as the keyword leg before merging, so the merged list is
+      // homogeneous and the response never mixes row shapes. Per-row
+      // degrade mirrors listSignals' own handling of a corrupt DB row:
+      // skip it with a structured log rather than failing the whole
+      // request over one bad signal.
+      const semanticAsListItems: { signal: SignalListItem; similarity: number }[] = [];
+      for (const match of semanticMatches) {
+        try {
+          semanticAsListItems.push({
+            signal: toListItem(match.signal),
+            similarity: match.similarity,
+          });
+        } catch (err) {
+          if (err instanceof CorruptSignalRowError) {
+            console.error("corrupt_signal_row_skipped_semantic", {
+              signalId: match.signal.id,
+              reason: err.message,
+            });
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      const merged = mergeSignalMatches(keywordMatches, semanticAsListItems, parsed.limit);
+      items = merged.map((m) => m.signal);
+      searchMode = "hybrid";
+    }
+  }
+
   return c.json({
-    data: result.items,
+    data: items,
     meta: {
       requestId: c.get("requestId"),
       appliedFilters: parsed,
+      // nextCursor stays anchored to the plain keyword/sort pagination
+      // regardless of whether this specific response was hybrid-merged --
+      // a hybrid response is always page 1, and the client's next request
+      // (with this cursor attached) resumes the ordinary keyword/sort
+      // sequence, per this handler's own page-1-only semantic gating above.
       nextCursor: result.nextCursor,
+      searchMode,
     },
   });
 });

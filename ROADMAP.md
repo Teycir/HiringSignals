@@ -2028,3 +2028,61 @@ alongside existing D1/KV/Queue).
     new §9.5 addendum's classification-assist section, before writing
     any `classification.ts` change — same "expand before starting"
     discipline this file already applies to Milestones F and G.
+
+---
+
+## Milestone J — Migrate test suite off in-memory fakes onto live Cloudflare resources
+
+**Status (2026-07-30): scoped, not started.** `AGENTS.md`'s testing
+policy section was superseded the same day this milestone was added —
+read that section in full before touching any test file here, it's the
+source of truth for the target end state; this milestone is only the
+task breakdown for getting there. Every test file below currently uses
+the retired in-memory-fake convention and must migrate.
+
+Not detailed task-by-task yet — same "expand before starting" discipline
+already applied to Milestones F and G. At minimum, before starting,
+this needs: an inventory of every `packages/db/test/*.test.ts` and
+`apps/api/test/**/*.test.ts` file (14+ files as of 2026-07-30) and what
+each currently fakes; a decided mechanism for a plain Vitest process to
+reach live D1 (shelling out to `wrangler d1 execute --remote --json`,
+same as `infrastructure/scripts/lib/d1-exec.mjs`, is the leading
+candidate — confirm round-trip latency is workable for a full test-suite
+run before committing to it, since every query becomes a real network
+call); a decided mechanism for live `AI`/`VECTORIZE` calls from a test
+(direct REST, mirroring `backfill-embeddings.mjs`); and a plan for what
+test data gets written into the shared dev D1 instance and how a human
+reviewing `seed-local-d1.sql`'s documented baseline later would tell
+"seed data" apart from "leftover test rows" (per-test IDs prefixed
+distinctly, e.g. `test-*`, is a plausible starting point — not decided
+yet, don't assume it without confirming).
+
+- [ ] Inventory every existing test file's current fake/mock usage
+      (`packages/db/test/*.test.ts`: `d1-client`, `signals-write-repo`,
+      `sources-repo`, `companies-repo`, `company-role-stats-repo`;
+      `apps/api/test/jobs/*.test.ts`: `ingest-consumer`, `scheduler`,
+      `reconciliation`) and classify each assertion as "tests real
+      repo/domain logic against fake storage" (the common case, needs
+      migrating) vs. anything that was actually asserting something
+      about the fake itself (should not exist, but confirm none do).
+- [ ] Decide + document the live-D1-from-Vitest access pattern (see
+      above) and build one shared test helper other test files reuse,
+      rather than each file reinventing its own `wrangler d1 execute`
+      wrapper.
+- [ ] Decide + document the live-AI/VECTORIZE-from-Vitest access
+      pattern, same reasoning.
+- [ ] Migrate `packages/db/test/*.test.ts` first (smaller, more
+      self-contained than the `apps/api` job tests which chain multiple
+      repo calls together) — one file at a time, verified
+      (`pnpm --filter @hiring-signals/db test`) after each, not batched.
+- [ ] Migrate `apps/api/test/jobs/*.test.ts` — same one-file-at-a-time
+      discipline; these are the ones most likely to need real rethinking
+      since idempotency/retry assertions currently depend on precise
+      control over the fake's state that a live shared database won't
+      offer as cleanly.
+- [ ] Update this repo's CI workflow (`.github/workflows/`) to provide
+      `CF_TOKEN` as a secret and confirm `pnpm -r test` passes in CI
+      against live resources, not just locally.
+- [ ] Update `AGENTS.md`'s policy section's "Follow-up, tracked, not
+      done today" note once this lands — remove it, don't leave a
+      completed migration described as still-pending.
