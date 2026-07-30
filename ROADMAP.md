@@ -877,7 +877,32 @@ caught before it's copy-pasted into the next nine.
     `pnpm --filter @hiring-signals/adapters lint`, and
     `pnpm --filter @hiring-signals/adapters test` (58/58 adapter tests,
     including 15 new SmartRecruiters tests) pass.
-- [ ] `workable`
+- [x] `workable` — `packages/adapters/src/workable.ts` + fixtures + tests
+  - **Status (2026-07-30): done.** Workable's public careers feed was
+    checked against first-party docs before implementation (spec §21):
+    `GET https://www.workable.com/api/accounts/{account_subdomain}?details=true`
+    returns a public jobs envelope. A live direct fetch from this container was
+    blocked by the network proxy (`curl: (56) CONNECT tunnel failed, response
+    403`), so the adapter is based on current first-party documentation and
+    fixture-shaped examples rather than unverified remembered payloads.
+  - `WorkableSchemaError` mirrors the other adapters: a missing top-level
+    `jobs` array or structurally malformed posting is a provider schema
+    mismatch, not a silent empty board. The adapter deliberately does not
+    filter on Workable's `state` field because the public endpoint already
+    returns published jobs and public examples also use `state` for
+    location-like values.
+  - Stable keys prefer Workable's `shortcode`, then `id`; canonical evidence
+    URLs prefer `url`, then `shortlink`, then `application_url`. Location mode
+    trusts structured `workplace_type`/`telecommuting` before falling back to
+    free-text inference, and timestamps are normalized to ISO-8601 UTC when
+    parseable.
+  - `workableAdapter` is registered in `registry.ts` and re-exported from
+    `index.ts`; the ops script provider list already included `workable`, so
+    no script enum change was required.
+  - Verified: `pnpm --filter @hiring-signals/adapters typecheck`,
+    `pnpm --filter @hiring-signals/adapters lint`, and
+    `pnpm --filter @hiring-signals/adapters test` (72/72 adapter tests,
+    including 14 new Workable tests) pass.
 - [ ] `recruitee`
 - [ ] `personio`
 - [ ] `teamtailor`

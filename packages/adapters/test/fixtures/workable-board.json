@@ -1,0 +1,62 @@
+{
+  "jobs": [
+    {
+      "id": 101,
+      "shortcode": "ABC123",
+      "code": "REQ-1",
+      "title": "Senior Platform Engineer",
+      "state": "published",
+      "department": "Engineering",
+      "url": "https://apply.workable.com/examplecorp/j/ABC123/",
+      "application_url": "https://apply.workable.com/examplecorp/j/ABC123/apply/",
+      "shortlink": "https://wrkbl.ink/abc123",
+      "workplace_type": "on_site",
+      "location": {
+        "location_str": "Remote - United States",
+        "telecommuting": true,
+        "workplace_type": "remote"
+      },
+      "created_at": "2026-01-02T03:04:05Z",
+      "updated_at": "2026-01-03T04:05:06Z",
+      "description": "Build reliable infrastructure.",
+      "requirements": "TypeScript and distributed systems.",
+      "employment_type": "Full-time"
+    },
+    {
+      "id": "job-202",
+      "title": "IT Support Specialist",
+      "state": "published",
+      "department": null,
+      "shortlink": "https://wrkbl.ink/def456",
+      "workplace_type": "hybrid",
+      "locations": [
+        {
+          "city": "Berlin",
+          "subregion": "Berlin",
+          "country_name": "Germany",
+          "hidden": false
+        }
+      ],
+      "created_at": "2026-02-10T12:00:00+02:00",
+      "description": "Help employees solve device issues."
+    },
+    {
+      "id": "job-303",
+      "title": "Security Analyst",
+      "state": "California",
+      "url": "https://apply.workable.com/examplecorp/j/GHI789/"
+    },
+    {
+      "id": "job-404",
+      "title": "Data Engineer",
+      "state": "published",
+      "url": "https://apply.workable.com/examplecorp/j/JKL012/",
+      "location": {
+        "location_str": "Austin, TX, United States",
+        "telecommuting": false,
+        "workplace_type": "on_site"
+      },
+      "created_at": "not-a-date"
+    }
+  ]
+}
