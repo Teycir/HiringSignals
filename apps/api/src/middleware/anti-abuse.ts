@@ -2,8 +2,15 @@
  * Project-specific anti-abuse middleware.
  *
  * Wraps the reusable primitives in ../../../../lib/* with Hono + Worker
- * Bindings semantics (CACHE KV for rate-limit counters & abuse-signal
- * storage, CF-Connecting-IP as the identifier).
+ * Bindings semantics:
+ *   - CACHE KV       -> rate-limit counters (operational, no PII)
+ *   - ABUSE_LOGS KV  -> append-only abuse audit trail (IPs, routes, timestamps)
+ *   - CF-Connecting-IP as the identifier (never trust XFF first hop)
+ *
+ * Separate namespaces per project KV namespacing rule: abuse logs carry
+ * PII (IPs) and should not share a KV scope with cache data or raw ATS
+ * payloads; an IAM policy can grant abuse-dashboard operators read-only
+ * access to ABUSE_LOGS alone.
  *
  * One policy: freeReadTier() -> generous per-IP rate limit, no CAPTCHA,
  * no auth. Applied to every route -- the app has no login and no
@@ -11,8 +18,8 @@
  * that needs a stricter "write tier." Source management is a local ops
  * script against D1, not a Worker route (see infrastructure/scripts/).
  *
- * All decisions are fire-and-forget logged to the CACHE KV namespace via
- * the audit-abuse helper so an operator can inspect trends locally.
+ * All decisions are fire-and-forget logged to the ABUSE_LOGS KV namespace
+ * via the audit-abuse helper so an operator can inspect trends locally.
  * Log writes never block the response.
  */
 
@@ -42,7 +49,7 @@ function routeLabel(c: { req: { method: string; path: string } }): string {
 function logAbuse(c: { env: AppEnv["Bindings"] }, ev: Omit<AbuseEvent, "ts" | "ip"> & { ip: string }): void {
   fireAndForget(
     recordAbuseEvent(
-      { kv: c.env.CACHE, prefix: "ab:", retentionSeconds: 14 * 24 * 60 * 60 },
+      { kv: c.env.ABUSE_LOGS, prefix: "ab:", retentionSeconds: 14 * 24 * 60 * 60 },
       { ts: Date.now(), ...ev },
     ),
   );

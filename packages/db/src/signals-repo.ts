@@ -74,7 +74,13 @@ export class CorruptSignalRowError extends Error {
   }
 }
 
-function toListItem(row: SignalRow): SignalListItem {
+/**
+ * Exported (not just internal) so I.3's route-level merge logic can
+ * convert findSignalsByJobIds's raw SignalRow[] into the same
+ * SignalListItem shape listSignals returns, without duplicating the
+ * enum-validation/CorruptSignalRowError logic here.
+ */
+export function toListItem(row: SignalRow): SignalListItem {
   const roleCategory = roleCategorySchema.safeParse(row.role_category);
   if (!roleCategory.success) {
     throw new CorruptSignalRowError(
@@ -193,10 +199,29 @@ const BASE_SELECT = `
   JOIN companies c ON c.id = s.company_id
 `;
 
-export async function listSignals(
-  client: D1Client,
-  params: ListSignalsParams,
-): Promise<ListSignalsResult> {
+/**
+ * Shared filter set applied by both listSignals (keyword/browse path) and
+ * findSignalsByJobIds (I.3's semantic-hit resolution path) -- everything
+ * EXCEPT `q` (keyword-only) and cursor/sort (page-1-only concepts that
+ * don't apply to a fixed job-ID lookup). Kept as one function so the two
+ * callers can never drift apart on what "roles"/"locationMode"/"country"/
+ * "source"/"signalType"/"minScore"/"observedSince" mean -- a semantic hit
+ * for a job outside these filters must not leak into results just
+ * because it bypassed the keyword WHERE clause.
+ */
+function buildCommonFilters(
+  params: Pick<
+    ListSignalsParams,
+    | "roles"
+    | "company"
+    | "locationMode"
+    | "country"
+    | "source"
+    | "signalType"
+    | "minScore"
+    | "observedSince"
+  >,
+): { where: string[]; args: unknown[] } {
   const where: string[] = ["s.status = 'active'"];
   const args: unknown[] = [];
 
@@ -207,17 +232,6 @@ export async function listSignals(
   if (params.company) {
     where.push("c.slug = ?");
     args.push(params.company);
-  }
-  // Free-text search across headline/summary/company name. `%`/`_` are
-  // LIKE wildcards, so escape any occurring in user input with ESCAPE '\'
-  // -- otherwise a query like "50%_off" would silently behave as a
-  // wildcard pattern instead of a literal substring match.
-  if (params.q) {
-    const pattern = `%${escapeLikePattern(params.q)}%`;
-    where.push(
-      `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`,
-    );
-    args.push(pattern, pattern, pattern);
   }
   // location_mode/country_code live on `jobs`, not `signals`. A signal can
   // have multiple signal_evidence rows pointing at different jobs, so this
@@ -245,9 +259,6 @@ export async function listSignals(
   }
   // provider (e.g. "greenhouse") lives on `sources`, reached from `jobs`
   // via signal_evidence, same EXISTS pattern as locationMode/country above.
-  // NOTE: was previously accepted into ListSignalsParams/the route schema
-  // but never applied anywhere -- a second silent no-op alongside the
-  // locationMode one, found while fixing that.
   if (params.source) {
     where.push(
       `EXISTS (
@@ -270,6 +281,27 @@ export async function listSignals(
     params.observedSince ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   where.push("s.last_detected_at >= ?");
   args.push(observedSince);
+
+  return { where, args };
+}
+
+export async function listSignals(
+  client: D1Client,
+  params: ListSignalsParams,
+): Promise<ListSignalsResult> {
+  const { where, args } = buildCommonFilters(params);
+
+  // Free-text search across headline/summary/company name. `%`/`_` are
+  // LIKE wildcards, so escape any occurring in user input with ESCAPE '\'
+  // -- otherwise a query like "50%_off" would silently behave as a
+  // wildcard pattern instead of a literal substring match.
+  if (params.q) {
+    const pattern = `%${escapeLikePattern(params.q)}%`;
+    where.push(
+      `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`,
+    );
+    args.push(pattern, pattern, pattern);
+  }
 
   // Each branch's comparison operators/columns must mirror that sort's
   // ORDER BY exactly below, or pagination silently duplicates/skips rows.
@@ -331,6 +363,58 @@ export async function listSignals(
     items,
     nextCursor: hasMore && lastValid ? encodeCursor(params.sort, lastValid) : null,
   };
+}
+
+/**
+ * Resolves a set of job IDs (Vectorize match results -- one vector per
+ * job, keyed on jobs.id per I.2's embedAndUpsertJob) to the active
+ * signals whose signal_evidence references them, applying the same
+ * non-q, non-cursor filter set as listSignals (buildCommonFilters) so a
+ * semantic hit can never surface a signal the caller's own
+ * roles/locationMode/country/source/signalType/minScore/observedSince
+ * filters would have excluded from the keyword path.
+ *
+ * Spec §9.4: semantic search is a search-time, post-classification
+ * concern layered onto the existing q parameter -- this function is
+ * purely a lookup (job ID -> matching active signal rows), it does not
+ * rank or score; the caller (the route, I.3) is responsible for
+ * combining these rows with the caller's own Vectorize similarity
+ * scores and the keyword leg's results.
+ *
+ * A single job can be evidence for more than one active signal (e.g. a
+ * new_job signal and a hiring_burst signal both citing the same job) --
+ * DISTINCT s.id in the IN-subquery, plus grouping in application code is
+ * unnecessary here since the outer SELECT already joins on s.id and each
+ * signal row is naturally returned once.
+ */
+export async function findSignalsByJobIds(
+  client: D1Client,
+  jobIds: string[],
+  filters: Pick<
+    ListSignalsParams,
+    | "roles"
+    | "company"
+    | "locationMode"
+    | "country"
+    | "source"
+    | "signalType"
+    | "minScore"
+    | "observedSince"
+  >,
+): Promise<SignalRow[]> {
+  if (jobIds.length === 0) return [];
+
+  const { where, args } = buildCommonFilters(filters);
+  where.push(
+    `s.id IN (
+       SELECT DISTINCT se.signal_id FROM signal_evidence se
+       WHERE se.job_id IN (${jobIds.map(() => "?").join(",")})
+     )`,
+  );
+  args.push(...jobIds);
+
+  const sql = `${BASE_SELECT} WHERE ${where.join(" AND ")}`;
+  return client.all<SignalRow>(sql, args);
 }
 
 export interface SignalEvidenceRow {

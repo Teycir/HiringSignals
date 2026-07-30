@@ -10,3 +10,4 @@ export * from "./classification";
 export * from "./lifecycle";
 export * from "./signal-score";
 export * from "./embedding-text";
+export * from "./signal-search-merge";

@@ -80,6 +80,8 @@ function makeFakeEnv(): { env: Bindings; sent: Array<{ message: IngestMessage; d
   const env = {
     DB: unusedBinding<Bindings["DB"]>("DB"),
     CACHE: unusedBinding<Bindings["CACHE"]>("CACHE"),
+    RAW_PAYLOADS: unusedBinding<Bindings["RAW_PAYLOADS"]>("RAW_PAYLOADS"),
+    ABUSE_LOGS: unusedBinding<Bindings["ABUSE_LOGS"]>("ABUSE_LOGS"),
     INGEST_QUEUE: {
       send: async (message: IngestMessage, options?: { delaySeconds?: number }) => {
         sent.push({ message, delaySeconds: options?.delaySeconds });

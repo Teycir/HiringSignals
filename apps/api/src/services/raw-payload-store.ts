@@ -2,11 +2,19 @@ import type { KVNamespace } from "@cloudflare/workers-types";
 import { makeTtlStore, type TtlStore } from "../../../../lib/kv/ttl-store";
 
 /**
- * Raw source-response archive, backed by the shared CACHE KV namespace
- * instead of R2 (spec 8.1/8.2 originally specified R2; switched to
- * KV-only so the project doesn't require a Cloudflare account with
- * billing/a credit card attached -- R2 is the one binding that isn't
+ * Raw source-response archive, backed by its own **dedicated**
+ * `RAW_PAYLOADS` KV namespace (not shared with CACHE). Originally lived in
+ * the shared CACHE namespace (spec 8.1/8.2 originally specified R2;
+ * switched to KV-only so the project doesn't require a Cloudflare account
+ * with billing/a credit card attached -- R2 is the one binding that isn't
  * usable on the free tier without one).
+ *
+ * Split into a dedicated namespace per 2026-07-30 security review finding
+ * CWE-668: raw ATS board payloads may contain internal contact info,
+ * salary bands, requisition notes etc.; keeping them in their own KV
+ * namespace means IAM can restrict reads to a small ops-only group, and a
+ * future cache-debug endpoint on the CACHE namespace cannot echo raw
+ * board data by accident.
  *
  * Retention matches spec 8.3 ("raw payloads retained 30 days, then
  * lifecycle-delete"): KV's native `expirationTtl` enforces this per-key,

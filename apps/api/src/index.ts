@@ -7,7 +7,9 @@ import { errorHandler } from "./middleware/error-handler";
 import { freeReadTier } from "./middleware/anti-abuse";
 import { signalsRoute } from "./routes/signals";
 import { companiesRoute } from "./routes/companies";
+import { sourcesRoute } from "./routes/sources";
 import { facetsRoute } from "./routes/facets";
+import { adminRoute } from "./routes/admin";
 import { handleScheduled } from "./jobs/scheduler";
 import { handleIngestMessage } from "./jobs/ingest-consumer";
 import { handleReconciliation } from "./jobs/reconciliation";
@@ -37,11 +39,21 @@ app.get(
 
 app.route("/api/v1/signals", signalsRoute);
 app.route("/api/v1/companies", companiesRoute);
+app.route("/api/v1/sources", sourcesRoute);
 app.route("/api/v1/facets", facetsRoute);
 
-// No /api/v1/admin mount: source management (add/edit source, manual
-// ingestion trigger, health) is a local ops script against D1, not a
-// Worker route -- see infrastructure/scripts/ and spec 13.5.
+// Admin routes: idempotent triggers for the same pipelines the cron
+// handlers drive (source-run enqueues a single source, scheduler-flush
+// runs the due-source enqueuer, reconcile recomputes stale scores).
+// Gated by ADMIN_SECRET via adminAuth() middleware (4-layer defense:
+// fail-closed binding check, timingSafeEqual, SHA-256-keyed strike
+// counter in ABUSE_LOGS KV, 3-strike / 60s lockout — see
+// middleware/admin-auth.ts header comment).
+//
+// Source write-path management (add/edit source) still lives as a local
+// ops script against D1 (infrastructure/scripts/, spec 13.5); admin
+// routes only expose scheduling surfaces as idempotent triggers.
+app.route("/api/v1/admin", adminRoute);
 
 export default {
   fetch: app.fetch,

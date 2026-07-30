@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-07-26"
 account_id = "c62f54368e3f6a1f503afa434771b7e4"
 compatibility_flags = ["nodejs_compat"]
+# Deploy to workers.dev by default (account subdomain is "teycircoder14",
+# claimed 2026-07-29, one per account — final URL:
+#   https://hiring-signals-api.teycircoder14.workers.dev
+# To deploy to a custom domain instead, add `domains = ["..."]` below
+# and remove this line.
+workers_dev = true
 
 # --- D1: canonical relational store (companies, sources, jobs, signals) ---
 [[d1_databases]]
@@ -11,12 +17,38 @@ database_name = "hiring-signals"
 database_id = "1b1d1f22-62de-4e59-95f5-e852c1a0c445"
 migrations_dir = "../../infrastructure/d1/migrations"
 
-# --- KV: cached facets + rate-limit counters + raw source-payload archive
-# (see src/services/raw-payload-store.ts; TTL-based via expirationTtl, no
-# separate R2 bucket -- avoids requiring billing/a credit card) ---
+# --- KV: ephemeral shared cache (facets, rate-limit counters, abuse logs)
+# Stored separately from raw payloads (below) to limit blast radius:
+# anyone with read access to CACHE cannot read raw ATS board responses.
 [[kv_namespaces]]
 binding = "CACHE"
 id = "eed9bc4587124ff8b55ee274a0a2c66e"
+
+# --- KV: raw source-response archive (30-day TTL, per-key expiration).
+# Separate namespace created per security review CWE-668 finding: raw
+# payloads may contain internal contact info, salary bands, requisition
+# notes etc. from upstream ATS boards; keeping them in their own KV
+# namespace lets IAM restrict reads to a small ops group and prevents a
+# future cache-debug endpoint from echoing raw data.
+#
+# Provisioned 2026-07-30 via:
+#   npx wrangler kv namespace create RAW_PAYLOADS
+[[kv_namespaces]]
+binding = "RAW_PAYLOADS"
+id = "ca20113fb0cf427f87310007f96f2cb5"
+
+# --- KV: append-only abuse/audit event log (14-day TTL).
+# Separate namespace per project KV namespacing rule: abuse logs contain
+# IP addresses, event timestamps, and route identifiers that should not
+# share a namespace with cache data or raw payloads. An IAM policy can
+# grant read-only access to just this namespace for the abuse-dashboard
+# operator role without leaking facet cache counters or ATS payloads.
+#
+# Provisioned 2026-07-30 via:
+#   npx wrangler kv namespace create ABUSE_LOGS
+[[kv_namespaces]]
+binding = "ABUSE_LOGS"
+id = "4222eb727bff4cec8aee8b2442f71a13"
 
 # --- Queues: decouples the cron scheduler from per-source fetching (see spec 5.2/13.1) ---
 [[queues.producers]]

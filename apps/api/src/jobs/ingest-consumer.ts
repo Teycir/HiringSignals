@@ -1,7 +1,6 @@
 import type { Message } from "@cloudflare/workers-types";
 import type { Bindings } from "../bindings";
 import type {
-  AtsProvider,
   IngestMessage,
   LocationMode,
   NormalizedJob,
@@ -280,7 +279,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     // even a mid-pipeline failure below leaves the raw response
     // recoverable for diagnosis.
     const payloadKey = rawPayloadKey(source.id, runId);
-    await storeRawPayload(env.CACHE, source.id, runId, JSON.stringify(fetchResult.rawBody));
+    await storeRawPayload(env.RAW_PAYLOADS, source.id, runId, JSON.stringify(fetchResult.rawBody));
 
     const observedAt = new Date().toISOString();
     const seenExternalIds = normalizedJobs.map((j) => j.externalJobId);

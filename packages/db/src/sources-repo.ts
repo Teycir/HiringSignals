@@ -69,6 +69,48 @@ export async function getSourceById(client: D1Client, sourceId: string): Promise
   return client.first<SourceRow>(`SELECT ${SOURCE_COLUMNS} FROM sources WHERE id = ?`, [sourceId]);
 }
 
+export interface SourceSummary {
+  id: string;
+  companyId: string;
+  provider: string;
+  publicUrl: string;
+  enabled: boolean;
+  pollIntervalMinutes: number;
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+}
+
+function toSummary(row: SourceRow): SourceSummary {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    provider: row.provider,
+    publicUrl: row.public_url,
+    enabled: row.enabled === 1,
+    pollIntervalMinutes: row.poll_interval_minutes,
+    lastSuccessAt: row.last_success_at,
+    consecutiveFailures: row.consecutive_failures,
+  };
+}
+
+export async function listSources(
+  client: D1Client,
+  params: { companyId?: string; limit: number },
+): Promise<SourceSummary[]> {
+  if (params.companyId) {
+    const rows = await client.all<SourceRow>(
+      `SELECT ${SOURCE_COLUMNS} FROM sources WHERE company_id = ? ORDER BY provider ASC, id ASC LIMIT ?`,
+      [params.companyId, params.limit],
+    );
+    return rows.map(toSummary);
+  }
+  const rows = await client.all<SourceRow>(
+    `SELECT ${SOURCE_COLUMNS} FROM sources ORDER BY provider ASC, id ASC LIMIT ?`,
+    [params.limit],
+  );
+  return rows.map(toSummary);
+}
+
 export interface CreateSourceInput {
   companyId: string;
   provider: AtsProvider;
