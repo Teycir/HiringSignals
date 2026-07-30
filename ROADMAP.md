@@ -851,11 +851,119 @@ Spec §11 (Minimal Brutalist visual system), §12 (Next.js requirements),
 §10 (UX spec — route map, filters, signal cards, detail view, empty/
 loading/error states).
 
-Not detailed task-by-task here yet — this file's first pass focused on
-the write-path (Milestones A–E) since that's what was in flight when
-this document was created. Expand this milestone into the same
-level of task detail before starting it; don't start UI work directly
-off the one-line spec references above.
+**UI/animation source of inspiration, decided with the user: `ArxivExplorer`
+(same account, same author, same "single-page dense dashboard" shape as
+this product).** This mirrors the precedent already set for Milestone I
+(semantic search ported ArxivExplorer's search UX mechanics — see that
+milestone's own "UI inspiration source" note). Milestone F extends the
+same reuse decision to the *rest* of the dashboard shell: page transitions,
+loading/empty states, hover micro-interactions, and ambient background
+motion. **Reuse the animation mechanics and interaction timing, never the
+visual styling** — same restyle-from-scratch rule Milestone I already
+states, repeated here because it's the one most likely to get skipped
+under time pressure ("just copy the classes, it's faster"): ArxivExplorer
+is built for a neon-red cyberpunk aesthetic (`text-neon-red`, glassy
+`backdrop-blur` cards, chromatic glow shadows) that directly conflicts
+with spec §11's Minimal Brutalist system (strict black/white, hard edges,
+no gradients/glassmorphism/drop-shadows, one scarce accent color). Every
+component below gets its *behavior* (props, timing curves, state machine,
+trigger conditions) ported and its *appearance* (colors, blur, shadows,
+border-radius, font) rewritten against §11's tokens from
+`hiring-signals-spec.md` §11.2-§11.4.
+
+**Concrete component-by-component reuse map** (all paths are
+`ArxivExplorer/app/components/` unless noted; confirmed present on disk
+2026-07-30, not assumed from memory):
+
+- **`ScrollProgress.tsx`** — trivial, framework-agnostic scroll-fraction
+  bar (`scrollTop / (scrollHeight - innerHeight)` driving a `scaleX`
+  transform). Port near-verbatim; restyle the bar itself to a `2px`
+  solid black line (or the single chartreuse accent, spec §11.2) instead
+  of ArxivExplorer's neon-red gradient. Useful on `/signals` for a long
+  scrolling feed.
+- **`Card.tsx`**'s hover mechanics (`whileHover={{ y: -3 }}`, a
+  `framer-motion` `useMotionValue`-driven mouse-tracking radial glow,
+  corner-accent elements that grow on hover) — port the *lift + corner
+  accent* pattern for signal cards/rows (spec §10.3's card requirements,
+  §11.4's "Card / row" component rule), but **drop the mouse-tracking
+  radial glow and blur entirely** — a soft glowing gradient following
+  the cursor is exactly the "floating translucent panel" effect
+  §11.1 explicitly rules out ("No gradients, glassmorphism ... drop
+  shadows"). Keep: the `y: -3` lift on hover, the corner-accent squares
+  that grow from 4px to 6px (redraw in solid black `border`, no
+  transparency), the `0.18s` hover transition duration. This is a
+  *subtractive* port — take the restrained part of the interaction,
+  leave the glow.
+- **`AnimatedTagline.tsx`**'s per-character stagger-in animation
+  (`chars.map` each wrapped in its own `motion.span` with a
+  `delay: (chars.length - 1 - i) * 0.04` cascade) — reusable mechanic
+  for the masthead/header line (spec §10.2's `HIRING//SIGNALS` masthead)
+  on first load. Restyle: no color-shift/text-shadow hover effect (that's
+  a neon aesthetic beat), keep only the character-cascade entrance.
+  `prefers-reduced-motion` must disable this per spec §11.5 — Milestone F
+  must add that check; ArxivExplorer's own version doesn't guard it,
+  which is a real gap to fix in the port, not carry over.
+- **`DecryptedText.tsx`**'s scramble-in-place text-reveal effect (backed
+  by `lib/hooks`' `useTextScramble`) — optional, lower-priority: a
+  legitimate candidate for the score badge or a headline revealing on
+  card mount (spec §10.3 item 1, "score badge"), but genuinely optional
+  since it risks reading as decorative flourish against §11.1's "content
+  and evidence outrank decoration" principle. If used, gate it to `700ms`
+  max duration in monospace to match the score block's own type (§11.3),
+  and never sacrifice `Score block` legibility (§11.4) mid-scramble —
+  don't ship this if it makes the score number briefly unreadable in a
+  way that could be mistaken for the actual value.
+- **`AchievementToast.tsx`**'s pattern (a `CustomEvent`-driven toast
+  queue, auto-dismiss after a fixed duration, `fixed bottom-*` stack) —
+  reusable *mechanism*, not content: this product has no achievements/
+  gamification (out of scope, not in the spec), but the same
+  event-driven toast queue is the right shape for a lightweight
+  "new signals since last visit" or "source degraded" notice if one is
+  ever wanted. Not scoped into F's initial build — flag as a reusable
+  pattern for later, don't build the toast queue speculatively now.
+- **`ParticleBackground.tsx`** (Three.js, 20,000-particle ambient field)
+  and **`ui/background-beams.tsx`** (SVG animated gradient beams) —
+  **do not port either.** Both are pure decorative ambient motion, and
+  spec §11.1 is explicit: "Content and evidence outrank decoration...
+  No gradients... or stock illustrations." A dense, information-forward
+  Brutalist dashboard is the opposite design goal from ArxivExplorer's
+  atmospheric cyberpunk background. Recorded here as a considered-and-
+  rejected reuse candidate so a future session doesn't re-propose it
+  without re-reading this rationale.
+- **`SearchBoxHome.tsx` / `SearchFilters.tsx` / `MoreLikeThisButton.tsx`
+  / `RecentSearches.tsx` / `AbstractSearch.tsx`** — already covered by
+  Milestone I.4's own inspiration-source note (search-specific UI, not
+  the general dashboard shell); don't duplicate that work here, just
+  don't lose track of it being the *same* ArxivExplorer-reuse decision.
+
+**Dependencies this reuse decision requires, not yet installed:**
+`apps/web/package.json` currently has neither `framer-motion` nor
+`three` (confirmed 2026-07-30 by reading the file directly — only
+`next`/`react`/`react-dom`/`zod`/`@hiring-signals/domain`). Adding
+`framer-motion` is required for the `Card`/`AnimatedTagline`/
+`DecryptedText` ports above; `three` is explicitly **not** needed since
+`ParticleBackground` is the one component this milestone rejects.
+Install `framer-motion` when F actually starts, pinned to a version
+compatible with React 19 (ArxivExplorer itself is still on React 18 +
+`framer-motion@^11.18.2` — confirm current `framer-motion` React-19
+compatibility before pinning a version, don't assume the same version
+range ports unchanged).
+
+**What's still genuinely new, undetailed work** (this reuse note narrows
+scope but doesn't replace the rest of F's own task breakdown): the
+route map (§10.1), filter rail (§10.4), signal card/row layout (§10.3),
+signal detail view (§10.5), and empty/loading/error states (§10.6) all
+still need their own task-by-task breakdown before implementation
+starts, same as this milestone's pre-existing "expand before starting"
+instruction below. This section only settles the animation/inspiration
+question the user raised; it does not itself constitute that breakdown.
+
+Not detailed task-by-task here yet beyond the animation-reuse decision
+above — this file's first pass focused on the write-path (Milestones
+A–E) since that's what was in flight when this document was created.
+Expand this milestone into the same level of task detail before
+starting it; don't start UI work directly off the one-line spec
+references above.
 
 ---
 

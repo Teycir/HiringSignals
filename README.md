@@ -107,7 +107,7 @@ Test coverage: 163 tests passing workspace-wide (`pnpm -r test`; domain 70, adap
 Not yet done:
 
 - 9 remaining P0 ATS adapters (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR — spec §4.1/§5.3)
-- Brutalist design tokens / dashboard UI (Phase 2 / Milestone F) — `apps/web` is still the default Next.js scaffold, no real routes yet
+- Brutalist design tokens / dashboard UI (Phase 2 / Milestone F) — `apps/web` is still the default Next.js scaffold, no real routes yet. Animation/interaction inspiration decided: reuse `ArxivExplorer`'s animation mechanics (scroll progress, card hover/lift, staggered text entrance), restyled from scratch against spec §11's Brutalist tokens, never its neon visual styling — see `ROADMAP.md` Milestone F.
 - Query-side hybrid search wiring + backfill script + search UI (Milestone I.3/I.4) and classification assist (I.5, deferred until I.3/I.4 ship)
 - CSV export endpoint (spec §10.6)
 - Production deployment (Cloudflare Pages + Workers)
