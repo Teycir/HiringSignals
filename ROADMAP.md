@@ -2230,11 +2230,14 @@ duplicated here:**
       two cross-cutting policy questions (Queue, ATS-adapter mocking),
       both since decided — see below and `AGENTS.md`.
 - [x] Decide + document the live-D1-from-Vitest access pattern — done,
-      `apps/api/test/lib/live-d1-client.ts` (shells out to
+      `packages/test-support/src/live-d1-client.ts` (moved here from
+      `apps/api/test/lib/` on 2026-07-30 per Milestone J, so
+      `packages/db/test/*.test.ts` can import it too; shells out to
       `wrangler d1 execute --remote --json`, confirmed working against
       the real `hiring-signals` D1 database).
 - [x] Decide + document the live-AI/VECTORIZE-from-Vitest access
-      pattern — done, `apps/api/test/lib/live-cf-bindings.ts`
+      pattern — done, `packages/test-support/src/live-cf-bindings.ts`
+      (same 2026-07-30 move as live-d1-client.ts above)
       (`createLiveAiBinding`/`createLiveVectorizeIndex`, direct REST per
       `backfill-embeddings.mjs`'s established pattern; `createLiveKvNamespace`
       also done for the `CACHE` namespace specifically via
@@ -2262,3 +2265,53 @@ duplicated here:**
 - [ ] Update `AGENTS.md`'s policy section's "Follow-up, tracked, not
       done today" note once this lands — remove it, don't leave a
       completed migration described as still-pending.
+
+### `packages/test-support` follow-ups (verified 2026-07-30 against the
+### actual current file contents — a prior review note for this section
+### described `wranglerEnv()`, a `-y` flag, and new `fs`/credential
+### handling inside `live-d1-client.ts`; none of that exists in the repo
+### as of this check, so those specific items are omitted below as
+### unconfirmed. What's below was re-verified line-by-line against both
+### files.
+
+- [ ] `live-cf-bindings.ts`'s `loadCfToken()` (`.env.local` parser) only
+      matches lines shaped exactly `CF_TOKEN=value` — no `export
+      CF_TOKEN=...`, quoted values, inline comments, or whitespace
+      around `=`. Either swap in a real dotenv parser or add a comment
+      on `loadCfToken()` documenting that only this exact shape is
+      supported, so a future edit to `.env.local` doesn't silently break
+      it.
+- [ ] `live-d1-client.ts`'s `execRemote` and `live-cf-bindings.ts`'s
+      `runWrangler` are near-identical (`spawn("npx", ["wrangler", ...],
+      { cwd: API_DIR, shell: false })`, same stdout/stderr capture, same
+      reject-with-both-streams-on-failure shape). Consider factoring the
+      spawn-and-capture plumbing into one shared helper in
+      `packages/test-support` that both call, so the two files stay in
+      sync as this grows (e.g. if KV/D1 need retry or timeout behavior
+      later).
+- [ ] `live-d1-client.ts`'s `execRemote` has no credential handling of
+      its own at all — it relies entirely on whatever `wrangler` auth
+      (ambient `CLOUDFLARE_API_TOKEN` or `wrangler login` state) already
+      exists in the shell, unlike `live-cf-bindings.ts` which explicitly
+      calls `loadCfToken()`/reads `CF_TOKEN`/`.env.local` and throws a
+      clear "Missing CF_TOKEN" error up front. Worth deciding: should D1
+      tests fail with the same clear preflight message when credentials
+      are absent, instead of whatever raw `wrangler d1 execute` prints
+      on an auth failure? If so, either call the same credential check
+      before the first `execRemote`, or explicitly document why D1 is
+      allowed to differ (e.g. `wrangler d1 execute` may already have its
+      own separate, already-logged-in auth path distinct from the
+      `CF_TOKEN` REST calls in `live-cf-bindings.ts`, in which case say
+      so here).
+- [ ] `live-d1-client.ts`'s `execRemote` includes the full SQL text
+      (inlined params and all) in every thrown error. Fine for debugging
+      today since all current callers are `packages/db` repo functions
+      with test-authored literal values, but worth a truncation/redaction
+      strategy (or an explicit "safe because test-only values" comment)
+      before this client is used more broadly.
+- [ ] Add a short README (or package-level doc comment) for
+      `@hiring-signals/test-support` covering: which live Cloudflare
+      resources each file touches, required env vars (`CF_TOKEN` /
+      `.env.local`, ambient wrangler auth for D1), what a missing-token
+      failure looks like per file, and why these are real clients, not
+      mocks/fakes, per `AGENTS.md`'s policy.
