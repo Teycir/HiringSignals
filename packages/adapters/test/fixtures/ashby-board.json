@@ -1,0 +1,66 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "title": "Senior Platform Engineer",
+      "location": "Remote - United States",
+      "department": "Engineering",
+      "team": "Infrastructure",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "descriptionPlain": "Build reliable systems.",
+      "publishedAt": "2026-07-01T10:30:00.000+00:00",
+      "employmentType": "FullTime",
+      "address": {
+        "postalAddress": {
+          "addressCountry": "USA"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/example/7b5cf8a9-42f4-4b5b-a23e-35cd4078b111",
+      "applyUrl": "https://jobs.ashbyhq.com/example/7b5cf8a9-42f4-4b5b-a23e-35cd4078b111/application"
+    },
+    {
+      "title": "IT Support Specialist",
+      "secondaryLocations": [
+        {
+          "location": "Austin, TX",
+          "address": {
+            "addressLocality": "Austin",
+            "addressRegion": "Texas",
+            "addressCountry": "USA"
+          }
+        }
+      ],
+      "team": "Internal Systems",
+      "isListed": true,
+      "workplaceType": "OnSite",
+      "descriptionPlain": "Help employees resolve technical issues.",
+      "publishedAt": "2026-07-02T12:00:00-05:00",
+      "employmentType": "Contract",
+      "jobUrl": "https://jobs.ashbyhq.com/example/3c1c4d14-8d01-4e11-b663-92a605b1c222"
+    },
+    {
+      "title": "Security Engineer",
+      "location": "Berlin, Germany",
+      "department": "Security",
+      "isListed": true,
+      "workplaceType": "Hybrid",
+      "descriptionPlain": "Secure product infrastructure.",
+      "publishedAt": "not a real date",
+      "employmentType": "FullTime",
+      "jobUrl": "https://jobs.ashbyhq.com/example/3c1c4d14-8d01-4e11-b663-92a605b1c333"
+    },
+    {
+      "title": "Unlisted Direct Link Role",
+      "location": "New York, NY",
+      "department": "Engineering",
+      "isListed": false,
+      "workplaceType": "OnSite",
+      "descriptionPlain": "Should not be included on the public board feed.",
+      "publishedAt": "2026-07-04T09:00:00.000Z",
+      "employmentType": "FullTime",
+      "jobUrl": "https://jobs.ashbyhq.com/example/unlisted-role"
+    }
+  ]
+}

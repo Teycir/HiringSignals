@@ -815,7 +815,40 @@ caught before it's copy-pasted into the next nine.
   - `infrastructure/scripts/add-source.mjs`'s inlined `ATS_PROVIDERS`
     list (Milestone E's own open item below) already included `"lever"`
     — no change needed there.
-- [ ] `ashby`
+- [x] `ashby` — `packages/adapters/src/ashby.ts` + fixtures + tests
+  - **Status (2026-07-30): done.** Official Ashby Job Postings API docs
+    verified before implementation (spec §21):
+    `GET https://api.ashbyhq.com/posting-api/job-board/{JOB_BOARD_NAME}?includeCompensation={true/false}`
+    returns an `{ apiVersion, jobs }` JSON envelope with job fields such
+    as `title`, `location`, `secondaryLocations`, `department`, `team`,
+    `isListed`, `isRemote`, `workplaceType`, `descriptionPlain`,
+    `publishedAt`, `employmentType`, `jobUrl`, and `applyUrl`. A direct
+    live fetch attempt from this container was blocked by the network
+    proxy (`curl: (56) CONNECT tunnel failed, response 403`), so the
+    adapter is based on the current first-party docs rather than a stale
+    remembered shape; the failure is recorded here rather than hidden.
+  - `AshbySchemaError` mirrors the Greenhouse/Lever behavior: malformed
+    provider payloads throw a typed schema error instead of returning an
+    ambiguous empty job list. The schema is permissive for optional fields
+    Ashby documents as missing when unavailable.
+  - Ashby's public docs do not expose a separate stable job id in the
+    board response. The adapter deliberately uses `jobUrl` as both
+    `externalJobId` and `canonicalUrl`, tying idempotency to the public
+    evidence URL instead of inventing a title/location-derived key.
+  - `isListed: false` jobs are filtered out because Ashby's docs describe
+    them as direct-link-only roles that should not appear in the public
+    job-board list. `workplaceType` is trusted when present (`Remote` →
+    `remote`, `Hybrid` → `hybrid`, `OnSite` → `onsite`), then
+    `isRemote: true`, then free-text location inference. `publishedAt`
+    is used for both `postedAt` and `updatedAt` because the public board
+    response documents only one timestamp.
+  - `ashbyAdapter` is registered in `registry.ts` and re-exported from
+    `index.ts`; the ops script provider list already included `ashby`, so
+    no script enum change was required.
+  - Verified: `pnpm --filter @hiring-signals/adapters typecheck`,
+    `pnpm --filter @hiring-signals/adapters lint`, and
+    `pnpm --filter @hiring-signals/adapters test` (43/43 adapter tests,
+    including 13 new Ashby tests) pass.
 - [ ] `smartrecruiters`
 - [ ] `workable`
 - [ ] `recruitee`
