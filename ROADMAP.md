@@ -903,7 +903,31 @@ caught before it's copy-pasted into the next nine.
     `pnpm --filter @hiring-signals/adapters lint`, and
     `pnpm --filter @hiring-signals/adapters test` (72/72 adapter tests,
     including 14 new Workable tests) pass.
-- [ ] `recruitee`
+- [x] `recruitee` — `packages/adapters/src/recruitee.ts` + fixtures + tests
+  - **Status (2026-07-30): done.** Official Recruitee Careers Site API docs
+    verified before implementation (spec §21): the public, unauthenticated
+    careers-site API exposes published offers for custom careers pages at
+    `https://{company}.recruitee.com/api/offers/`; Recruitee also documents
+    the legacy `https://api.recruitee.com/c/{company_id}/offers` endpoint with
+    the same top-level offers concept. The adapter fetches the careers-site
+    host because `board_token` is the company subdomain operators configure.
+  - `RecruiteeSchemaError` mirrors the other provider adapters: malformed
+    provider payloads throw a typed schema error instead of silently looking
+    like an empty board. Stable keys prefer `slug`, then `id`; canonical
+    evidence URLs prefer `careers_url`, then `url`, then `apply_url` because
+    the public evidence URL is what downstream signal detail pages need.
+  - Location handling trusts Recruitee's structured `remote: true` boolean as
+    remote before falling back to free-text inference from the singular
+    `location` field or `locations[0]`. `published_at` is preferred for
+    `postedAt`, with `created_at` as fallback; `updated_at` falls back to the
+    resolved posted timestamp when Recruitee omits a separate update time.
+  - `recruiteeAdapter` is registered in `registry.ts` and re-exported from
+    `index.ts`; the ops script provider list already included `recruitee`, so
+    no script enum change was required.
+  - Verified: `pnpm --filter @hiring-signals/adapters typecheck`,
+    `pnpm --filter @hiring-signals/adapters lint`, and
+    `pnpm --filter @hiring-signals/adapters test` (86/86 adapter tests,
+    including 14 new Recruitee tests) pass.
 - [ ] `personio`
 - [ ] `teamtailor`
 - [ ] `jazzhr`
