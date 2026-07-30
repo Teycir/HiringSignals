@@ -1,0 +1,9 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "location": "Remote",
+      "jobUrl": "not-a-url"
+    }
+  ]
+}

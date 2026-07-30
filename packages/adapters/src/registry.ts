@@ -1,6 +1,7 @@
 import type { AtsProvider } from "@hiring-signals/domain";
 import type { AtsAdapter } from "./adapter-contract";
 import { greenhouseAdapter } from "./greenhouse";
+import { ashbyAdapter } from "./ashby";
 import { leverAdapter } from "./lever";
 
 /**
@@ -18,6 +19,7 @@ import { leverAdapter } from "./lever";
 const ADAPTERS: Partial<Record<AtsProvider, AtsAdapter>> = {
   greenhouse: greenhouseAdapter,
   lever: leverAdapter,
+  ashby: ashbyAdapter,
 };
 
 export class UnsupportedProviderError extends Error {
