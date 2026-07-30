@@ -1,117 +1,269 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
+import { createCompany } from "../src/companies-repo";
+import { createSource } from "../src/sources-repo";
+import { upsertJob } from "../src/jobs-repo";
 import { getCompanyRoleActivityStats } from "../src/company-role-stats-repo";
 
 /**
- * Fake D1Client test double, same style as signals-write-repo.test.ts /
- * companies-repo.test.ts (plain object literal, not vi.fn()-wrapped, so
- * D1Client's generic method signatures stay intact).
+ * Migrated off the retired in-memory-fake `D1Client` (AGENTS.md's "zero
+ * mocks, zero fakes" policy, superseded 2026-07-30; ROADMAP.md Milestone
+ * J) onto the real, live, shared `hiring-signals` D1 database via
+ * `@hiring-signals/test-support`'s `createLiveD1Client`. Every test below
+ * seeds real rows through the real repo functions (`createCompany`,
+ * `createSource`, `upsertJob`) -- never raw hand-built INSERTs for the
+ * data under test -- then calls `getCompanyRoleActivityStats` for real
+ * and asserts on its real return value, per ROADMAP.md's Milestone J
+ * inventory note that this file's prior fake-seeded-`first()`-result
+ * tests were "mostly behavioral already" and the strictly better version
+ * seeds real `jobs` rows spanning the actual date windows rather than
+ * one canned aggregate.
+ *
+ * The one prior test that only asserted the built SQL string ("now is
+ * bound 4 times in this exact param order") is dropped per the
+ * inventory's own guidance -- a live client has no "what SQL was I sent"
+ * introspection point, and "seed jobs at known timestamps, assert the
+ * returned counts" (covered by the tests below) is a strictly stronger
+ * test of the same date-window logic.
+ *
+ * Every test uses a `test-crs-`-prefixed slug/board-token (`crs` =
+ * company-role-stats, this file) and deletes its own rows in a `finally`
+ * (FK-safe order: jobs -> sources -> companies), per AGENTS.md's "shared
+ * instance, not isolated" -- this is the same dev D1 database
+ * `seed-local-d1.sql` and the ops scripts operate on, so a leftover row
+ * from a failed test run is a real, visible cost, not a throwaway
+ * fixture. `afterEach` is a belt-and-suspenders second cleanup pass (in
+ * case a `finally` itself never ran, e.g. a hard process kill) that
+ * deletes anything still tagged with this file's test-id prefix.
  */
-function createFakeClient(seededFirstResult: unknown = null): {
-  client: D1Client;
-  calls: Array<{ method: string; sql: string; params: unknown[] }>;
-} {
-  const calls: Array<{ method: string; sql: string; params: unknown[] }> = [];
-  const client: D1Client = {
-    async first<T>(sql: string, params: unknown[] = []) {
-      calls.push({ method: "first", sql, params });
-      return seededFirstResult as T | null;
-    },
-    async all<T>(sql: string, params: unknown[] = []) {
-      calls.push({ method: "all", sql, params });
-      return [] as T[];
-    },
-    async run(sql: string, params: unknown[] = []) {
-      calls.push({ method: "run", sql, params });
-      return { changes: 1 };
-    },
-    async batch<T>() {
-      return [] as T[][];
-    },
-  };
-  return { client, calls };
+
+const TEST_PREFIX = "test-crs";
+let seq = 0;
+function testId(label: string): string {
+  seq += 1;
+  return `${TEST_PREFIX}-${label}-${seq}-${Date.now()}`;
+}
+
+const client: D1Client = createLiveD1Client();
+
+/** Deletes everything under one seeded company, FK-safe order. */
+async function cleanupCompany(companyId: string, sourceId: string): Promise<void> {
+  await client.run(`DELETE FROM jobs WHERE company_id = ?`, [companyId]);
+  await client.run(`DELETE FROM sources WHERE id = ?`, [sourceId]);
+  await client.run(`DELETE FROM companies WHERE id = ?`, [companyId]);
+}
+
+/** Belt-and-suspenders sweep for anything left behind by a run that
+ * didn't reach its own `finally` (hard kill, etc.) -- matches on the
+ * shared TEST_PREFIX rather than a specific id. */
+afterEach(async () => {
+  await client.run(
+    `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+    [`${TEST_PREFIX}-%`],
+  );
+  await client.run(
+    `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+    [`${TEST_PREFIX}-%`],
+  );
+  await client.run(`DELETE FROM companies WHERE slug LIKE ?`, [`${TEST_PREFIX}-%`]);
+});
+
+async function seedCompanyAndSource(label: string) {
+  const slug = testId(label);
+  const company = await createCompany(client, { slug, displayName: `Test CRS ${slug}` });
+  const source = await createSource(client, {
+    companyId: company.id,
+    provider: "greenhouse",
+    boardToken: slug,
+    publicUrl: `https://example.invalid/${slug}`,
+  });
+  return { company, source };
+}
+
+/** Minimal upsertJob input for a job at a given first_seen_at, via
+ * `observedAt` (upsertJob sets first_seen_at = observedAt for a new
+ * row -- see jobs-repo.ts). */
+async function seedJob(
+  companyId: string,
+  sourceId: string,
+  externalJobId: string,
+  observedAt: string,
+): Promise<void> {
+  await upsertJob(client, {
+    sourceId,
+    companyId,
+    externalJobId,
+    canonicalUrl: `https://example.invalid/jobs/${externalJobId}`,
+    title: "Security Engineer",
+    titleNormalized: "security engineer",
+    contentHash: `hash-${externalJobId}`,
+    observedAt,
+  });
 }
 
 describe("getCompanyRoleActivityStats", () => {
-  it("queries by company_id + role_category, binding `now` for all three date-window checks", async () => {
-    const { client, calls } = createFakeClient();
-    await getCompanyRoleActivityStats(client, {
-      companyId: "c1",
-      roleCategory: "cybersecurity",
-      now: "2026-07-29T00:00:00Z",
-    });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.sql).toContain("FROM jobs");
-    expect(calls[0]?.sql).toContain("WHERE company_id = ? AND role_primary = ?");
-    // now is bound 4 times (two range checks each need a lower+upper
-    // bound derived from it) before the trailing companyId/roleCategory.
-    expect(calls[0]?.params).toEqual([
-      "2026-07-29T00:00:00Z",
-      "2026-07-29T00:00:00Z",
-      "2026-07-29T00:00:00Z",
-      "2026-07-29T00:00:00Z",
-      "c1",
-      "cybersecurity",
-    ]);
+  it("returns all zeros when no jobs exist for this company+role", async () => {
+    const { company, source } = await seedCompanyAndSource("zeros");
+    try {
+      const result = await getCompanyRoleActivityStats(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        now: "2026-07-29T00:00:00Z",
+      });
+      expect(result).toEqual({
+        activeMatchingCount: 0,
+        newInLast14Days: 0,
+        newInPrior56Days: 0,
+        distinctLocationCount: 0,
+      });
+    } finally {
+      await cleanupCompany(company.id, source.id);
+    }
   });
 
-  it("returns all zeros (never null/undefined) when no jobs exist for this company+role", async () => {
-    const { client } = createFakeClient(null);
-    const result = await getCompanyRoleActivityStats(client, {
-      companyId: "c1",
-      roleCategory: "cybersecurity",
-      now: "2026-07-29T00:00:00Z",
-    });
-    expect(result).toEqual({
-      activeMatchingCount: 0,
-      newInLast14Days: 0,
-      newInPrior56Days: 0,
-      distinctLocationCount: 0,
-    });
+  it("counts active jobs and buckets first_seen_at into the 14-day / prior-56-day windows", async () => {
+    const { company, source } = await seedCompanyAndSource("windows");
+    try {
+      const now = "2026-07-29T00:00:00.000Z";
+      // Inside the last-14-days window (now - 7d).
+      await seedJob(company.id, source.id, "job-recent", "2026-07-22T00:00:00.000Z");
+      // Inside the prior-56-day window (now - 30d, i.e. before the
+      // 14-day cutoff but within 70 days of now).
+      await seedJob(company.id, source.id, "job-older", "2026-06-29T00:00:00.000Z");
+      // Outside both windows entirely (now - 100d).
+      await seedJob(company.id, source.id, "job-ancient", "2026-04-20T00:00:00.000Z");
+
+      // upsertJob leaves role_primary NULL (classification runs
+      // separately, per jobs-repo.ts's own header comment) -- set it
+      // directly so these rows match the role_category filter under
+      // test, without pulling the classifier into this test's scope.
+      await client.run(`UPDATE jobs SET role_primary = 'cybersecurity' WHERE source_id = ?`, [
+        source.id,
+      ]);
+
+      const result = await getCompanyRoleActivityStats(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        now,
+      });
+
+      expect(result.activeMatchingCount).toBe(3); // all 3 default to status='active'
+      expect(result.newInLast14Days).toBe(1); // job-recent only
+      expect(result.newInPrior56Days).toBe(1); // job-older only
+    } finally {
+      await cleanupCompany(company.id, source.id);
+    }
   });
 
-  it("passes through real aggregated counts from the fake client's seeded row", async () => {
-    const { client } = createFakeClient({
-      active_matching_count: 7,
-      new_in_last_14_days: 3,
-      new_in_prior_56_days: 8,
-      distinct_location_count: 4,
-    });
-    const result = await getCompanyRoleActivityStats(client, {
-      companyId: "c1",
-      roleCategory: "cloud_platform_devops_sre",
-      now: "2026-07-29T00:00:00Z",
-    });
-    expect(result).toEqual({
-      activeMatchingCount: 7,
-      newInLast14Days: 3,
-      newInPrior56Days: 8,
-      distinctLocationCount: 4,
-    });
+  it("only counts jobs matching role_category, ignoring other roles for the same company", async () => {
+    const { company, source } = await seedCompanyAndSource("role-filter");
+    try {
+      await seedJob(company.id, source.id, "job-cyber", "2026-07-25T00:00:00.000Z");
+      await seedJob(company.id, source.id, "job-swe", "2026-07-25T00:00:00.000Z");
+      await client.run(
+        `UPDATE jobs SET role_primary = 'cybersecurity' WHERE source_id = ? AND external_job_id = ?`,
+        [source.id, "job-cyber"],
+      );
+      await client.run(
+        `UPDATE jobs SET role_primary = 'software_engineering' WHERE source_id = ? AND external_job_id = ?`,
+        [source.id, "job-swe"],
+      );
+
+      const result = await getCompanyRoleActivityStats(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        now: "2026-07-29T00:00:00.000Z",
+      });
+
+      expect(result.activeMatchingCount).toBe(1);
+    } finally {
+      await cleanupCompany(company.id, source.id);
+    }
   });
 
-  it("treats an explicit 0 in every field as a real zero, not the null-fallback path", async () => {
-    // Distinguishes "SQLite's SUM/COUNT returned real 0s because rows
-    // exist but none matched the CASE conditions" from "first() returned
-    // null because there were no rows to aggregate at all" -- both must
-    // produce the same all-zero result, so this covers the row-exists
-    // branch specifically (the row-is-null branch is the prior test).
-    const { client } = createFakeClient({
-      active_matching_count: 0,
-      new_in_last_14_days: 0,
-      new_in_prior_56_days: 0,
-      distinct_location_count: 0,
-    });
-    const result = await getCompanyRoleActivityStats(client, {
-      companyId: "c1",
-      roleCategory: "cybersecurity",
-      now: "2026-07-29T00:00:00Z",
-    });
-    expect(result).toEqual({
-      activeMatchingCount: 0,
-      newInLast14Days: 0,
-      newInPrior56Days: 0,
-      distinctLocationCount: 0,
-    });
+  it("distinctLocationCount counts distinct (country/region/city/mode) tuples among active matching jobs only", async () => {
+    const { company, source } = await seedCompanyAndSource("locations");
+    try {
+      // Two jobs in the same location tuple -> 1 distinct location.
+      await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-loc-1a",
+        canonicalUrl: "https://example.invalid/jobs/job-loc-1a",
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-loc-1a",
+        observedAt: "2026-07-25T00:00:00.000Z",
+        locationMode: "remote",
+        countryCode: "US",
+        regionCode: "CA",
+        city: "San Francisco",
+      });
+      await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-loc-1b",
+        canonicalUrl: "https://example.invalid/jobs/job-loc-1b",
+        title: "Security Engineer II",
+        titleNormalized: "security engineer ii",
+        contentHash: "hash-loc-1b",
+        observedAt: "2026-07-25T00:00:00.000Z",
+        locationMode: "remote",
+        countryCode: "US",
+        regionCode: "CA",
+        city: "San Francisco",
+      });
+      // A distinct location tuple -> +1 distinct location.
+      await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-loc-2",
+        canonicalUrl: "https://example.invalid/jobs/job-loc-2",
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-loc-2",
+        observedAt: "2026-07-25T00:00:00.000Z",
+        locationMode: "onsite",
+        countryCode: "DE",
+        regionCode: "BE",
+        city: "Berlin",
+      });
+      await client.run(`UPDATE jobs SET role_primary = 'cybersecurity' WHERE source_id = ?`, [
+        source.id,
+      ]);
+      // A closed job at a third, otherwise-unseen location -- must NOT
+      // count, since distinctLocationCount only considers active/
+      // possibly_closed jobs (same population as activeMatchingCount).
+      await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-loc-closed",
+        canonicalUrl: "https://example.invalid/jobs/job-loc-closed",
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-loc-closed",
+        observedAt: "2026-07-25T00:00:00.000Z",
+        locationMode: "onsite",
+        countryCode: "FR",
+        regionCode: "IDF",
+        city: "Paris",
+      });
+      await client.run(
+        `UPDATE jobs SET role_primary = 'cybersecurity', status = 'closed' WHERE source_id = ? AND external_job_id = ?`,
+        [source.id, "job-loc-closed"],
+      );
+
+      const result = await getCompanyRoleActivityStats(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        now: "2026-07-29T00:00:00.000Z",
+      });
+
+      expect(result.distinctLocationCount).toBe(2);
+      expect(result.activeMatchingCount).toBe(3); // the 3 active jobs, not the closed one
+    } finally {
+      await cleanupCompany(company.id, source.id);
+    }
   });
 });
