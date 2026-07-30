@@ -4,6 +4,7 @@ import { greenhouseAdapter } from "./greenhouse";
 import { ashbyAdapter } from "./ashby";
 import { leverAdapter } from "./lever";
 import { smartRecruitersAdapter } from "./smartrecruiters";
+import { workableAdapter } from "./workable";
 
 /**
  * Provider -> adapter lookup for the ingest consumer (ROADMAP.md
@@ -22,6 +23,7 @@ const ADAPTERS: Partial<Record<AtsProvider, AtsAdapter>> = {
   lever: leverAdapter,
   ashby: ashbyAdapter,
   smartrecruiters: smartRecruitersAdapter,
+  workable: workableAdapter,
 };
 
 export class UnsupportedProviderError extends Error {
