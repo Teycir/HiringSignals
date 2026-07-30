@@ -3,6 +3,7 @@ export * from "./location";
 export * from "./greenhouse";
 export * from "./lever";
 export * from "./ashby";
+export * from "./smartrecruiters";
 export * from "./registry";
 
 // Milestone E (ROADMAP.md) adds one file per remaining provider here

@@ -1,0 +1,30 @@
+{
+  "content": [
+    {
+      "id": "743999999999999",
+      "uuid": "4dfd9d2f-0f9b-4d87-a0f5-5b4a0b6dd001",
+      "name": "Senior Platform Engineer",
+      "refNumber": "REF1234A",
+      "location": { "city": "San Francisco", "region": "California", "country": "United States", "remote": true },
+      "department": { "label": "Engineering" },
+      "function": { "label": "Technology" },
+      "typeOfEmployment": { "label": "Full-time" },
+      "releasedDate": "2026-07-02T12:00:00.000Z",
+      "updatedOn": "2026-07-03T08:15:00.000Z",
+      "jobAd": { "sections": { "jobDescription": { "text": "Build internal developer platforms." }, "qualifications": { "text": "Experience operating production Kubernetes clusters." } } },
+      "actions": { "details": { "url": "https://jobs.smartrecruiters.com/example/743999999999999-senior-platform-engineer" }, "apply": { "url": "https://jobs.smartrecruiters.com/example/apply/743999999999999" } }
+    },
+    {
+      "id": "743999999999998",
+      "name": "IT Support Specialist",
+      "location": { "city": "Berlin", "country": "Germany" },
+      "function": { "label": "Internal Systems" },
+      "typeOfEmployment": { "label": "Contract" },
+      "releasedDate": "not-a-date",
+      "actions": { "apply": { "url": "https://jobs.smartrecruiters.com/example/743999999999998-it-support-specialist" } }
+    }
+  ],
+  "totalFound": 2,
+  "limit": 100,
+  "offset": 0
+}
