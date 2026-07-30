@@ -1,0 +1,47 @@
+{
+  "offers": [
+    {
+      "id": 101,
+      "slug": "senior-platform-engineer",
+      "title": "Senior Platform Engineer",
+      "careers_url": "https://example.recruitee.com/o/senior-platform-engineer",
+      "department": "Engineering",
+      "employment_type": "Full-time",
+      "remote": true,
+      "location": {
+        "city": "Austin",
+        "region": "Texas",
+        "country": "United States"
+      },
+      "published_at": "2026-03-01T09:00:00+01:00",
+      "updated_at": "2026-03-02T10:30:00+01:00",
+      "description": "Build the deployment platform.",
+      "requirements": "Kubernetes and TypeScript."
+    },
+    {
+      "id": "offer-202",
+      "title": "IT Support Specialist",
+      "url": "https://example.recruitee.com/o/it-support-specialist",
+      "department_name": "Information Technology",
+      "remote": false,
+      "location": "Berlin, Germany (Hybrid)",
+      "created_at": "2026-04-10T08:00:00Z",
+      "offer_description": "Support internal systems."
+    },
+    {
+      "id": 303,
+      "slug": "security-analyst",
+      "title": "Security Analyst",
+      "apply_url": "https://example.recruitee.com/o/security-analyst/c/new",
+      "locations": [
+        {
+          "name": "London Office",
+          "city": "London",
+          "country": "United Kingdom"
+        }
+      ],
+      "created_at": "not a date",
+      "updated_at": "also not a date"
+    }
+  ]
+}
