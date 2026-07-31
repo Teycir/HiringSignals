@@ -251,5 +251,37 @@ export function createLiveVectorizeIndex(): VectorizeIndex {
       }
       return json.result;
     },
+
+    /**
+     * Real delete-by-id, added for test cleanup (ingest-consumer.test.ts,
+     * ROADMAP.md Milestone J's ingest-consumer migration item -- that
+     * file's own tests write real vectors via embedAndUpsertJob and need
+     * a real way to remove them afterward, same reasoning as query/upsert
+     * above: no wrangler CLI surface for Vectorize, so this goes through
+     * the same v2 REST API directly). Cloudflare's Vectorize v2
+     * delete-by-ids endpoint is confirmed (2026-07-30 docs) to accept a
+     * JSON body `{ ids: string[] }` and return the deleted count/ids
+     * under the same `{ success, result }` envelope as query/upsert.
+     */
+    async deleteByIds(ids: string[]) {
+      const res = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/vectorize/v2/indexes/${indexName}/delete_by_ids`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${cfToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ids }),
+          signal: AbortSignal.timeout(30_000),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Vectorize deleteByIds failed: HTTP ${res.status}: ${body.slice(0, 300)}`);
+      }
+      const json = (await res.json()) as { success: boolean; errors?: unknown; result: unknown };
+      if (!json.success) {
+        throw new Error(`Vectorize deleteByIds failed: ${JSON.stringify(json.errors ?? json)}`);
+      }
+      return json.result;
+    },
   } as unknown as VectorizeIndex;
 }
