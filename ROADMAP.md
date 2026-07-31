@@ -113,7 +113,7 @@ documented in AGENTS.md: INGEST_QUEUE send-capture, ATS adapter mocking.
 
 ---
 
-## Milestone E — Remaining P0 adapters (4 of 11)
+## Milestone E — Remaining P0 adapters (closed, 8 of 11 built + 3 blocked/deferred)
 
 Spec §20 Phase 3 step 1 groups these with "production hardening," after
 the dashboard (Phase 2). Sequence after Milestone F unless a specific
@@ -127,73 +127,15 @@ Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
       verified against a real live board. 15/15 fixture tests, repo
       typecheck/lint/adapters-test all green (`pnpm -r typecheck`,
       `pnpm --filter @hiring-signals/adapters lint`/`test`).
-- [ ] `teamtailor` — **BLOCKED, investigated not built** ⚠️ 2026-07-31. Verified
-      against Teamtailor's own docs (`docs.teamtailor.com`,
-      `partner.teamtailor.com/job_boards/`) plus an independent
-      third-party ATS-scraping field guide (github.com/Masterjx9/
-      OpenPostings, discussion #16), not just one source:
-        - Public API (`api.teamtailor.com/v1/jobs`) requires an
-          `Authorization: Token` API key — not public/unauthenticated,
-          unlike every other P0 provider in this list.
-        - The Job Board API's XML feed (the closest thing to
-          Personio's model) is explicitly beta and partner-gated: the
-          feed URL is unique per customer, only issued after that
-          customer activates the integration via Teamtailor support —
-          no `{boardToken}`-style pattern exists to construct from a
-          slug the way Personio/Greenhouse/etc. work.
-        - The only unauthenticated surface found (OpenPostings' field
-          notes) is raw HTML DOM parsing (`teamtailor-cdn`,
-          `jobs_list_container`, `block--jobs`) or an undocumented
-          `/jobs.rss`, if present on a given career site — not a
-          documented, stable API contract, and a materially different
-          (HTML-scraping) risk profile than this repo's other nine
-          adapters. A commercial scraper vendor's sales page claims a
-          discoverable public JSON feed exists, but that conflicts
-          with Teamtailor's own docs and isn't independently
-          verifiable without Teamtailor account access, so it wasn't
-          trusted on its own.
-      **Decision needed before this can proceed:** either (a) accept
-      HTML/RSS scraping as in-scope for this one provider (different
-      contract shape, no schema stability guarantee, would need its
-      own fragility notes in spec §21), or (b) drop `teamtailor` from
-      the P0 list and treat it as P1/deferred pending partner API
-      access. Not decided here — flagging for a real decision, not
-      silently skipping or silently building against unverified
-      claims.
-- [ ] `jazzhr` — **BLOCKED, investigated not built** ⚠️ 2026-07-31.
-      Verified against JazzHR's own docs (`apidoc.jazzhrapis.com`,
-      `success.jazzhr.com`), same two-source-cross-check discipline as
-      teamtailor above:
-        - Main JazzHR API (jobs/candidates/applicants) is
-          customer-scoped, requires an API key, and some key tiers are
-          gated behind Plus/Pro subscription plans — not
-          public/unauthenticated.
-        - JazzHR's "global JSON feed" exists but is opt-in aggregate
-          syndication across customers who chose to participate, not
-          a per-company `{boardToken}` endpoint this repo's
-          `AtsAdapter.fetchBoard(SourceConfig)` contract needs — wrong
-          shape, not just wrong auth.
-        - The only genuinely public surfaces are the hosted careers
-          page (`{subdomain}.applytojob.com`) and embeddable
-          JavaScript "Jobs Widgets" — no documented JSON/XML API
-          backs either; would mean HTML/JS-widget scraping, same
-          fragility class flagged for teamtailor. Corroborated
-          independently: commercial aggregators (JobsPipe,
-          Fantastic.jobs) both explicitly built their own crawling
-          layer specifically *because* JazzHR has no cross-customer
-          or clean per-customer public API — further evidence, not
-          just one vendor's claim.
-      Same decision needed as teamtailor: accept HTML-scraping scope
-      for this provider, or defer/drop from P0. Not decided here.
 - [x] `breezy` ✅ 2026-07-31 — public, unauthenticated careers-site JSON
       feed (`https://{company}.breezy.hr/json?verbose=true`), distinct
       from the token-gated `api.breezy.hr/v3/...` back-office API
       (same authenticated-API-vs-public-board-feed split this repo
       already has for Greenhouse/Lever). Verified two independent
-      ways before writing the schema: (1) a non-vendor 2020
-      WordPress-plugin support-forum thread showing a real,
-      unauthenticated hit against `kaycan.breezy.hr/json?verbose=true`
-      returning valid JSON; (2) Breezy's own developer docs
+      ways: (1) a non-vendor 2020 WordPress-plugin support-forum
+      thread showing a real, unauthenticated hit against
+      `kaycan.breezy.hr/json?verbose=true` returning valid JSON; (2)
+      Breezy's own developer docs
       (`developer.breezy.hr/reference/model-position`) publishing the
       `Position` schema, whose field names (`friendly_id`,
       `location.is_remote`, `department`, `requisition_id`, `type.name`)
@@ -202,51 +144,71 @@ Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
       posting (`teal-media.breezy.hr/p/a26c13c11570-...`); adapter
       prefers the feed's own `url` field, falls back to a constructed
       `{host}/p/{friendly_id}` link when absent. 13/13 fixture tests,
-      repo typecheck/lint/adapters-test all green (`pnpm --filter
-      @hiring-signals/adapters typecheck`/`lint`/`test`, 114/114 total
-      adapter tests passing, 0 regressions).
+      repo typecheck/lint/adapters-test all green, 114/114 total
+      adapter tests passing, 0 regressions.
+- [ ] `teamtailor` — **BLOCKED, investigated not built** ⚠️ 2026-07-31.
+      Verified against Teamtailor's own docs (`docs.teamtailor.com`,
+      `partner.teamtailor.com/job_boards/`) plus an independent
+      third-party ATS-scraping field guide (github.com/Masterjx9/
+      OpenPostings, discussion #16): public API is API-key-gated, the
+      Job Board XML feed is beta/partner-issued-per-customer (no
+      `{boardToken}`-style pattern to construct from a slug), and the
+      only unauthenticated surface is raw HTML/undocumented RSS
+      scraping — a materially different, less stable contract shape
+      than every other adapter here. Removed from the active P0 build
+      list (2026-07-31) pending a real product decision on whether
+      HTML-scraping is in scope; not dropped from the domain
+      `ATS_PROVIDERS` enum or existing seed data, since three seeded
+      sources already reference it and downgrading them from a clean
+      "adapter not implemented" (`UnsupportedProviderError`, spec
+      §13.4) to "invalid provider" would be a regression, not a
+      cleanup. Revisit as P1/deferred; full investigation notes in git
+      history (this section, pre-2026-07-31).
+- [ ] `jazzhr` — **BLOCKED, investigated not built** ⚠️ 2026-07-31.
+      Verified against JazzHR's own docs (`apidoc.jazzhrapis.com`,
+      `success.jazzhr.com`): main API is customer-scoped/key-gated
+      (some tiers Plus/Pro-only), the "global JSON feed" is opt-in
+      cross-customer syndication (wrong shape, not just wrong auth —
+      not a per-company `{boardToken}` endpoint), and the only public
+      surfaces are a hosted careers page and JS "Jobs Widgets" with no
+      documented backing API — corroborated independently by two
+      commercial aggregators (JobsPipe, Fantastic.jobs) both having
+      built their own crawling layer specifically because no clean
+      public API exists. Same disposition as teamtailor: removed from
+      the active P0 build list, kept in the domain enum/seed data
+      (two seeded sources reference it), revisit as P1/deferred.
 - [ ] `bamboohr` — **BLOCKED, investigated not built** ⚠️ 2026-07-31.
       Verified against BambooHR's own docs
       (`documentation.bamboohr.com/reference/get-job-summaries`) plus
-      an independent commercial-aggregator's own technical description
-      of the integration (jobspipe.dev/sources/bamboohr), same
-      two-source discipline as teamtailor/jazzhr:
-        - BambooHR is fundamentally an HRIS (employee records,
-          time-off, benefits) with a recruiting/ATS module bolted on,
-          not a standalone ATS the way every other P0 provider is.
-          Its official Jobs endpoint
-          (`{companyDomain}.bamboohr.com/api/v1/applicant_tracking/jobs`)
-          explicitly requires "the authenticated caller must have
-          access to ATS settings" (BambooHR's own API reference) —
-          Basic Auth or OAuth with a `hiring:applications` scope, a
-          per-customer key. Not public/unauthenticated.
-        - Unlike breezy (which turned out to have a genuine second,
-          public, unauthenticated per-company JSON feed distinct from
-          its authenticated API), BambooHR has no documented
-          equivalent. The only public surface is an embeddable
-          careers-page widget; per an independent vendor's own
-          technical writeup (not a sales-page claim, a description of
-          what their own integration has to do), the widget's
-          "underlying JSON URL and field names change without notice"
-          between BambooHR releases and has to be reverse-engineered
-          per customer — no stable `{boardToken}`-style pattern this
-          repo's `AtsAdapter.fetchBoard(SourceConfig)` contract could
-          rely on, same fragility class already flagged for
-          teamtailor/jazzhr (HTML/widget-scraping, not a documented
-          API contract).
-      Same decision needed as teamtailor/jazzhr: accept
-      HTML/widget-scraping scope for this provider, or defer/drop
-      from P0. Not decided here.
+      an independent aggregator's own technical writeup
+      (jobspipe.dev/sources/bamboohr): BambooHR is fundamentally an
+      HRIS with an ATS module bolted on, its Jobs endpoint requires an
+      authenticated caller with `hiring:applications` OAuth scope, and
+      the only public surface (an embeddable careers widget) has a
+      backing JSON URL/schema that "change[s] without notice" per the
+      aggregator's own description of maintaining that integration —
+      no stable per-company pattern this repo's adapter contract could
+      rely on. Same disposition as teamtailor/jazzhr: removed from the
+      active P0 build list, kept in the domain enum/seed data (one
+      seeded source references it), revisit as P1/deferred.
 
-For each: confirm the provider's public, unauthenticated board API is
-still live and documented *before* writing the schema (spec §21) —
-don't assume last-known-good API shapes from training data are current;
-check the provider's own developer docs.
+**Milestone E is now closed for active adapter work**: all 11 P0
+providers investigated, 8 built (greenhouse, lever, ashby,
+smartrecruiters, workable, recruitee, personio, breezy), 3 blocked and
+parked as above pending a product decision on HTML-scraping scope.
+Don't restart work on the 3 blocked providers without that decision.
 
-- [ ] Update `infrastructure/scripts/add-source.mjs`'s inlined provider
-      enum copy as each adapter lands (can't import `ATS_PROVIDERS` from
-      a plain `.mjs` script).
-- [ ] Update this file as each adapter lands.
+For each built adapter: confirm the provider's public, unauthenticated
+board API is still live and documented *before* writing the schema
+(spec §21) — don't assume last-known-good API shapes from training data
+are current; check the provider's own developer docs.
+
+- [x] `infrastructure/scripts/add-source.mjs`'s inlined provider enum
+      copy — already in sync with `ATS_PROVIDERS` (verified 2026-07-31,
+      all 11 providers present including the 3 blocked ones, since
+      they're still valid DB values even without an adapter).
+- [x] This file, updated as each adapter landed / as of the 2026-07-31
+      Milestone E close-out above.
 
 ---
 
@@ -390,33 +352,49 @@ system), §13.1 (Workers AI/Vectorize bindings).
 
 ## Milestone J — Migrate test suite off in-memory fakes (remaining items)
 
-**Status:** Inventory, `live-d1-client.ts`/`live-d1-database.ts`/
-`live-cf-bindings.ts` in `packages/test-support`, all 4 `packages/db/test/*.test.ts`,
-`reconciliation.test.ts`, `scheduler.test.ts` migrated. Policy
-exceptions documented: INGEST_QUEUE in-memory capture, ATS adapter
-mocking (`vi.mock("@hiring-signals/adapters")`).
+**Status:** Inventory + all core migration done (verified 2026-08-01).
+Transport layer in `packages/test-support`: `live-d1-client.ts`/
+`live-d1-database.ts` (wrangler d1 execute --remote), `live-cf-bindings.ts`
+(direct REST for AI/VECTORIZE/KV, 90s vitest timeouts). Files migrated
+from in-memory fakes to live Cloudflare resources: all 4 `packages/db/test/*.test.ts`,
+`apps/api/test/jobs/reconciliation.test.ts` (3 tests),
+`apps/api/test/jobs/scheduler.test.ts` (5 tests),
+`apps/api/test/jobs/ingest-consumer.test.ts` (21 tests). All use the
+same two documented permanent exceptions in `apps/api/test/jobs/*.test.ts`:
+ATS adapter mocking (`vi.mock("@hiring-signals/adapters")`) and
+in-memory INGEST_QUEUE send capture. See AGENTS.md "zero mocks, zero
+fakes" section for the full policy and the two narrow, documented
+exceptions.
 
-See AGENTS.md "zero mocks, zero fakes" section for the full target
-policy and the two narrow, documented exceptions.
-
-- [ ] **Migrate `apps/api/test/jobs/ingest-consumer.test.ts`** — last
-      unmigrated file (1148 lines, 21 tests: 8 happy-path, 9
-      failure-branch, 5 H.4 company-signal-generation). Scoped not
-      started: `DB` → `createLiveD1Database()`, `AI` →
-      `createLiveAiBinding()`, `VECTORIZE` → `createLiveVectorizeIndex()`,
-      `RAW_PAYLOADS` → `createLiveKvNamespace("RAW_PAYLOADS")`;
-      `@hiring-signals/adapters` and `INGEST_QUEUE` stay mocked/faked
-      per documented exceptions. Needs real D1 seeding for sequential
-      runs, real V/A/B row counts for H.4 thresholds, cleanup covering
-      signal_evidence/signals/job_observations/jobs/source_runs/
-      sources/companies PLUS Vectorize vectors by job id.
+- [x] **Migrate `apps/api/test/jobs/ingest-consumer.test.ts`** — 1125
+      lines, 21 tests (8 happy-path, 9 failure-branch including
+      missing-source / uncaught-error-retry / programmer-error-fail-fast,
+      5 H.4 company-signal-generation). Verified 2026-08-01 with real
+      live run: `DB` uses `createLiveD1Database()`, `AI` uses
+      `createLiveAiBinding()`, `VECTORIZE` uses `createLiveVectorizeIndex()`,
+      `RAW_PAYLOADS` uses `createLiveKvNamespace("RAW_PAYLOADS")`.
+      Zero `vi.mock("@hiring-signals/db")`. Only the two AGENTS.md
+      permanent exceptions remain: `vi.mock("@hiring-signals/adapters")`
+      and an in-memory `INGEST_QUEUE` sent-array capture. Cleanup
+      matches scheduler/reconciliation discipline: FK-safe teardown
+      order, test-ic-prefixed slugs, try/finally + afterEach sweep,
+      best-effort Vectorize vector cleanup by job id. Runtime: ~1501s
+      across all 21 tests (each test makes many live
+      `wrangler d1 execute --remote` calls plus real Workers AI embeds
+      and Vectorize upserts); log confirms real `ingest_success` /
+      `ingest_failed` / `ingest_programmer_error` events with real
+      source IDs, run IDs, and 20–100+s durations.
+      `pnpm --filter @hiring-signals/api typecheck` clean; full test
+      run exit code 0.
 
 - [ ] Update CI workflow (`.github/workflows/`) to provide `CF_TOKEN`
       as secret and confirm `pnpm -r test` passes in CI against live
-      resources.
+      resources. (Directory `.github/workflows/` exists on disk but
+      contains no `*.yml`/`*.yaml` as of 2026-08-01 — not started.)
 
-- [ ] Update AGENTS.md policy section's "Follow-up, tracked, not done
-      today" note once `ingest-consumer.test.ts` lands too.
+- [x] Update AGENTS.md policy section's "Follow-up, tracked, not done
+      today" note once `ingest-consumer.test.ts` lands too. Done
+      2026-08-01 in the same turn as this ROADMAP correction.
 
 ### `packages/test-support` follow-ups (verified against actual file contents 2026-07-30)
 

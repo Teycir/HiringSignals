@@ -47,12 +47,17 @@ output — not assuming it passes.
 fakes keyed on SQL substrings, `unusedBinding<T>()` Proxies for
 AI/VECTORIZE, `vi.mock` swapping `createD1Client`) is retired, per an
 explicit decision with the user.** That convention is what every
-existing test file (`ingest-consumer.test.ts`, `scheduler.test.ts`,
-`reconciliation.test.ts`, every `packages/db/test/*.test.ts`) still
-uses today — those 163 tests are **not yet migrated**, tracked as its
-own follow-up item (see ROADMAP.md's open-questions section), not
-silently grandfathered in as an exception. Don't point to an existing
-test file as precedent for a new fake; point to this section instead.
+existing test file that touched Cloudflare bindings (`ingest-consumer.test.ts`,
+`scheduler.test.ts`, `reconciliation.test.ts`, every `packages/db/test/*.test.ts`)
+started with — **those files are now migrated (verified 2026-08-01,
+all 7 test files passing against live `hiring-signals` Cloudflare
+resources)**. Tests that never used synthetic Cloudflare stand-ins
+(`packages/domain/test/*`: pure logic with fixture inputs;
+`packages/adapters/test/*`: static JSON board-response fixtures with
+real `normalize()`) were already compliant with this policy's intent
+and required no migration. Don't point to an already-migrated test
+file as precedent for writing a new synthetic stand-in; point to this
+section instead.
 
 **The rule, going forward, for any new or migrated test:** no mock of
 this repo's own functions (already-established, still true) **and** no
@@ -143,10 +148,26 @@ oversight to "fix" later:
     inconsistency for another. Capturing sends in-memory is therefore
     the accepted trade-off, not a gap to close later.
 
-**Follow-up, tracked, not done today:** migrating the existing 163
-tests off their in-memory fakes onto this policy is a real, separate
-piece of work (touches nearly every test file in the repo, plus CI
-secrets/workflow changes) — see ROADMAP.md.
+**Follow-up items (core migration complete 2026-08-01):** all 7 test
+files that previously used in-memory Cloudflare stand-ins (4
+`packages/db/test/*.test.ts` + `reconciliation.test.ts` /
+`scheduler.test.ts` / `ingest-consumer.test.ts` in `apps/api/test/jobs/`)
+now run against live `hiring-signals` Cloudflare resources, with exit
+code 0 and the two documented permanent exceptions above (ATS adapter
+mock + INGEST_QUEUE in-memory capture). Two tracked items remain open,
+neither blocking use of the migrated suite:
+
+- CI workflow (`.github/workflows/` directory exists but contains no
+  `*.yml`/`*.yaml` files as of 2026-08-01): add `CF_TOKEN` as a
+  GitHub Actions secret and confirm `pnpm -r test` passes with
+  live network access.
+- `packages/test-support` follow-ups: dotenv parsing in
+  `live-cf-bindings.ts` `loadCfToken()`, factoring duplicated
+  `execRemote`/`runWrangler` spawn plumbing, credential preflight
+  alignment, SQL redaction in thrown errors, and a short README /
+  package doc comment explaining each live client's requirements.
+
+See ROADMAP.md Milestone J for the full list with per-item detail.
 
 ---
 
