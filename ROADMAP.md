@@ -2389,3 +2389,500 @@ duplicated here:**
       `.env.local`, ambient wrangler auth for D1), what a missing-token
       failure looks like per file, and why these are real clients, not
       mocks/fakes, per `AGENTS.md`'s policy.
+
+---
+
+## Milestone K — `still_active` signal + detection-latency metric
+
+Spec §1.4 (signal types — `still_active` is defined but never generated),
+§15 (detection latency is the primary metric but not tracked), §7.1
+(signal type table). Two items bundled because they share the same
+reconciliation cron pass that H.5 already established.
+
+**Why this adds value:** passive job seekers need to know a listing they
+bookmarked is still open. Without `still_active`, a signal that stops
+refreshing is indistinguishable from a closed one. Detection latency is
+the product's own stated optimization target (spec §1.1) — without
+measuring it, cadence-tuning decisions are guesses.
+
+- [ ] **K.1 — `still_active` signal generation**
+  (`apps/api/src/jobs/reconciliation.ts`, `packages/domain`)
+  - During the daily reconciliation pass (H.5), for each active signal
+    whose `last_detected_at` is older than `pollIntervalMinutes * 2`
+    (i.e. it was seen at least two polls ago and is still active), emit
+    a `still_active` signal evidence row — not a new signal row, an
+    evidence append on the existing active `new_job` signal. This keeps
+    the signal's `last_detected_at` current and its score from decaying
+    to zero for a genuinely persistent open role.
+  - Trigger condition: `status = 'active'` AND the backing job's
+    `last_seen_at` is within the last `pollIntervalMinutes * 1.5`
+    (job was seen recently) AND the signal's `last_detected_at` is
+    older than 24h (avoid double-appending on the same day). The job
+    being recently seen is the evidence — don't emit `still_active` for
+    a signal whose backing job is itself going stale.
+  - `buildHeadline`/`buildSummary` for `still_active`: "Role still
+    active" / "Matching role confirmed open at last check." — factual,
+    no implied urgency.
+  - Verify: extend `reconciliation.test.ts` with a test asserting a
+    recently-seen active job's signal gets a `still_active` evidence
+    row appended; a job whose `last_seen_at` is stale does not.
+    `pnpm -r typecheck`/`lint`/`test` clean.
+
+- [ ] **K.2 — Detection-latency tracking**
+  (`packages/db/src/jobs-repo.ts`, `apps/api/src/jobs/ingest-consumer.ts`,
+  `infrastructure/scripts/source-health.mjs`)
+  - Spec §20 Phase 3 step 6: "track time between a job's `first_seen_at`
+    and the source run that produced it." This is already computable from
+    existing columns (`jobs.first_seen_at` and `source_runs.started_at`
+    for the run that first saw the job) — no schema change needed, just
+    a query and a place to surface it.
+  - New repo function `getDetectionLatencyStats(client, { sourceId?,
+    since })` in `packages/db/src/sources-repo.ts`: returns
+    `p50LatencyMinutes`/`p95LatencyMinutes`/`sampleCount` for jobs
+    first seen in the given window, optionally scoped to one source.
+    Computed as `(first_seen_at - source_run.started_at)` in minutes
+    via a JOIN on `job_observations` → `source_runs` filtered to
+    `is_present = 1` and the observation's `source_run_id` matching the
+    job's own `first_seen_at` window.
+  - Surface in `source-health.mjs`'s output table: add a
+    `p50 latency` column alongside the existing Failures/Status columns.
+    This is the concrete output spec §20 Phase 3 step 6 asks for.
+  - Verify: a repo test (fake `D1Client` pattern or live D1) asserting
+    the latency query returns correct p50/p95 for a seeded set of
+    jobs with known `first_seen_at`/`started_at` pairs; a manual run
+    of `source-health.mjs` against local D1 confirming the column
+    appears. `pnpm -r typecheck`/`lint`/`test` clean.
+
+---
+
+## Milestone L — CSV export (`GET /api/v1/export/signals.csv`)
+
+Spec §2.1 (P0 feature), §9.2 (endpoint listed), §8.3 (export artifacts
+expire after 24h in KV). Listed as "not yet built" in README. This is
+the one P0 feature the spec explicitly requires that has no milestone
+tracking it.
+
+**Why this adds value:** the primary use case for the secondary audience
+(investors, recruiters) is exporting a filtered signal list for offline
+analysis. Without export, the dashboard is read-only and the data is
+trapped in the UI.
+
+- [ ] **L.1 — Export route** (`apps/api/src/routes/export.ts`)
+  - `GET /api/v1/export/signals.csv` — accepts the same query params as
+    `GET /api/v1/signals` (spec §9.3's full param set: `roles`,
+    `company`, `q`, `locationMode`, `country`, `source`, `signalType`,
+    `minScore`, `observedSince`) but returns `text/csv` instead of JSON.
+  - Reuse `listSignals` from `signals-repo.ts` with `limit` raised to a
+    safe ceiling (propose 2000 rows — document this as a v1 cap, not a
+    permanent limit, in the route's header comment). Do not paginate
+    across multiple D1 calls for the export; if the result set exceeds
+    the cap, return what fits and include a `X-Export-Truncated: true`
+    header so the caller knows.
+  - CSV columns: `signal_id`, `signal_type`, `score`, `company_name`,
+    `role_category`, `headline`, `location_mode`, `country_code`,
+    `first_detected_at`, `last_detected_at`, `source_platform`,
+    `canonical_url`. No personal data — these are all job/company
+    fields, consistent with spec §14.2.
+  - Response headers: `Content-Type: text/csv; charset=utf-8`,
+    `Content-Disposition: attachment; filename="hiring-signals-export.csv"`,
+    `Cache-Control: no-store` (export reflects current filter state,
+    must not be cached by CDN).
+  - Rate-limit: apply the same `freeReadTier` middleware as every other
+    read route (spec §13.2) — export is not a special tier, it's just
+    a different response format.
+  - Verify: a route-level test (same Hono test pattern as existing route
+    tests in `apps/api/test/`) asserting (a) correct CSV headers and
+    column order for a seeded result set, (b) `X-Export-Truncated: true`
+    when the result count hits the cap, (c) the same filter params that
+    work on `GET /api/v1/signals` produce a correctly filtered CSV.
+    `pnpm --filter @hiring-signals/api typecheck`/`lint`/`test` clean.
+
+- [ ] **L.2 — Export button in dashboard UI** (`apps/web`, spec §10.2)
+  - Spec §10.2's masthead mockup already shows `[EXPORT CSV]` in the
+    top-right. Wire it to `GET /api/v1/export/signals.csv` with the
+    current URL's filter params forwarded. Client-side: a plain anchor
+    `href` constructed from the current `useSearchParams()` state —
+    no fetch/blob dance needed since the route returns a file attachment
+    directly. Disable the button (greyed, not hidden) when no signals
+    are loaded yet (empty state).
+  - Sequence after Milestone F's dashboard shell exists — this item
+    cannot be built until F's filter rail and URL-param state are in
+    place. Track as a dependency, don't start L.2 before F ships.
+  - Verify: manual smoke test confirming the downloaded file matches the
+    currently applied filters; keyboard accessibility (button is
+    focusable, has a visible label, `Enter` triggers download).
+
+---
+
+## Milestone M — Bulk source onboarding (CSV import)
+
+Spec §2.2 (P1: "Manual company/source onboarding from a CSV"), §22
+open decision 2 ("who supplies and validates ATS board tokens at launch,
+and how does the registry grow over time without becoming a bottleneck").
+
+**Why this adds value:** the registry bottleneck is the real ceiling on
+the product's value. Right now, adding 100 companies requires 100
+separate `add-company.mjs` + `add-source.mjs` invocations. A CSV import
+removes that friction entirely and is the prerequisite for the registry
+growing fast enough to make the signal feed genuinely useful.
+
+- [ ] **M.1 — `import-sources.mjs` ops script**
+  (`infrastructure/scripts/import-sources.mjs`)
+  - Accepts a CSV file path as its only argument. CSV columns:
+    `company_slug`, `company_display_name`, `company_domain` (optional),
+    `provider`, `board_token`, `public_url`, `poll_interval_minutes`
+    (optional, defaults to 90). One row = one source; a company with
+    multiple ATS boards gets multiple rows with the same `company_slug`.
+  - Processing order per row: check if `company_slug` already exists
+    (SELECT) → if not, `createCompany` → then `createSource`. Both
+    operations use the existing repo functions' duplicate-detection
+    (`DuplicateCompanyError`/`DuplicateSourceError`) — a duplicate row
+    in the CSV is a skip-with-warning, not a fatal error, so a re-run
+    of the same CSV is safe.
+  - Validation before any D1 writes: parse the entire CSV first, reject
+    rows with missing required fields or invalid `provider` values
+    (against the same `ATS_PROVIDERS` list `add-source.mjs` inlines),
+    print a summary of valid/invalid rows, and ask for confirmation
+    before writing — same "confirm before destructive action" pattern
+    as `update-source.mjs --disable`.
+  - Progress output: print one line per processed row
+    (`[OK] acme-corp / greenhouse`, `[SKIP] acme-corp already exists`,
+    `[ERROR] invalid provider: workday`) and a final summary
+    (created/skipped/errored counts).
+  - Same `.mjs`-over-`wrangler d1 execute --json` pattern as the
+    existing ops scripts (Milestone D's D1-access-approach note applies
+    here too — no live `D1Database` binding outside a Worker).
+  - Verify: run against a test CSV with 5 rows (2 new companies, 1
+    duplicate company with a new source, 1 duplicate source, 1 invalid
+    provider) against local D1; confirm row counts match expected
+    created/skipped/errored; confirm re-running the same CSV produces
+    all-skipped output with no errors. `nvm use 24.18.0` first, same
+    Node-version note as all other ops scripts.
+
+---
+
+## Milestone N — Saved filters (client-side, no backend)
+
+Spec §2.2 (P1: "Saved role/location filter profiles"). Deliberately
+scoped to client-side `localStorage` only — no backend, no user
+accounts, no new API surface. The spec's own P1 description says "saved
+dashboard view," not "server-persisted profile," and the product has no
+login, so client-side is the only option consistent with §14.1.
+
+**Why this adds value:** without saved filters, a passive job seeker
+has to re-enter their role/location preferences every visit. This is
+the difference between a tool someone uses once and one they check
+weekly. It's also the lowest-effort high-retention feature available —
+pure client-side, no backend changes.
+
+- [ ] **N.1 — Filter profile save/load** (`apps/web`)
+  - A "SAVE FILTERS" button in the filter rail (spec §10.2's layout)
+    that writes the current URL's filter params to `localStorage` under
+    a named key (e.g. `hiring-signals:saved-filters`). On page load,
+    if saved filters exist and no URL params are present, offer a
+    "RESTORE SAVED FILTERS" prompt (a single-line banner above the feed,
+    dismissible) — don't silently apply saved filters without the user's
+    awareness, since the URL is the source of truth (spec §12.2).
+  - Storage format: a plain JSON object of the current `signalsQuerySchema`
+    params. No versioning needed for v1 — if the schema changes and
+    stored params become invalid, Zod parse failure → silently discard
+    the stored value and show the prompt to re-save.
+  - "CLEAR SAVED FILTERS" button alongside "SAVE FILTERS" when a saved
+    profile exists.
+  - Sequence after Milestone F's filter rail exists — cannot be built
+    before F ships. Track as a dependency.
+  - Verify: manual smoke test (save filters, close tab, reopen, confirm
+    restore prompt appears with correct params); keyboard accessibility
+    (both buttons focusable, labeled); `pnpm --filter @hiring-signals/web
+    typecheck`/`lint` clean.
+
+---
+
+## Milestone O — Company hiring timeline API + page (investor/analyst view)
+
+Spec §1.4 (company-level signals), §10.1 (`/companies/[slug]` route exists
+but is unspecified beyond "company-level timeline and active roles"),
+§2.3 ("Trend charts and source-coverage reporting" is listed as P2 —
+this milestone is the structured-data foundation that makes charts
+possible without building charts yet).
+
+**Why this is the real differentiator:** the job-seeker feed is
+commodity. What no public tool gives you today is a structured,
+timestamped, evidence-backed record of *how a specific company's hiring
+composition has changed over time* — which roles they opened, when, in
+which locations, and whether that pace is accelerating or contracting.
+That is the data investors use to infer product bets, geographic
+expansion, and team-building ahead of announcements. It's already being
+collected by the ingestion pipeline. It just needs a dedicated read path
+and a page that makes it legible.
+
+The key constraint: this must never claim to represent intent, budget, or
+confirmed decisions — only observable public evidence (spec §14.3). The
+value is in the pattern, not in the interpretation.
+
+### O.1 — Company hiring timeline API endpoint
+
+`GET /api/v1/companies/:slug/timeline`
+
+Returns a time-bucketed summary of hiring activity for one company,
+queryable by role category and date range. No new ingestion logic —
+this is a pure read path over existing `jobs` and `signals` rows.
+
+- [ ] New repo function `getCompanyHiringTimeline(client, { companyId,
+      roleCategoryFilter?, since?, until?, bucketDays? })` in
+      `packages/db/src/companies-repo.ts`. Returns an array of time
+      buckets, each containing:
+      - `bucketStart` / `bucketEnd` (ISO-8601)
+      - `newJobsCount` — jobs with `first_seen_at` in this bucket
+      - `closedJobsCount` — jobs that transitioned to `closed` in this bucket
+        (approximated from `last_seen_at` + lifecycle state)
+      - `activeJobsCount` — jobs with `status IN ('active', 'possibly_closed')`
+        at bucket end (snapshot, not a running total)
+      - `roleBreakdown` — `{ [roleCategory]: newJobsCount }` for the top
+        categories in this bucket, so a caller can see "3 ML, 2 DevOps,
+        1 Security" without a second query
+      - `locationBreakdown` — `{ [countryCode]: newJobsCount }` for the
+        top countries in this bucket
+      - `signalTypes` — array of distinct signal types fired in this bucket
+        (`hiring_burst`, `role_acceleration`, etc.) — the "what the system
+        concluded" layer on top of the raw counts
+      - Default bucket size: 14 days. Caller can override with
+        `bucketDays=7` or `bucketDays=30`. Cap at 90 days of history
+        for v1 (matches the `jobs` retention window and keeps the query
+        fast without a dedicated analytics table).
+  - Index check: `idx_jobs_filters (company_id, role_primary, status,
+    last_seen_at DESC)` already exists. Run `EXPLAIN QUERY PLAN` against
+    the bucketed aggregation before shipping — a `GROUP BY` over
+    `first_seen_at` buckets on a large `jobs` table may need a
+    `(company_id, first_seen_at)` index. Add a migration if needed.
+  - Verify: repo test (live D1 pattern per Milestone J) seeding jobs
+    across 3 known date buckets and asserting correct `newJobsCount`/
+    `roleBreakdown` per bucket; `pnpm --filter @hiring-signals/db
+    typecheck`/`lint`/`test` clean.
+
+- [ ] New route `GET /api/v1/companies/:slug/timeline` in
+      `apps/api/src/routes/companies.ts`. Query params: `since` (ISO
+      date, default 90 days ago), `until` (ISO date, default now),
+      `roles` (comma-delimited role categories, optional),
+      `bucketDays` (7/14/30, default 14). Same public/unauthenticated
+      access as every other read route (spec §14.1). Response envelope:
+      `{ data: { company: { slug, displayName }, buckets: [...] }, meta: { requestId } }`.
+  - Verify: route test asserting correct bucket shape for a seeded
+    company; `pnpm --filter @hiring-signals/api typecheck`/`lint`/`test`
+    clean.
+
+### O.2 — Company page: hiring timeline view (`/companies/[slug]`)
+
+Spec §10.1 lists this route but leaves it unspecified. This is the
+investor-facing view — dense, data-forward, no decoration.
+
+- [ ] `/companies/[slug]` page in `apps/web` (sequence after Milestone F's
+      shell exists). Layout:
+
+  ```text
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ ACME CORP                          acme.example  [EXPORT CSV ↗]  │
+  │ Monitored since 2026-03-01 · 3 sources · Last sync 2h ago        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ HIRING ACTIVITY — LAST 90 DAYS                                   │
+  │                                                                  │
+  │  NEW ROLES  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
+  │  (bar chart: one bar per 14-day bucket, height = newJobsCount)   │
+  │                                                                  │
+  │  BY ROLE    [Software Eng ██████] [ML ████] [DevOps ███] ...     │
+  │  BY LOCATION [US ████████] [DE ███] [Remote ██████] ...          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ SIGNALS                                                          │
+  │  [82] HIRING BURST / ML · 4 new roles in 14d · 3h ago           │
+  │  [71] MULTI-LOCATION / DevOps · US + DE + Remote · 1d ago       │
+  │  ...                                                             │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ ACTIVE ROLES (12)                                                │
+  │  Senior ML Engineer · Remote US · OBSERVED 3H AGO [VIEW →]      │
+  │  ...                                                             │
+  └──────────────────────────────────────────────────────────────────┘
+  ```
+
+  - The bar chart is a pure CSS/SVG bar chart — no charting library.
+    Each bar is a `<div>` or `<rect>` with height proportional to
+    `newJobsCount / max(newJobsCount)`. Brutalist styling: black bars,
+    white background, 2px black border on the chart container, no
+    gridlines, no tooltips on hover (data labels below each bar instead).
+    `prefers-reduced-motion` has no effect here since there's no
+    animation — bars are static on render.
+  - Role/location breakdowns: horizontal bar rows, same CSS approach,
+    label + count inline. No pie charts, no donut charts — they obscure
+    the absolute numbers that matter to an analyst.
+  - "Monitored since" = the earliest `source_runs.started_at` for this
+    company's sources — surfaces data provenance, which is what makes
+    the trend credible ("we've been watching this company for 8 months,
+    not 2 weeks").
+  - Export CSV button: links to `GET /api/v1/export/signals.csv?company=<slug>`
+    (Milestone L) — exports the company's full signal history, not just
+    the current view.
+  - Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint` clean;
+    manual smoke test confirming bars render correctly for a company with
+    seeded timeline data across multiple buckets.
+
+---
+
+## Milestone P — Hiring trend API: cross-company analytics
+
+Spec §1.2 (investor/analyst as secondary audience), §2.3 ("Trend charts"
+deferred — this is the API layer that makes them possible without
+building a full analytics UI yet).
+
+**Why this adds value beyond Milestone O:** a single company's timeline
+is useful for due diligence on one target. Cross-company trend data is
+what makes this a market intelligence tool — "which companies in the
+fintech sector started hiring ML engineers in the last 60 days?",
+"show me companies with accelerating DevOps hiring in Germany." That
+query is not answerable from the existing signal feed because the feed
+is role-first, not company-first, and has no sector/industry dimension.
+
+This milestone adds the read paths only — no new ingestion, no new
+schema beyond one optional `industry` tag already in the `companies`
+table (spec §8.2 already has `industry TEXT`).
+
+- [ ] **P.1 — Industry/sector tagging for companies**
+  (`infrastructure/scripts/update-company.mjs`)
+  - The `companies` table already has an `industry` column (spec §8.2)
+    but `add-company.mjs` doesn't expose it and `update-company.mjs`
+    doesn't exist yet. Add `update-company.mjs` ops script accepting
+    `--id`, `--industry`, `--employee-band` flags — same `.mjs`-over-
+    `wrangler d1 execute --json` pattern as the other ops scripts.
+    `industry` is a free-text tag for v1 (e.g. "fintech", "healthtech",
+    "defense") — no controlled vocabulary enforced yet, just stored and
+    queryable. A controlled taxonomy is a future refinement once real
+    usage shows what groupings matter.
+  - Verify: run against local D1, confirm `industry` persists; confirm
+    missing `--id` is rejected. `nvm use 24.18.0` first.
+
+- [ ] **P.2 — Cross-company trend endpoint**
+  `GET /api/v1/trends/hiring`
+  - Query params: `roles` (comma-delimited, required — at least one),
+    `industry` (optional free-text filter on `companies.industry`),
+    `country` (optional ISO code), `since` (ISO date, default 30 days),
+    `sort` (`acceleration_desc` / `volume_desc` / `newest_signal`,
+    default `acceleration_desc`), `limit` (1–50, default 20).
+  - Returns a ranked list of companies with the most notable hiring
+    activity for the requested role(s) in the requested window. Each
+    item: `{ company: { slug, displayName, industry, domain },
+    newJobsCount, activeJobsCount, acceleration, topLocations,
+    latestSignalType, latestSignalAt }`. `acceleration` reuses
+    `computeAcceleration(n14, n56)` from `packages/domain` — same
+    formula, same version, no new math.
+  - This is the query an investor runs: "show me companies hiring ML
+    engineers fastest right now, in fintech." The answer is a ranked
+    list with evidence, not a chart — the chart is a future UI layer.
+  - New repo function `getHiringTrends(client, { roleCategoryFilter,
+    industryFilter?, countryFilter?, since, limit, sort })` in
+    `packages/db/src/signals-repo.ts` (or a new
+    `packages/db/src/trends-repo.ts` if the query grows complex enough
+    to warrant its own file — decide at implementation time).
+  - Index check: this query joins `companies` → `jobs` filtered by
+    `role_primary` + `first_seen_at` window + optional `country_code`.
+    `idx_jobs_filters (company_id, role_primary, status, last_seen_at DESC)`
+    covers the role filter but not `first_seen_at` or `country_code`.
+    Run `EXPLAIN QUERY PLAN` before shipping; add a migration for
+    `(role_primary, first_seen_at, country_code)` if it's scanning.
+  - Rate-limit: same `freeReadTier` middleware as every other read route.
+    This query is heavier than a single-company lookup — consider a
+    KV cache with a 5-minute TTL for identical param combinations (same
+    pattern as `facets-repo.ts`).
+  - Verify: repo test seeding companies across two industries with
+    different role counts and asserting correct ranking order; route
+    test asserting the `industry` filter excludes non-matching companies;
+    `pnpm -r typecheck`/`lint`/`test` clean.
+
+- [ ] **P.3 — Trends surface in dashboard UI** (`apps/web`)
+  - A `/trends` route (add to spec §10.1's route map) showing the
+    cross-company trend table: role selector at the top (same chip-toggle
+    as Milestone I.4's filter mechanics), optional industry/country
+    filter, ranked company list below. Each row: company name, role
+    count, acceleration indicator (▲ / — / ▼ based on the `acceleration`
+    value), top location, latest signal type, last seen timestamp.
+    `[VIEW COMPANY →]` links to `/companies/[slug]` (Milestone O.2).
+  - No charts on this page — the table is the product. Charts are P2
+    (spec §2.3) and require historical data that won't exist until the
+    system has been running for weeks.
+  - Sequence after Milestone F's shell and Milestone O.2's company page
+    exist — `/trends` reuses the same filter chip components and links
+    into the same company page.
+  - Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint` clean;
+    manual smoke test confirming the role selector filters the table
+    correctly and the URL encodes the selected roles.
+
+---
+
+## Milestone Q — Hiring velocity score per company (investor-grade signal)
+
+**Why this is the real moat:** the existing signal score (§7.2) ranks
+individual role-level signals. What investors need is a single
+**company-level hiring velocity score** — a number that answers "how
+aggressively is this company building its technical team right now,
+relative to its own historical baseline?" That's a different question
+from "is this specific job posting fresh?"
+
+This is the feature that turns the product from a job feed with company
+context into a genuine market intelligence tool. It's computable entirely
+from data already being collected. No new ingestion, no new schema
+beyond one new column.
+
+- [ ] **Q.1 — Hiring velocity score computation**
+  (`packages/domain/src/hiring-velocity.ts`, new file)
+  - Pure function `computeHiringVelocity(stats: CompanyRoleStats):
+    HiringVelocityResult` where `CompanyRoleStats` is the output of
+    `getCompanyRoleActivityStats` (H.2) aggregated across *all* role
+    categories for a company (not just one role+company pair).
+  - Score formula (v1, document as versioned same as signal score):
+    ```
+    V = clamp(
+      0.40 * acceleration       // pace vs. own baseline (most weight)
+      + 0.25 * breadth          // geographic expansion signal
+      + 0.20 * volume_norm      // absolute active headcount, normalized
+      + 0.15 * persistence      // sustained demand (days active / 30)
+    , 0, 100) * 100
+    ```
+    Where `acceleration` and `breadth` reuse `computeAcceleration` and
+    `computeBreadth` from `packages/domain/src/signal-score.ts` (H.3),
+    `volume_norm` is `clamp(totalActiveJobs / 10, 0, 1)` (10 is a
+    documented v1 choice, same caveat as `computeVolume`'s 5), and
+    `persistence` is `clamp(daysSinceFirstSignal / 30, 0, 1)`.
+  - Store as `companies.hiring_velocity_score` (INTEGER) and
+    `companies.velocity_score_version` (TEXT) + `companies.velocity_computed_at`
+    (TEXT). New migration `0005_company_velocity_score.sql` adding these
+    three columns with `DEFAULT NULL` — existing rows are null until
+    the first reconciliation pass computes them.
+  - Verify: unit tests for `computeHiringVelocity` with hand-computed
+    cases (cold company = 0, accelerating multi-location company = high
+    score, stale company = decaying score); `pnpm --filter
+    @hiring-signals/domain test`/`typecheck`/`lint` clean.
+
+- [ ] **Q.2 — Velocity score recompute in reconciliation**
+  (`apps/api/src/jobs/reconciliation.ts`)
+  - During the daily reconciliation pass (H.5), after per-signal score
+    recomputes, add a company-level pass: for each company that had at
+    least one signal refreshed today, call `getCompanyRoleActivityStats`
+    aggregated across all roles (new variant of H.2's query, or a new
+    `getCompanyActivityStats(client, { companyId, now })` that sums
+    across all `role_primary` values), compute `computeHiringVelocity`,
+    and `UPDATE companies SET hiring_velocity_score = ?, velocity_score_version = ?, velocity_computed_at = ?`.
+  - Verify: extend `reconciliation.test.ts` with a test asserting a
+    company's `hiring_velocity_score` is updated after a reconciliation
+    pass that touches its signals; `pnpm -r typecheck`/`lint`/`test` clean.
+
+- [ ] **Q.3 — Velocity score in the trends API and company page**
+  - Add `hiringVelocityScore` to `GET /api/v1/trends/hiring` (Milestone
+    P.2) response items and use it as the default sort when
+    `sort=velocity_desc` is requested (add to the sort enum).
+  - Add `hiringVelocityScore` + `velocityComputedAt` to
+    `GET /api/v1/companies/:slug` response.
+  - Surface on the company page (Milestone O.2) as a prominent score
+    block — same monospace/chartreuse-at-80+ treatment as the signal
+    score badge (spec §11.4). Label it "HIRING VELOCITY" with a
+    plain-language note: "Based on pace, breadth, and persistence of
+    public hiring activity. Not a prediction of intent or budget."
+    (spec §14.3's language requirement applied to this new number).
+  - Verify: route tests asserting the new field appears in both
+    endpoints; `pnpm -r typecheck`/`lint`/`test` clean.
