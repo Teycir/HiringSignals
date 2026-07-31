@@ -110,7 +110,7 @@ documented in AGENTS.md: INGEST_QUEUE send-capture, ATS adapter mocking.
 
 ---
 
-## Milestone E — Remaining P0 adapters (5 of 11)
+## Milestone E — Remaining P0 adapters (4 of 11)
 
 Spec §20 Phase 3 step 1 groups these with "production hardening," after
 the dashboard (Phase 2). Sequence after Milestone F unless a specific
@@ -119,7 +119,11 @@ provider is needed for real-world messier data before UI work.
 Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
 `normalize`), same fixture-test pattern. One PR/commit per adapter.
 
-- [ ] `personio`
+- [x] `personio` ✅ 2026-07-31 — XML feed (`workzag-jobs`), hand-rolled
+      `xml-lite.ts` extractor (no XML dep), canonical URL construction
+      verified against a real live board. 15/15 fixture tests, repo
+      typecheck/lint/adapters-test all green (`pnpm -r typecheck`,
+      `pnpm --filter @hiring-signals/adapters lint`/`test`).
 - [ ] `teamtailor`
 - [ ] `jazzhr`
 - [ ] `breezy`

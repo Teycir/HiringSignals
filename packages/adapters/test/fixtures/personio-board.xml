@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workzag-jobs>
+  <position>
+    <id>4103</id>
+    <subcompany></subcompany>
+    <office>Munich</office>
+    <department>Engineering</department>
+    <recruitingCategory>Various</recruitingCategory>
+    <name>Senior Backend Engineer</name>
+    <jobDescriptions>
+      <jobDescription>
+        <name>Your Role</name>
+        <value><![CDATA[<p>Build our core platform in TypeScript.</p>]]></value>
+      </jobDescription>
+      <jobDescription>
+        <name>Your Profile</name>
+        <value><![CDATA[<p>5+ years backend experience.</p>]]></value>
+      </jobDescription>
+    </jobDescriptions>
+    <employmentType>permanent</employmentType>
+    <seniority>experienced</seniority>
+    <schedule>full-time</schedule>
+    <yearsOfExperience>5-7</yearsOfExperience>
+    <keywords>backend,typescript,platform</keywords>
+    <occupation>software_development</occupation>
+    <occupationCategory>engineering</occupationCategory>
+    <createdAt>2026-06-01T09:00:00+0200</createdAt>
+  </position>
+  <position>
+    <id>4210</id>
+    <subcompany></subcompany>
+    <office>Remote - Germany</office>
+    <department></department>
+    <recruitingCategory>Various</recruitingCategory>
+    <name>Office Manager (m/w/d)</name>
+    <jobDescriptions>
+      <jobDescription>
+        <name>Beschreibung</name>
+        <value><![CDATA[<p>Kümmere dich um alle Büro-Themen.</p>]]></value>
+      </jobDescription>
+    </jobDescriptions>
+    <employmentType>intern</employmentType>
+    <seniority>entry-level</seniority>
+    <schedule>part-time</schedule>
+    <yearsOfExperience>lt-1</yearsOfExperience>
+    <keywords>office,management</keywords>
+    <occupation>office_management</occupation>
+    <occupationCategory>administrative_and_clerical</occupationCategory>
+    <createdAt></createdAt>
+  </position>
+  <position>
+    <id>4300</id>
+    <subcompany></subcompany>
+    <office>Hamburg</office>
+    <department>Support</department>
+    <recruitingCategory>Various</recruitingCategory>
+    <name>Support Specialist</name>
+    <jobDescriptions></jobDescriptions>
+    <employmentType>permanent</employmentType>
+    <seniority>experienced</seniority>
+    <schedule>full-time</schedule>
+    <yearsOfExperience>2-5</yearsOfExperience>
+    <keywords>support</keywords>
+    <occupation>customer_support</occupation>
+    <occupationCategory>customer_service</occupationCategory>
+    <createdAt>2026-05-15T10:00:00+0200</createdAt>
+  </position>
+</workzag-jobs>
