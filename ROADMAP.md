@@ -76,10 +76,13 @@ isolation (`src/` → `test/`), centralized `isUniqueConstraintError` in
 `lib/d1/unique-constraint.ts`, `unusedBinding<T>` Proxy for fake test
 bindings.
 
-### Milestone E — 6 of 11 P0 adapters done ✅ 2026-07-30
+### Milestone E — 8 of 11 P0 adapters done, 3 blocked (in progress)
 Completed: greenhouse (original), lever, ashby, smartrecruiters,
-workable, recruitee. All have Zod schemas, typed errors, fixture tests,
-registered in `registry.ts`.
+workable, recruitee, personio (2026-07-31), breezy (2026-07-31). All
+have Zod schemas, typed errors, fixture tests, registered in
+`registry.ts`. Blocked pending a scope decision (no public,
+unauthenticated, documented per-company board API found — see
+Milestone E section below): teamtailor, jazzhr, bamboohr.
 
 ### Milestone H — Signal-quality logic pass ✅ 2026-07-29
 H.1 Description-channel noise fix (structured-categories guard), H.2
@@ -124,10 +127,116 @@ Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
       verified against a real live board. 15/15 fixture tests, repo
       typecheck/lint/adapters-test all green (`pnpm -r typecheck`,
       `pnpm --filter @hiring-signals/adapters lint`/`test`).
-- [ ] `teamtailor`
-- [ ] `jazzhr`
-- [ ] `breezy`
-- [ ] `bamboohr`
+- [ ] `teamtailor` — **BLOCKED, investigated not built** ⚠️ 2026-07-31. Verified
+      against Teamtailor's own docs (`docs.teamtailor.com`,
+      `partner.teamtailor.com/job_boards/`) plus an independent
+      third-party ATS-scraping field guide (github.com/Masterjx9/
+      OpenPostings, discussion #16), not just one source:
+        - Public API (`api.teamtailor.com/v1/jobs`) requires an
+          `Authorization: Token` API key — not public/unauthenticated,
+          unlike every other P0 provider in this list.
+        - The Job Board API's XML feed (the closest thing to
+          Personio's model) is explicitly beta and partner-gated: the
+          feed URL is unique per customer, only issued after that
+          customer activates the integration via Teamtailor support —
+          no `{boardToken}`-style pattern exists to construct from a
+          slug the way Personio/Greenhouse/etc. work.
+        - The only unauthenticated surface found (OpenPostings' field
+          notes) is raw HTML DOM parsing (`teamtailor-cdn`,
+          `jobs_list_container`, `block--jobs`) or an undocumented
+          `/jobs.rss`, if present on a given career site — not a
+          documented, stable API contract, and a materially different
+          (HTML-scraping) risk profile than this repo's other nine
+          adapters. A commercial scraper vendor's sales page claims a
+          discoverable public JSON feed exists, but that conflicts
+          with Teamtailor's own docs and isn't independently
+          verifiable without Teamtailor account access, so it wasn't
+          trusted on its own.
+      **Decision needed before this can proceed:** either (a) accept
+      HTML/RSS scraping as in-scope for this one provider (different
+      contract shape, no schema stability guarantee, would need its
+      own fragility notes in spec §21), or (b) drop `teamtailor` from
+      the P0 list and treat it as P1/deferred pending partner API
+      access. Not decided here — flagging for a real decision, not
+      silently skipping or silently building against unverified
+      claims.
+- [ ] `jazzhr` — **BLOCKED, investigated not built** ⚠️ 2026-07-31.
+      Verified against JazzHR's own docs (`apidoc.jazzhrapis.com`,
+      `success.jazzhr.com`), same two-source-cross-check discipline as
+      teamtailor above:
+        - Main JazzHR API (jobs/candidates/applicants) is
+          customer-scoped, requires an API key, and some key tiers are
+          gated behind Plus/Pro subscription plans — not
+          public/unauthenticated.
+        - JazzHR's "global JSON feed" exists but is opt-in aggregate
+          syndication across customers who chose to participate, not
+          a per-company `{boardToken}` endpoint this repo's
+          `AtsAdapter.fetchBoard(SourceConfig)` contract needs — wrong
+          shape, not just wrong auth.
+        - The only genuinely public surfaces are the hosted careers
+          page (`{subdomain}.applytojob.com`) and embeddable
+          JavaScript "Jobs Widgets" — no documented JSON/XML API
+          backs either; would mean HTML/JS-widget scraping, same
+          fragility class flagged for teamtailor. Corroborated
+          independently: commercial aggregators (JobsPipe,
+          Fantastic.jobs) both explicitly built their own crawling
+          layer specifically *because* JazzHR has no cross-customer
+          or clean per-customer public API — further evidence, not
+          just one vendor's claim.
+      Same decision needed as teamtailor: accept HTML-scraping scope
+      for this provider, or defer/drop from P0. Not decided here.
+- [x] `breezy` ✅ 2026-07-31 — public, unauthenticated careers-site JSON
+      feed (`https://{company}.breezy.hr/json?verbose=true`), distinct
+      from the token-gated `api.breezy.hr/v3/...` back-office API
+      (same authenticated-API-vs-public-board-feed split this repo
+      already has for Greenhouse/Lever). Verified two independent
+      ways before writing the schema: (1) a non-vendor 2020
+      WordPress-plugin support-forum thread showing a real,
+      unauthenticated hit against `kaycan.breezy.hr/json?verbose=true`
+      returning valid JSON; (2) Breezy's own developer docs
+      (`developer.breezy.hr/reference/model-position`) publishing the
+      `Position` schema, whose field names (`friendly_id`,
+      `location.is_remote`, `department`, `requisition_id`, `type.name`)
+      line up with the public feed's shape. Canonical URL pattern
+      (`{host}/p/{friendly_id}-{slug}`) confirmed against a real live
+      posting (`teal-media.breezy.hr/p/a26c13c11570-...`); adapter
+      prefers the feed's own `url` field, falls back to a constructed
+      `{host}/p/{friendly_id}` link when absent. 13/13 fixture tests,
+      repo typecheck/lint/adapters-test all green (`pnpm --filter
+      @hiring-signals/adapters typecheck`/`lint`/`test`, 114/114 total
+      adapter tests passing, 0 regressions).
+- [ ] `bamboohr` — **BLOCKED, investigated not built** ⚠️ 2026-07-31.
+      Verified against BambooHR's own docs
+      (`documentation.bamboohr.com/reference/get-job-summaries`) plus
+      an independent commercial-aggregator's own technical description
+      of the integration (jobspipe.dev/sources/bamboohr), same
+      two-source discipline as teamtailor/jazzhr:
+        - BambooHR is fundamentally an HRIS (employee records,
+          time-off, benefits) with a recruiting/ATS module bolted on,
+          not a standalone ATS the way every other P0 provider is.
+          Its official Jobs endpoint
+          (`{companyDomain}.bamboohr.com/api/v1/applicant_tracking/jobs`)
+          explicitly requires "the authenticated caller must have
+          access to ATS settings" (BambooHR's own API reference) —
+          Basic Auth or OAuth with a `hiring:applications` scope, a
+          per-customer key. Not public/unauthenticated.
+        - Unlike breezy (which turned out to have a genuine second,
+          public, unauthenticated per-company JSON feed distinct from
+          its authenticated API), BambooHR has no documented
+          equivalent. The only public surface is an embeddable
+          careers-page widget; per an independent vendor's own
+          technical writeup (not a sales-page claim, a description of
+          what their own integration has to do), the widget's
+          "underlying JSON URL and field names change without notice"
+          between BambooHR releases and has to be reverse-engineered
+          per customer — no stable `{boardToken}`-style pattern this
+          repo's `AtsAdapter.fetchBoard(SourceConfig)` contract could
+          rely on, same fragility class already flagged for
+          teamtailor/jazzhr (HTML/widget-scraping, not a documented
+          API contract).
+      Same decision needed as teamtailor/jazzhr: accept
+      HTML/widget-scraping scope for this provider, or defer/drop
+      from P0. Not decided here.
 
 For each: confirm the provider's public, unauthenticated board API is
 still live and documented *before* writing the schema (spec §21) —

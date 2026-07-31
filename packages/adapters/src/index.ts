@@ -7,6 +7,7 @@ export * from "./smartrecruiters";
 export * from "./workable";
 export * from "./recruitee";
 export * from "./personio";
+export * from "./breezy";
 export * from "./registry";
 
 // Milestone E (ROADMAP.md) adds one file per remaining provider here
