@@ -206,6 +206,127 @@ export async function listSignalsNeedingReconciliation(
   );
 }
 
+/**
+ * Row shape for `still_active` candidates (ROADMAP.md K.1, spec §1.4:
+ * "a previously surfaced matching job remains open at the most recent
+ * successful check"). One row per (signal, backing job) pair so the
+ * caller can pass the specific job's `last_seen_at`/id through to the
+ * evidence payload without a second lookup -- mirrors
+ * SignalReconciliationRow's "one query, everything the caller needs"
+ * shape above.
+ */
+export interface StillActiveCandidateRow {
+  signal_id: string;
+  company_id: string;
+  role_category: RoleCategory;
+  last_detected_at: string;
+  job_id: string;
+  job_last_seen_at: string;
+  poll_interval_minutes: number;
+}
+
+/**
+ * Active signals whose most recent detection is stale (default: 24h+,
+ * same STALE_SIGNAL_AFTER_HOURS cadence as H.5's score reconciliation --
+ * both run once/day off the same cron) but whose backing job was seen
+ * recently by its own source's polling cadence, per source. "Recently"
+ * is source-relative (`poll_interval_minutes * multiplier`), not a fixed
+ * constant -- a source polled every 90 minutes and one polled every 24h
+ * both count as "still active" on their own cadence, not one shared
+ * clock (spec §15's own detection-latency target is likewise per-source
+ * `pollIntervalMinutes`-relative, same reasoning).
+ *
+ * Deliberately does NOT restrict to signal_type = 'new_job': spec §1.4
+ * scopes "still active" to role-level signals generically ("a previously
+ * surfaced matching job"), and `reopened_job` is exactly as eligible --
+ * a job that reappeared and is still open is just as worth confirming as
+ * one that was new. Company-level signal types (hiring_burst,
+ * role_acceleration, multi_location, persistent_demand) don't anchor to
+ * one single job the same way, so those naturally fall out of this query
+ * because they don't have a qualifying still-open evidence job either
+ * (their evidence jobs are frequently closed by the time the signal
+ * itself is still meaningful).
+ *
+ * Idempotency guard: excludes signals with a `still_active` evidence row
+ * already recorded today (UTC calendar day of `todayStart`), mirroring
+ * listSignalsNeedingReconciliation's `score_recomputed`-within-window
+ * guard -- makes a cron retry/manual re-run safe without appending a
+ * second confirmation the same day.
+ *
+ * One row per (signal, job) pair when a signal has more than one
+ * still-open evidence job (rare but possible for company-level types
+ * that slip through, or a role-level signal with multiple evidence
+ * jobs) -- caller picks the freshest (`MAX(job_last_seen_at)`) per
+ * signal, which the `GROUP BY s.id` + `MAX()` below already resolves in
+ * SQL rather than pushing dedup into application code.
+ */
+export async function listStillActiveCandidates(
+  client: D1Client,
+  params: { staleBefore: string; todayStart: string; lookbackMultiplier: number; limit: number },
+): Promise<StillActiveCandidateRow[]> {
+  return client.all<StillActiveCandidateRow>(
+    `SELECT
+       s.id AS signal_id,
+       s.company_id,
+       s.role_category,
+       s.last_detected_at,
+       j.id AS job_id,
+       MAX(j.last_seen_at) AS job_last_seen_at,
+       src.poll_interval_minutes AS poll_interval_minutes
+     FROM signals s
+     JOIN signal_evidence se ON se.signal_id = s.id AND se.job_id IS NOT NULL
+     JOIN jobs j ON j.id = se.job_id
+     JOIN sources src ON src.id = j.source_id
+     WHERE s.status = 'active'
+       AND s.last_detected_at < ?
+       AND j.status = 'active'
+       AND j.last_seen_at >= datetime(?, '-' || CAST(src.poll_interval_minutes * ? AS TEXT) || ' minutes')
+       AND NOT EXISTS (
+         SELECT 1 FROM signal_evidence se2
+         WHERE se2.signal_id = s.id
+           AND se2.evidence_type = 'still_active'
+           AND se2.observed_at >= ?
+       )
+     GROUP BY s.id
+     ORDER BY s.last_detected_at ASC, s.id ASC
+     LIMIT ?`,
+    [params.staleBefore, params.staleBefore, params.lookbackMultiplier, params.todayStart, params.limit],
+  );
+}
+
+export interface MarkSignalStillActiveInput {
+  lastDetectedAt: string;
+}
+
+/**
+ * Bumps `last_detected_at` on an active signal WITHOUT touching
+ * score/score_version -- distinct from both refreshSignal (new real
+ * evidence, also updates score) and updateSignalScore (score decay,
+ * deliberately does NOT touch last_detected_at). A still_active
+ * confirmation is genuinely new evidence that the signal remains
+ * current, so it earns a last_detected_at bump (unlike reconciliation's
+ * score-only recompute), but it doesn't represent new hiring activity,
+ * so the score itself is untouched (unlike refreshSignal's new-job-
+ * evidence path).
+ *
+ * `status = 'active'` guard, same race-safety reasoning as
+ * updateSignalScore -- if something else expired the signal between
+ * listStillActiveCandidates's SELECT and this UPDATE, the write becomes
+ * a no-op and the caller (K.1's reconciliation pass) skips the
+ * evidence-append, same "changes === 0 -> skip" pattern H.5 already
+ * uses.
+ */
+export async function markSignalStillActive(
+  client: D1Client,
+  signalId: string,
+  input: MarkSignalStillActiveInput,
+): Promise<{ changes: number }> {
+  return client.run(`UPDATE signals SET last_detected_at = ? WHERE id = ? AND status = 'active'`, [
+    input.lastDetectedAt,
+    signalId,
+  ]);
+}
+
 export interface AppendSignalEvidenceInput {
   signalId: string;
   jobId: string | null;

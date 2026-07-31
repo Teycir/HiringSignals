@@ -302,6 +302,124 @@ export async function getJobsMissingFromRun(
   );
 }
 
+export interface DetectionLatencyStats {
+  /** Median minutes between a source_run starting and the FIRST
+   * job_observations row it produced for a given job (i.e. the run that
+   * first discovered that job) -- p50 of spec §15's "posting live ->
+   * visible in dashboard" detection-latency metric. `null` when there
+   * are zero qualifying samples (e.g. a brand-new source/company with
+   * no first-observation history yet). */
+  p50LatencyMinutes: number | null;
+  /** 95th percentile of the same distribution. */
+  p95LatencyMinutes: number | null;
+  /** How many (job, first-observing-run) pairs the percentiles above
+   * were computed from -- callers (source-health.mjs, ROADMAP.md K.2)
+   * use this to distinguish "0 samples, no data yet" from "0 samples
+   * because of a bug," and to avoid presenting a p95 computed from a
+   * single-digit sample as if it were statistically meaningful. */
+  sampleCount: number;
+}
+
+/**
+ * Detection-latency percentiles (ROADMAP.md K.2, spec §15's primary
+ * optimization-target metric: "posting live -> visible in dashboard,
+ * p50 <= effective per-source pollIntervalMinutes"). Needs no schema
+ * change -- entirely derived from `first_seen_at` (jobs), `started_at`
+ * (source_runs), scoped via `job_observations` to the specific run that
+ * FIRST observed each job.
+ *
+ * "First observed" is identified as the job_observations row with the
+ * MIN(observed_at) for that job_id, not simply "any run for this
+ * source" -- a job can be observed by many runs over its lifetime
+ * (spec §5.3's job_observations is one row per (job, source_run)), and
+ * detection latency is specifically about the FIRST of those, matching
+ * jobs.first_seen_at's own definition (see upsertJob's INSERT branch:
+ * first_seen_at is set once, on creation, never touched again).
+ *
+ * latency_minutes = (job_observations.observed_at of that first row) -
+ * (source_runs.started_at of that same run), NOT jobs.first_seen_at
+ * itself minus started_at -- they're the same instant by construction
+ * (upsertJob sets first_seen_at = observedAt on INSERT, and
+ * insertJobObservation's observed_at is that same value passed through
+ * by the ingest consumer for the run that created the job), but going
+ * through job_observations/source_runs is what makes this "the run
+ * that discovered it" rather than an unscoped column-to-column diff,
+ * and is what makes the sourceId/companyId filters below meaningful
+ * (jobs.first_seen_at alone can't be joined back to a specific run
+ * without job_observations in the middle).
+ *
+ * Percentiles computed in SQLite via `PERCENTILE_CONT`-equivalent
+ * (SQLite has no native percentile function) using a
+ * ROW_NUMBER/COUNT-based nearest-rank approximation over the ordered
+ * latency values -- adequate for an ops-visibility metric (spec §16.2),
+ * not a statistical guarantee; a few hundred to low-thousands of
+ * samples per source is the expected v1 scale, where nearest-rank and
+ * true percentile-continuous rarely diverge meaningfully.
+ */
+export async function getDetectionLatencyStats(
+  client: D1Client,
+  params: { sourceId?: string; companyId?: string; since?: string },
+): Promise<DetectionLatencyStats> {
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (params.sourceId) {
+    where.push("j.source_id = ?");
+    args.push(params.sourceId);
+  }
+  if (params.companyId) {
+    where.push("j.company_id = ?");
+    args.push(params.companyId);
+  }
+  if (params.since) {
+    where.push("j.first_seen_at >= ?");
+    args.push(params.since);
+  }
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+
+  // CTE 1: for each job, the job_observations row with the minimum
+  // observed_at -- "the first time we saw it," joined to that
+  // observation's own source_run to get started_at (the run that found
+  // it, not just any run for the source).
+  // CTE 2: latency in minutes for each such (job, first-run) pair.
+  // Final SELECT: nearest-rank p50/p95 over the ordered latency list
+  // via a self-join on ROW_NUMBER, plus the sample count.
+  const row = await client.first<{
+    p50_latency_minutes: number | null;
+    p95_latency_minutes: number | null;
+    sample_count: number;
+  }>(
+    `WITH first_observation AS (
+       SELECT jo.job_id, MIN(jo.observed_at) AS first_observed_at
+       FROM job_observations jo
+       GROUP BY jo.job_id
+     ),
+     latencies AS (
+       SELECT
+         (julianday(fo.first_observed_at) - julianday(sr.started_at)) * 24 * 60 AS latency_minutes,
+         ROW_NUMBER() OVER (ORDER BY (julianday(fo.first_observed_at) - julianday(sr.started_at))) AS rn,
+         COUNT(*) OVER () AS total
+       FROM first_observation fo
+       JOIN job_observations jo ON jo.job_id = fo.job_id AND jo.observed_at = fo.first_observed_at
+       JOIN source_runs sr ON sr.id = jo.source_run_id
+       JOIN jobs j ON j.id = fo.job_id
+       ${whereClause}
+     )
+     SELECT
+       (SELECT latency_minutes FROM latencies WHERE rn = CAST((0.50 * (total - 1)) AS INTEGER) + 1 LIMIT 1)
+         AS p50_latency_minutes,
+       (SELECT latency_minutes FROM latencies WHERE rn = CAST((0.95 * (total - 1)) AS INTEGER) + 1 LIMIT 1)
+         AS p95_latency_minutes,
+       (SELECT total FROM latencies LIMIT 1) AS sample_count`,
+    args,
+  );
+
+  return {
+    p50LatencyMinutes: row?.p50_latency_minutes ?? null,
+    p95LatencyMinutes: row?.p95_latency_minutes ?? null,
+    sampleCount: row?.sample_count ?? 0,
+  };
+}
+
 export interface ApplyLifecycleTransitionPatch {
   status: "active" | "possibly_closed" | "closed";
   missingRunCount: number;

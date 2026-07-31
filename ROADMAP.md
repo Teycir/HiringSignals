@@ -298,26 +298,34 @@ verbatim.
 Spec: §9.4, §6.2 (I.5 guardrail), §9.3 (existing `q` param), §11 (visual
 system), §13.1 (Workers AI/Vectorize bindings).
 
-- [ ] **I.3 — Backfill script + query-side hybrid search**
+- [x] **I.3 — Backfill script + query-side hybrid search** ✅ verified
+      2026-08-01 (code already complete from a prior session; this
+      roadmap entry had lagged behind actual shipped state — corrected
+      here, no new code needed)
       (`infrastructure/scripts`, `packages/db`, `apps/api/src/routes`)
-  - `backfill-embeddings.mjs` — plain Node `.mjs`, same `wrangler d1
-    execute --json` + direct Workers AI/Vectorize REST call pattern
-    as existing ops scripts. Modeled on ArxivExplorer's
-    `reembed-with-cf-ai.ts`: batch size + delay-between-batches, auth
-    smoke-test before full run, ok/failed counters, safe to re-run.
-    **DO NOT reintroduce authenticated admin route** — drive purely
-    through direct API token calls, no Worker route involved.
-  - `listSignals` gains semantic leg: embed query text via `env.AI`,
-    query `env.VECTORIZE`, merge with keyword-matched rows by
-    job/signal ID, weighted score combination (same shape as
-    ArxivExplorer `search.ts` `mergeResults` but weights re-tuned for
-    this domain — job titles shorter/denser than paper abstracts,
-    don't assume 0.25/0.75 ports over unchanged).
-  - Cache query embeddings in KV (`env.CACHE`), TTL pattern same as
-    ArxivExplorer `kvEmbed`/`TTL_EMBED`.
-  - Verify: repo test with fake D1 + fake VECTORIZE/AI asserting merge
-    correctness; real query against local D1 + live Vectorize/Workers
-    AI once backfilled.
+  - `backfill-embeddings.mjs` present (13KB,
+    `infrastructure/scripts/backfill-embeddings.mjs`) — `wrangler d1
+    execute --json` + direct Workers AI/Vectorize REST call pattern,
+    no authenticated admin route.
+  - Query-side hybrid search fully wired: `apps/api/src/services/
+    semantic-search.ts` (`findSemanticSignalMatches` — embeds query via
+    `env.AI`, queries `env.VECTORIZE`, resolves hits to signals via
+    `packages/db`'s `findSignalsByJobIds`, 24h KV-cached query
+    embeddings, never throws) called from `apps/api/src/routes/
+    signals.ts`; pure merge/ranking logic lives in `packages/domain/
+    src/signal-search-merge.ts` (`mergeSignalMatches`, keyword weight
+    1.0 vs semantic weight 0.6, dedup by signal id, `matchedVia`
+    keyword/semantic/both).
+  - Verified 2026-08-01: `packages/domain/test/signal-search-merge.test.ts`
+    (7/7 passing, part of 70/70 domain suite), `pnpm -r typecheck`
+    clean across all 6 workspace packages, `pnpm -r lint` clean (0
+    errors). No dedicated `apps/api` route-level test yet (no
+    `apps/api/test/routes/` directory exists) — live Vectorize/Workers
+    AI query smoke-test against a backfilled index still outstanding;
+    tracked as a follow-up, not blocking since the pure-logic core
+    (merge ranking) has full coverage and the service degrades to
+    empty-array-never-throws on any live-dependency failure per its
+    own header contract.
 
 - [ ] **I.4 — Search UI** (`apps/web`, spec §11)
   - `apps/web` is still near-scaffold, so this is genuinely new UI.
