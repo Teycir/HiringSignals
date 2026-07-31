@@ -2033,29 +2033,26 @@ alongside existing D1/KV/Queue).
 
 ## Milestone J — Migrate test suite off in-memory fakes onto live Cloudflare resources
 
-**Status (2026-07-30): scoped, not started.** `AGENTS.md`'s testing
-policy section was superseded the same day this milestone was added —
-read that section in full before touching any test file here, it's the
+**Status (2026-07-30): in progress.** `AGENTS.md`'s testing policy
+section was superseded the same day this milestone was added — read
+that section in full before touching any test file here, it's the
 source of truth for the target end state; this milestone is only the
-task breakdown for getting there. Every test file below currently uses
-the retired in-memory-fake convention and must migrate.
+task breakdown for getting there. All 4 `packages/db/test/*.test.ts`
+files and 2 of the 3 `apps/api/test/jobs/*.test.ts` files
+(`reconciliation.test.ts`, `scheduler.test.ts`) are migrated and
+verified passing against live D1. One file remains:
+`apps/api/test/jobs/ingest-consumer.test.ts` — see the checklist below
+for its scoped-but-not-started plan.
 
-Not detailed task-by-task yet — same "expand before starting" discipline
-already applied to Milestones F and G. At minimum, before starting,
-this needs: an inventory of every `packages/db/test/*.test.ts` and
-`apps/api/test/**/*.test.ts` file (14+ files as of 2026-07-30) and what
-each currently fakes; a decided mechanism for a plain Vitest process to
-reach live D1 (shelling out to `wrangler d1 execute --remote --json`,
-same as `infrastructure/scripts/lib/d1-exec.mjs`, is the leading
-candidate — confirm round-trip latency is workable for a full test-suite
-run before committing to it, since every query becomes a real network
-call); a decided mechanism for live `AI`/`VECTORIZE` calls from a test
-(direct REST, mirroring `backfill-embeddings.mjs`); and a plan for what
-test data gets written into the shared dev D1 instance and how a human
-reviewing `seed-local-d1.sql`'s documented baseline later would tell
-"seed data" apart from "leftover test rows" (per-test IDs prefixed
-distinctly, e.g. `test-*`, is a plausible starting point — not decided
-yet, don't assume it without confirming).
+The "expand before starting" pre-work this section originally called
+for (inventory of every fake, the live-D1-from-Vitest mechanism, the
+live-AI/VECTORIZE mechanism, the test-data-naming convention) is now
+done — see the Inventory sub-section immediately below and the
+checklist further down for what was decided and where each decision
+lives in code. The `test-*`-prefix convention floated below as "not
+decided yet" at the time this section was first written **was**
+subsequently adopted (confirmed in the checklist: `test-recon-`,
+`test-sched-`, `test-swr-`, etc.).
 
 ### Inventory (2026-07-30) — every test file's current fake/mock usage
 
@@ -2244,27 +2241,104 @@ duplicated here:**
       `wrangler kv key put/get/delete --remote`, confirmed working
       end-to-end 2026-07-30 — still needs generalizing past `CACHE` only,
       see cross-cutting blockers above).
-- [ ] **Next, not yet started:** generalize `createLiveKvNamespace` to
-      accept a namespace id (currently hardcoded to `CACHE`) before
-      migrating `ingest-consumer.test.ts` specifically (its inline
-      `storeRawPayload` mock needs `RAW_PAYLOADS`, not `CACHE`) — the
-      only remaining mechanical gap; both policy questions (Queue,
-      ATS-adapter mocking) are now decided, see above and `AGENTS.md`.
-- [ ] Migrate `packages/db/test/*.test.ts` first (smaller, more
-      self-contained than the `apps/api` job tests which chain multiple
-      repo calls together) — one file at a time, verified
-      (`pnpm --filter @hiring-signals/db test`) after each, not batched.
-- [ ] Migrate `apps/api/test/jobs/*.test.ts` — same one-file-at-a-time
-      discipline; these are the ones most likely to need real rethinking
-      since idempotency/retry assertions currently depend on precise
-      control over the fake's state that a live shared database won't
-      offer as cleanly.
+- [x] Generalize `createLiveKvNamespace` to accept a namespace id
+      (`CACHE` / `RAW_PAYLOADS` / `ABUSE_LOGS`) — done, see
+      `live-cf-bindings.ts`'s `LiveKvBinding` type and
+      `KV_NAMESPACE_IDS` lookup table (2026-07-30 generalization
+      referenced above). No longer a blocker for
+      `ingest-consumer.test.ts`.
+- [x] Migrate `packages/db/test/*.test.ts` (all 4 files) — done. Every
+      file now seeds real rows via `createLiveD1Client()` and asserts on
+      real read-backs; `signals-write-repo.test.ts` was the last of the
+      four (2026-07-30), including a live `listSignalsNeedingReconciliation`
+      exercise (real stale signal + real classified job, not a canned
+      `first()` return). `packages/db`'s own `vitest.config.ts`
+      (`testTimeout`/`hookTimeout`: 90s) added alongside this — each
+      `wrangler d1 execute --remote` call costs ~3.7s in cold-start
+      alone, and a full seed+assert+cleanup sequence blows past
+      vitest's 5s/10s defaults.
+- [x] Add `createLiveD1Database()` (`packages/test-support/src/live-d1-database.ts`)
+      — a real `D1Database`-shaped wrapper (not `D1Client`), needed
+      specifically for `apps/api/test/jobs/*.test.ts`: those handlers
+      receive a raw `env.DB` (`D1Database`) and call
+      `createD1Client(env.DB)` themselves internally, so the live test
+      double has to match that shape, not `D1Client` directly. Shares
+      its `wrangler d1 execute --remote --json` transport
+      (`escapeSqlValue`/`inlineParams`/`execRemote`) with
+      `createLiveD1Client()` via a new `d1-remote-transport.ts`, rather
+      than two drifting copies. Verified end-to-end with a standalone
+      smoke test (`packages/test-support/smoke-test-d1-database.ts`:
+      `first`/`all`/`run`-insert/read-back/cleanup against the real
+      `companies` table) before any consumer test file was touched.
+      Along the way, fixed a real environment bug this surfaced: a
+      spawned `wrangler` child process inherits whatever `node`/`npx`
+      resolves to on the *caller's* `PATH` (this machine's global
+      default is v20, wrangler needs >=22), regardless of this repo's
+      own `engines` field or a doc comment saying "run under `nvm use
+      24.18.0`" — `d1-remote-transport.ts`'s `execRemote` now prepends a
+      known-good nvm-managed bin dir to `PATH` for the spawned child
+      only, so this works without every caller having to remember to
+      switch shells first.
+- [x] Add `apps/api/vitest.config.ts` (`testTimeout`/`hookTimeout`: 90s)
+      — same values/reasoning as `packages/db/vitest.config.ts` above;
+      `apps/api` had no vitest config at all before this, and its first
+      live-D1-backed run timed out on vitest's defaults immediately.
+- [x] Migrate `apps/api/test/jobs/reconciliation.test.ts` — done
+      (2026-07-30). Off `vi.mock("@hiring-signals/db")` entirely, onto
+      real seeded `companies`/`signals`/`signal_evidence` rows via
+      `createLiveD1Database()`. Covers the stale-signal recompute path,
+      the not-stale-yet no-op path, and the `status = 'active'` race
+      guard (simulated via a raw `UPDATE signals SET status =
+      'expired'`, same precedent as `signals-write-repo.test.ts`'s own
+      guard test — no repo-layer "expire a signal" write function
+      exists yet). `AI`/`VECTORIZE`/`INGEST_QUEUE` stay as
+      `unusedBinding()` Proxies here, confirmed genuinely unused by this
+      handler, not a coverage gap. 3/3 tests pass against live D1;
+      confirmed zero leftover `test-recon-%` rows after a full run.
+- [x] Migrate `apps/api/test/jobs/scheduler.test.ts` — done (2026-07-30).
+      Off `vi.mock("@hiring-signals/db")`, onto real seeded `sources`
+      rows via `createLiveD1Database()` + `createSource`/`updateSource`.
+      `INGEST_QUEUE` stays the documented in-memory-capture exception
+      (see `AGENTS.md`) — this handler must never fetch a provider
+      directly, so a real queue consumer is deliberately out of scope
+      for its own test. Drops the old fake's "exactly one SQL call, and
+      it mentions `FROM sources`" introspection assertion (no live-client
+      equivalent) in favor of the behavioral outcome it stood in for:
+      due sources get enqueued, disabled/not-yet-due sources don't.
+      5/5 tests pass against live D1 (due-source enqueue, disabled-source
+      exclusion, not-yet-due exclusion, jitter determinism, jitter
+      variance); confirmed zero leftover `test-sched-%` rows.
+- [ ] **Next, not yet started:** migrate `apps/api/test/jobs/ingest-consumer.test.ts`
+      — the last unmigrated file on this policy (1148 lines, 21 tests
+      across 3 `describe` blocks: 8 happy-path, 9 failure-branch, 5
+      H.4 company-signal-generation). Scoped but not started
+      (2026-07-30): `DB` → `createLiveD1Database()`, `AI` →
+      `createLiveAiBinding()`, `VECTORIZE` → `createLiveVectorizeIndex()`,
+      `RAW_PAYLOADS` → `createLiveKvNamespace("RAW_PAYLOADS")` (now
+      unblocked by the KV generalization above); `@hiring-signals/adapters`
+      and `INGEST_QUEUE` stay mocked/faked per the two documented
+      exceptions. Expect this file to need materially more wall-clock
+      budget than `reconciliation.test.ts`/`scheduler.test.ts` combined
+      — 21 tests each potentially chaining several live D1 calls plus a
+      real Workers AI embed + Vectorize upsert per job, versus those two
+      files' D1-only round trips. Idempotent-retry and
+      second-consecutive-absence tests need two sequential
+      `handleIngestMessage` calls against the same seeded state; H.4
+      tests need precise real row counts (3 jobs in 14 days, 3 distinct
+      `location_mode`s, etc.), not canned aggregates. Cleanup needs to
+      cover `signal_evidence`/`signals`/`job_observations`/`jobs`/
+      `source_runs`/`sources`/`companies` (existing precedent) plus, new
+      for this file, Vectorize vectors by job id — the fake never had a
+      real vector to clean up before.
 - [ ] Update this repo's CI workflow (`.github/workflows/`) to provide
       `CF_TOKEN` as a secret and confirm `pnpm -r test` passes in CI
       against live resources, not just locally.
 - [ ] Update `AGENTS.md`'s policy section's "Follow-up, tracked, not
-      done today" note once this lands — remove it, don't leave a
-      completed migration described as still-pending.
+      done today" note once `ingest-consumer.test.ts` lands too — don't
+      update it piecemeal while one file is still unmigrated; flip it
+      once all 4 `apps/api/test/jobs/*.test.ts`-equivalent work is
+      actually done, matching the "don't leave a completed migration
+      described as still-pending" instruction that note already gives.
 
 ### `packages/test-support` follow-ups (verified 2026-07-30 against the
 ### actual current file contents — a prior review note for this section
