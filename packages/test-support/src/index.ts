@@ -23,6 +23,7 @@
  * instead, same as this file does.
  */
 export { createLiveD1Client } from "./live-d1-client";
+export { createLiveD1Database } from "./live-d1-database";
 export {
   createLiveKvNamespace,
   createLiveAiBinding,
