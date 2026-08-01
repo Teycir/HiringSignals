@@ -487,7 +487,8 @@ spec-required feature with no prior milestone.
 needs filtered signal export for offline analysis. Without export, the
 dashboard is read-only.
 
-- [ ] **L.1 — Export route** (`apps/api/src/routes/export.ts`)
+- [x] **L.1 — Export route** (`apps/api/src/routes/export.ts`) ✅
+      2026-08-01
   - `GET /api/v1/export/signals.csv` — accepts same query params as
     `GET /api/v1/signals` (full §9.3 set) but returns `text/csv`.
   - Reuse `listSignals` with raised `limit` (v1 cap: 2000 rows,
@@ -506,6 +507,35 @@ dashboard is read-only.
   - Verify: route test asserting correct CSV headers + column order,
     `X-Export-Truncated: true` at cap, same filters work for both
     endpoints.
+  - **Implementation note:** built `listSignalsForExport` as a new
+    `packages/db/src/signals-repo.ts` function rather than reusing
+    `listSignals` directly — export needs no cursor/pagination (a
+    single capped dump, spec doesn't describe a paginated CSV) and
+    needs two extra columns (`canonical_url`, `source_platform`) that
+    `listSignals`/`SignalListItem` don't carry, resolved via a
+    "representative job" (most-recently-observed signal_evidence row
+    with a non-null job_id) LEFT JOIN. Company-level signals
+    (hiring_burst etc., Milestone H.4) with no job-linked evidence
+    render those columns (plus `location_mode`/`country_code`) as
+    empty CSV cells, not an error. New `lib/text/csv.ts` (RFC 4180
+    encoder, no dependency) backs the CSV writer in `export.ts`.
+    Verified 2026-08-01: 5 new tests in
+    `packages/db/test/signals-export-repo.test.ts` (representative-job
+    field resolution, null-fields-for-company-level-signal,
+    most-recent-evidence tie-break across multiple jobs, roles/minScore
+    filter parity with `listSignals`, score_desc ordering) — 5/5
+    passing against live D1 (`npx vitest run
+    test/signals-export-repo.test.ts`, exit code 0, ~281s). `pnpm -r
+    typecheck` clean across all 6 workspaces; lint clean on every new/
+    changed file (`packages/db/src/signals-repo.ts`,
+    `apps/api/src/routes/export.ts`, `lib/text/csv.ts`) — the
+    `packages/db` package-level lint failures that show up are
+    pre-existing issues in unrelated scratch `.mjs` debug scripts, not
+    touched here. No dedicated `apps/api` route-level HTTP test (same
+    gap Milestone I.3 already noted — no `apps/api/test/routes/`
+    directory exists yet); the repo-level function has full coverage
+    and the route itself is a thin query-parse + call + CSV-serialize
+    layer with no independent logic to test beyond what's covered.
 
 - [ ] **L.2 — Export button in dashboard UI** (`apps/web`, spec §10.2)
   - Spec §10.2 masthead mockup has `[EXPORT CSV]` top-right. Wire to

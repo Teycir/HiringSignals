@@ -10,6 +10,7 @@ import { companiesRoute } from "./routes/companies";
 import { sourcesRoute } from "./routes/sources";
 import { facetsRoute } from "./routes/facets";
 import { adminRoute } from "./routes/admin";
+import { exportRoute } from "./routes/export";
 import { handleScheduled } from "./jobs/scheduler";
 import { handleIngestMessage } from "./jobs/ingest-consumer";
 import { handleReconciliation } from "./jobs/reconciliation";
@@ -44,6 +45,7 @@ app.route("/api/v1/signals", signalsRoute);
 app.route("/api/v1/companies", companiesRoute);
 app.route("/api/v1/sources", sourcesRoute);
 app.route("/api/v1/facets", facetsRoute);
+app.route("/api/v1/export", exportRoute);
 
 // Admin routes: idempotent triggers for the same pipelines the cron
 // handlers drive (source-run enqueues a single source, scheduler-flush

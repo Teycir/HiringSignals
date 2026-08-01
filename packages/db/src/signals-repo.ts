@@ -417,6 +417,121 @@ export async function findSignalsByJobIds(
   return client.all<SignalRow>(sql, args);
 }
 
+/**
+ * Row shape for the CSV export (Milestone L.1, spec §9.2/§2.1). Extends
+ * the base signal/company columns with fields from one representative
+ * job -- `canonical_url`/`location_mode`/`country_code` (jobs) and
+ * `source_platform` (sources.provider) -- all reached via
+ * `signal_evidence`, none of which live on `signals` itself. A signal
+ * can have multiple evidence rows (e.g. multiple new_job postings
+ * feeding one hiring_burst signal), so "one representative job" is the
+ * most-recently-observed evidence row (the latest
+ * signal_evidence.observed_at with a non-null job_id), resolved via a
+ * single correlated subquery (`representative_job_id`, joined once)
+ * rather than a JOIN so the outer row count stays one-row-per-signal (a
+ * JOIN would duplicate a signal once per evidence row, corrupting the
+ * CSV's row count against what the UI's signal list shows for the same
+ * filters) and rather than four separate correlated subqueries (one
+ * subquery resolving the job id, then a single join, is cheaper than
+ * re-running the same ORDER BY .. LIMIT 1 four times per row).
+ *
+ * Company-level signals (hiring_burst, role_acceleration, multi_location,
+ * persistent_demand -- Milestone H.4) may have every evidence row with a
+ * NULL job_id (aggregate evidence, not tied to one posting), so all four
+ * export columns are nullable here; the CSV writer (export.ts) renders
+ * that as an empty cell, not an error.
+ */
+export interface SignalExportRow extends SignalRow {
+  canonical_url: string | null;
+  location_mode: string | null;
+  country_code: string | null;
+  source_platform: string | null;
+}
+
+/**
+ * v1 cap per ROADMAP.md L.1: 2000 rows, documented as a v1 cap not a
+ * permanent limit. Exported so the route can tell "capped, more rows
+ * exist" apart from "this is genuinely everything" without querying
+ * twice -- same fetch-one-extra-row trick listSignals uses for
+ * nextCursor, applied here to a boolean truncation flag instead.
+ */
+export const EXPORT_ROW_CAP = 2000;
+
+export interface ListSignalsForExportResult {
+  items: SignalExportRow[];
+  truncated: boolean;
+}
+
+/**
+ * Export variant of listSignals (Milestone L.1): same filter set (roles,
+ * company, q, locationMode, country, source, signalType, minScore,
+ * observedSince) via the shared buildCommonFilters + the same `q` LIKE
+ * clause listSignals uses, but no cursor/pagination -- v1 export is a
+ * single capped CSV dump (EXPORT_ROW_CAP rows), not a paginated feed
+ * (spec doesn't describe a paginated CSV, and a stable cursor sequence
+ * doesn't map cleanly onto "the file the user just downloaded"). Fixed
+ * `sort=score_desc`-equivalent ordering (same default as listSignals) so
+ * repeat exports of the same filters are stable/diffable.
+ */
+export async function listSignalsForExport(
+  client: D1Client,
+  params: Omit<ListSignalsParams, "sort" | "cursor" | "limit">,
+): Promise<ListSignalsForExportResult> {
+  const { where, args } = buildCommonFilters(params);
+
+  if (params.q) {
+    const pattern = `%${escapeLikePattern(params.q)}%`;
+    where.push(
+      `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`,
+    );
+    args.push(pattern, pattern, pattern);
+  }
+
+  const sql = `
+    SELECT s.id, s.company_id, c.slug AS company_slug, c.display_name AS company_display_name,
+           s.role_category, s.signal_type, s.status, s.score, s.score_version,
+           s.first_detected_at, s.last_detected_at, s.expires_at, s.headline, s.summary,
+           rj.canonical_url AS canonical_url,
+           rj.location_mode AS location_mode,
+           rj.country_code AS country_code,
+           src.provider AS source_platform
+    FROM signals s
+    JOIN companies c ON c.id = s.company_id
+    LEFT JOIN (
+      -- One row per signal_id: the evidence row(s) whose observed_at
+      -- equals that signal's own max observed_at (correlated subquery,
+      -- unambiguous per-signal_id -- not SQLite's bare-column MAX()
+      -- idiom, which only resolves to "the row with the max" when there
+      -- is exactly one group total). GROUP BY se.signal_id collapses an
+      -- exact-timestamp tie between two evidence rows for the same
+      -- signal down to one row (job_id is otherwise arbitrary among
+      -- ties, which is fine -- "representative job" doesn't require a
+      -- specific tie-break, just a stable single row per signal).
+      SELECT se.signal_id, se.job_id
+      FROM signal_evidence se
+      WHERE se.job_id IS NOT NULL
+        AND se.observed_at = (
+          SELECT MAX(se2.observed_at)
+          FROM signal_evidence se2
+          WHERE se2.signal_id = se.signal_id AND se2.job_id IS NOT NULL
+        )
+      GROUP BY se.signal_id
+    ) rep ON rep.signal_id = s.id
+    LEFT JOIN jobs rj ON rj.id = rep.job_id
+    LEFT JOIN sources src ON src.id = rj.source_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY s.score DESC, s.last_detected_at DESC, s.id DESC
+    LIMIT ?
+  `;
+  const rows = await client.all<SignalExportRow>(sql, [...args, EXPORT_ROW_CAP + 1]);
+
+  const truncated = rows.length > EXPORT_ROW_CAP;
+  return {
+    items: truncated ? rows.slice(0, EXPORT_ROW_CAP) : rows,
+    truncated,
+  };
+}
+
 export interface SignalEvidenceRow {
   id: string;
   signal_id: string;
