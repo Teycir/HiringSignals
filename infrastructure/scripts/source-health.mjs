@@ -2,11 +2,26 @@
 // Ops script: source health table (spec §16.2), printed to the terminal
 // instead of served behind a GET /health route -- there is no HTTP admin
 // surface, ever (spec §13.5/§14.1). Columns: Company, Provider, Last
-// success, Next poll, Jobs, Failures, Status. Status is derived at read
-// time from `enabled` + `consecutive_failures` + latest run status, not a
-// stored column -- same reasoning sources-repo.ts already applies to
-// markSourceSuccess/markSourceFailure (consecutive_failures is a raw
-// counter; "degraded"/"healthy" is a read-time judgment on top of it).
+// success, Next poll, Jobs, Failures, p50 latency, Status. Status is
+// derived at read time from `enabled` + `consecutive_failures` + latest
+// run status, not a stored column -- same reasoning sources-repo.ts
+// already applies to markSourceSuccess/markSourceFailure
+// (consecutive_failures is a raw counter; "degraded"/"healthy" is a
+// read-time judgment on top of it).
+//
+// p50 latency (ROADMAP.md K.2, spec §15's detection-latency metric:
+// "posting live -> visible in dashboard, p50 <= effective per-source
+// pollIntervalMinutes") is computed inline as a correlated scalar
+// subquery per source row, duplicating packages/db's
+// getDetectionLatencyStats query shape by hand -- same reasoning as this
+// file's header comment on d1-exec.mjs: ops scripts shell out via
+// `wrangler d1 execute`, they cannot import the real D1Client-based repo
+// functions, so the SQL is kept in sync by hand rather than shared code.
+// Folded into the same single SELECT as every other column (rather than
+// a second d1Execute round trip) because this script already favors
+// subqueries over multiple wrangler shell-outs (see total_jobs_normalized
+// and last_run_status below) for exactly this reason -- each d1Execute
+// call spawns a new `wrangler d1 execute` process.
 //
 // Usage:
 //   node infrastructure/scripts/source-health.mjs [--remote]
@@ -34,16 +49,25 @@ function pad(value, width) {
   return s.length >= width ? `${s.slice(0, width - 1)}…` : s.padEnd(width);
 }
 
+/** p50_latency_minutes comes back as a float from julianday() arithmetic
+ * (e.g. 10.0000000745058) -- round to the nearest whole minute for
+ * display, this is an ops-visibility table, not a precision metric. */
+function formatLatency(minutes) {
+  if (minutes === null || minutes === undefined) return "—";
+  return `${Math.round(minutes)}m`;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const local = !args.includes("--remote");
 
   // One row per source, with its company name, provider/board_token,
-  // total normalized jobs seen (via source_runs sums), and its most
-  // recent run's status -- computed with subqueries rather than a JOIN +
-  // GROUP BY across job_observations, since we only need aggregates
-  // already stored per-run in source_runs, not a fresh count over every
-  // observation row.
+  // total normalized jobs seen (via source_runs sums), its most recent
+  // run's status, and its p50 detection latency -- computed with
+  // subqueries rather than a JOIN + GROUP BY across job_observations,
+  // since we only need aggregates already stored per-run in source_runs
+  // (or derivable per-source) not a fresh count over every observation
+  // row joined at the top level.
   const rows = await d1Execute(
     `SELECT
        s.id,
@@ -55,7 +79,26 @@ async function main() {
        s.next_poll_at,
        c.display_name AS company_name,
        (SELECT COALESCE(SUM(jobs_normalized), 0) FROM source_runs WHERE source_id = s.id) AS total_jobs_normalized,
-       (SELECT status FROM source_runs WHERE source_id = s.id ORDER BY started_at DESC LIMIT 1) AS last_run_status
+       (SELECT status FROM source_runs WHERE source_id = s.id ORDER BY started_at DESC LIMIT 1) AS last_run_status,
+       (
+         WITH fo AS (
+           SELECT jo.job_id, MIN(jo.observed_at) AS first_observed_at
+           FROM job_observations jo
+           JOIN jobs jj ON jj.id = jo.job_id
+           WHERE jj.source_id = s.id
+           GROUP BY jo.job_id
+         ),
+         lat AS (
+           SELECT
+             (julianday(fo.first_observed_at) - julianday(sr.started_at)) * 24 * 60 AS latency_minutes,
+             ROW_NUMBER() OVER (ORDER BY (julianday(fo.first_observed_at) - julianday(sr.started_at))) AS rn,
+             COUNT(*) OVER () AS total
+           FROM fo
+           JOIN job_observations jo ON jo.job_id = fo.job_id AND jo.observed_at = fo.first_observed_at
+           JOIN source_runs sr ON sr.id = jo.source_run_id
+         )
+         SELECT latency_minutes FROM lat WHERE rn = CAST((0.50 * (total - 1)) AS INTEGER) + 1 LIMIT 1
+       ) AS p50_latency_minutes
      FROM sources s
      JOIN companies c ON c.id = s.company_id
      ORDER BY c.display_name ASC, s.provider ASC`,
@@ -74,6 +117,7 @@ async function main() {
     pad("Next poll", 21),
     pad("Jobs", 6),
     pad("Failures", 9),
+    pad("p50 latency", 12),
     pad("Status", 10),
   ].join(" ");
   console.log(header);
@@ -88,6 +132,7 @@ async function main() {
         pad(row.next_poll_at, 21),
         pad(row.total_jobs_normalized, 6),
         pad(row.consecutive_failures, 9),
+        pad(formatLatency(row.p50_latency_minutes), 12),
         pad(deriveStatus(row), 10),
       ].join(" "),
     );
