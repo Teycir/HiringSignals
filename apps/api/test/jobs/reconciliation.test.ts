@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createLiveD1Database } from "@hiring-signals/test-support";
-import { createD1Client, createCompany, createSignal } from "@hiring-signals/db";
+import {
+  createD1Client,
+  createCompany,
+  createSignal,
+  createSource,
+  upsertJob,
+  appendSignalEvidence,
+} from "@hiring-signals/db";
 import type { D1Client } from "@hiring-signals/db";
 import type { Bindings } from "../../src/bindings";
 import { handleReconciliation } from "../../src/jobs/reconciliation";
@@ -45,6 +52,12 @@ async function cleanupCompany(companyId: string): Promise<void> {
     [companyId],
   );
   await client.run(`DELETE FROM signals WHERE company_id = ?`, [companyId]);
+  await client.run(`DELETE FROM jobs WHERE company_id = ?`, [companyId]);
+  await client.run(
+    `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
+    [companyId],
+  );
+  await client.run(`DELETE FROM sources WHERE company_id = ?`, [companyId]);
   await client.run(`DELETE FROM companies WHERE id = ?`, [companyId]);
 }
 
@@ -57,6 +70,20 @@ afterEach(async () => {
   );
   await client.run(
     `DELETE FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+    [`${TEST_PREFIX}-%`],
+  );
+  await client.run(
+    `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+    [`${TEST_PREFIX}-%`],
+  );
+  await client.run(
+    `DELETE FROM source_runs WHERE source_id IN (
+       SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+     )`,
+    [`${TEST_PREFIX}-%`],
+  );
+  await client.run(
+    `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
     [`${TEST_PREFIX}-%`],
   );
   await client.run(`DELETE FROM companies WHERE slug LIKE ?`, [`${TEST_PREFIX}-%`]);
@@ -225,6 +252,140 @@ describe("handleReconciliation", () => {
       expect(evidenceRows).toHaveLength(0);
     } finally {
       await cleanupCompany(company.id);
+    }
+  });
+
+  /**
+   * still_active pass (ROADMAP.md K.1, spec section 1.4). Each test
+   * seeds a company + source + job through the real repo functions,
+   * then an active new_job signal with a job-linked evidence row (the
+   * shape listStillActiveCandidates joins through: signal_evidence.job_id
+   * -> jobs -> sources for poll_interval_minutes). `now` is fixed at
+   * 2026-07-31T06:00:00.000Z, same instant used by the score-reconciliation
+   * tests above, so both passes in the same handleReconciliation call can
+   * be reasoned about against one clock.
+   */
+  async function seedStillActiveSignal(params: {
+    label: string;
+    signalDetectedAt: string;
+    jobLastSeenAt: string;
+    pollIntervalMinutes: number;
+  }) {
+    const company = await seedCompany(params.label, `Still Active ${params.label} Co`);
+    const source = await createSource(client, {
+      companyId: company.id,
+      provider: "greenhouse",
+      boardToken: company.slug,
+      publicUrl: `https://example.invalid/${company.slug}`,
+      pollIntervalMinutes: params.pollIntervalMinutes,
+    });
+    const job = await upsertJob(client, {
+      sourceId: source.id,
+      companyId: company.id,
+      externalJobId: "job-1",
+      canonicalUrl: `https://example.invalid/${company.slug}/jobs/job-1`,
+      title: "Security Engineer",
+      titleNormalized: "security engineer",
+      contentHash: "hash-job-1",
+      observedAt: params.jobLastSeenAt,
+    });
+    const signalId = await createSignal(client, {
+      companyId: company.id,
+      roleCategory: "cybersecurity",
+      signalType: "new_job",
+      score: 60,
+      scoreVersion: "v2",
+      detectedAt: params.signalDetectedAt,
+      headline: "Still active headline",
+      summary: "Still active summary.",
+    });
+    await appendSignalEvidence(client, {
+      signalId,
+      jobId: job.id,
+      evidenceType: "new_job_posting",
+      observedAt: params.signalDetectedAt,
+      payload: { reason: "seed" },
+    });
+    return { company, source, job, signalId };
+  }
+
+  it("appends still_active evidence and bumps last_detected_at for a stale signal whose job was recently seen", async () => {
+    const seeded = await seedStillActiveSignal({
+      label: "sa-recent",
+      signalDetectedAt: "2026-07-01T06:00:00.000Z",
+      jobLastSeenAt: "2026-07-31T05:00:00.000Z",
+      pollIntervalMinutes: 90,
+    });
+    try {
+      const db = createLiveD1Database();
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+
+      const persisted = await client.first<{ last_detected_at: string; score: number }>(
+        `SELECT last_detected_at, score FROM signals WHERE id = ?`,
+        [seeded.signalId],
+      );
+      expect(persisted?.last_detected_at).toBe("2026-07-31T06:00:00.000Z");
+
+      const evidenceRows = await client.all<{
+        evidence_type: string;
+        job_id: string | null;
+        observed_at: string;
+        payload_json: string;
+      }>(
+        `SELECT evidence_type, job_id, observed_at, payload_json FROM signal_evidence WHERE signal_id = ? ORDER BY observed_at ASC`,
+        [seeded.signalId],
+      );
+      const stillActiveRow = evidenceRows.find((r) => r.evidence_type === "still_active");
+      expect(stillActiveRow).toBeDefined();
+      expect(stillActiveRow?.job_id).toBe(seeded.job.id);
+      expect(stillActiveRow?.observed_at).toBe("2026-07-31T06:00:00.000Z");
+      const payload = JSON.parse(stillActiveRow!.payload_json) as { reason: string };
+      expect(payload.reason).toBe("daily_still_active_confirmation");
+    } finally {
+      await cleanupCompany(seeded.company.id);
+    }
+  });
+
+  it("does not append still_active evidence when the backing job's last_seen_at is stale relative to its own poll interval", async () => {
+    const seeded = await seedStillActiveSignal({
+      label: "sa-stale-job",
+      signalDetectedAt: "2026-07-01T06:00:00.000Z",
+      jobLastSeenAt: "2026-07-30T00:00:00.000Z",
+      pollIntervalMinutes: 90,
+    });
+    try {
+      const db = createLiveD1Database();
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+
+      const evidenceRows = await client.all<{ evidence_type: string }>(
+        `SELECT evidence_type FROM signal_evidence WHERE signal_id = ?`,
+        [seeded.signalId],
+      );
+      expect(evidenceRows.some((r) => r.evidence_type === "still_active")).toBe(false);
+    } finally {
+      await cleanupCompany(seeded.company.id);
+    }
+  });
+
+  it("does not append a second still_active evidence row the same day (idempotency guard)", async () => {
+    const seeded = await seedStillActiveSignal({
+      label: "sa-idempotent",
+      signalDetectedAt: "2026-07-01T06:00:00.000Z",
+      jobLastSeenAt: "2026-07-31T05:00:00.000Z",
+      pollIntervalMinutes: 90,
+    });
+    try {
+      const db = createLiveD1Database();
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T14:00:00.000Z"));
+
+      const evidenceRows = await client.all<{ evidence_type: string }>(
+        `SELECT evidence_type FROM signal_evidence WHERE signal_id = ? AND evidence_type = 'still_active'`,
+        [seeded.signalId],
+      );
+      expect(evidenceRows).toHaveLength(1);
+    } finally {
+      await cleanupCompany(seeded.company.id);
     }
   });
 });

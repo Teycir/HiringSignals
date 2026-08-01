@@ -262,8 +262,18 @@ export interface StillActiveCandidateRow {
  */
 export async function listStillActiveCandidates(
   client: D1Client,
-  params: { staleBefore: string; todayStart: string; lookbackMultiplier: number; limit: number },
+  params: { now: string; staleBefore: string; todayStart: string; lookbackMultiplier: number; limit: number },
 ): Promise<StillActiveCandidateRow[]> {
+  // The `datetime(?, ...)` cutoff below is compared against `j.last_seen_at`
+  // using plain string `>=` (D1/SQLite has no real datetime type). SQLite's
+  // datetime() normalizes its *output* to space-separated, no-`Z` form
+  // ("2026-07-30 03:45:00"), which does not lexicographically compare
+  // correctly against the ISO-8601 "T"/"Z" form ("2026-07-30T00:00:00.000Z")
+  // stored in last_seen_at -- 'T' (0x54) sorts after ' ' (0x20), so a
+  // T-formatted value spuriously compares as >= almost any datetime()
+  // output regardless of actual chronological order. Wrapping last_seen_at
+  // in datetime() too normalizes both sides to the same space-separated
+  // form before comparison, so the comparison is actually correct.
   return client.all<StillActiveCandidateRow>(
     `SELECT
        s.id AS signal_id,
@@ -280,7 +290,7 @@ export async function listStillActiveCandidates(
      WHERE s.status = 'active'
        AND s.last_detected_at < ?
        AND j.status = 'active'
-       AND j.last_seen_at >= datetime(?, '-' || CAST(src.poll_interval_minutes * ? AS TEXT) || ' minutes')
+       AND datetime(j.last_seen_at) >= datetime(?, '-' || CAST(src.poll_interval_minutes * ? AS TEXT) || ' minutes')
        AND NOT EXISTS (
          SELECT 1 FROM signal_evidence se2
          WHERE se2.signal_id = s.id
@@ -290,7 +300,7 @@ export async function listStillActiveCandidates(
      GROUP BY s.id
      ORDER BY s.last_detected_at ASC, s.id ASC
      LIMIT ?`,
-    [params.staleBefore, params.staleBefore, params.lookbackMultiplier, params.todayStart, params.limit],
+    [params.staleBefore, params.now, params.lookbackMultiplier, params.todayStart, params.limit],
   );
 }
 

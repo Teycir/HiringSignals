@@ -147,6 +147,7 @@ async function handleStillActive(client: ReturnType<typeof createD1Client>, now:
   const todayStart = startOfUtcDay(now);
 
   const candidates = await listStillActiveCandidates(client, {
+    now: observedAt,
     staleBefore,
     todayStart,
     lookbackMultiplier: STILL_ACTIVE_LOOKBACK_MULTIPLIER,

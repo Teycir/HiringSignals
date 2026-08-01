@@ -436,7 +436,7 @@ Shared: both reuse H.5's daily reconciliation cron.
 listing is still open. Detection latency is optimization target per
 spec §1.1 — without measuring it, cadence tuning is guesswork.
 
-- [ ] **K.1 — `still_active` signal generation**
+- [x] **K.1 — `still_active` signal generation**
       (`apps/api/src/jobs/reconciliation.ts`, `packages/domain`)
   - Daily reconciliation pass: for each active signal whose
     `last_detected_at` older than `pollIntervalMinutes * 2` and the
@@ -450,6 +450,16 @@ spec §1.1 — without measuring it, cadence tuning is guesswork.
     role confirmed open at last check."
   - Verify: extend `reconciliation.test.ts` with recently-seen active
     appends evidence, stale-job does not.
+  - Fixed during verification: `listStillActiveCandidates`'s
+    `last_seen_at` cutoff compared SQLite `datetime()`'s
+    space-separated output directly against ISO `T`/`Z` timestamps —
+    a string comparison, not a temporal one, that let stale jobs
+    through almost unconditionally. Also, the call site never passed
+    a real `now`, so the cutoff anchor silently reused `staleBefore`
+    (`now - 24h`) instead. Both fixed: `now` is a real parameter, and
+    `last_seen_at` is wrapped in `datetime()` too for a normalized
+    comparison. All 6 `reconciliation.test.ts` tests pass against
+    live D1.
 
 - [ ] **K.2 — Detection-latency tracking**
       (`packages/db/src/jobs-repo.ts`, `apps/api/src/jobs/ingest-consumer.ts`,
