@@ -71,6 +71,44 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  * packages/db/src/jobs-repo.ts and sources-repo.ts instead, so a future
  * column rename breaks `pnpm --filter db test`, not a query string
  * hidden in apps/api.
+ *
+ * NOT wrapped in D1Client.batch() (data-integrity review, 2026-08-02):
+ * processNormalizedJob/processMissingJobs below issue several sequential
+ * D1 writes per job with no atomicity across them -- a crash mid-
+ * sequence can leave e.g. a job upserted with no observation row, or a
+ * signal created with no evidence row. This was deliberately left as-is
+ * after investigation, not overlooked:
+ *   1. Cloudflare D1's batch() rolls back the ENTIRE sequence if any one
+ *      statement fails (confirmed against Cloudflare's own D1 docs,
+ *      2026-08-02) -- it is D1's real transaction primitive (no BEGIN/
+ *      COMMIT SQL surface exists via the Workers binding), but that also
+ *      means a single failed statement inside a batch takes every other
+ *      statement in that same batch down with it.
+ *   2. insertObservationIdempotent's entire idempotency contract depends
+ *      on catching a UNIQUE(job_id, source_run_id) violation (migration
+ *      0004) from ITS OWN statement in isolation and treating it as a
+ *      no-op "already recorded" continue (spec §13.3). Put that insert
+ *      in a batch alongside applyLifecycleTransition's UPDATE and a
+ *      legitimate idempotent-retry collision would roll the lifecycle
+ *      UPDATE back too -- turning a correct retry into a lost write.
+ *      Do NOT combine insertJobObservation/insertObservationIdempotent
+ *      into a batch() with any other statement for this reason.
+ *   3. Every other adjacent write pair in processNormalizedJob has a
+ *      genuine branch between them (find-then-create-or-refresh via
+ *      findActiveSignal, upsertJob's existing/new branch, the
+ *      contentChanged/autoClassified conditionals) -- batch() takes a
+ *      fixed statement list decided up front and cannot express an `if`
+ *      partway through, so these cannot be batched without restructuring
+ *      the pipeline into a read-everything-first / decide / write-batch
+ *      shape, which is a real option but a separate, larger change from
+ *      a batching pass alone.
+ * Idempotency today instead relies on: the UNIQUE(job_id, source_run_id)
+ * schema constraint (job_observations), upsertJob's own natural-key
+ * upsert semantics, and findActiveSignal's read-before-write pattern for
+ * signals -- a retried message re-running this pipeline from the top is
+ * safe (spec §13.4 row 6) even without wrapping the sequence in a single
+ * transaction, because each individual write is independently safe to
+ * repeat, not because the sequence as a whole is atomic.
  */
 
 /** Max retry attempts before a failure is treated as final (spec §13.4: "e.g. 5"). */
@@ -487,7 +525,7 @@ async function generateCompanySignals(
       // signal's freshly computed score (H.3) as a stand-in, refreshed
       // alongside it. Revisit once a dedicated company-level scoring
       // pass exists.
-      await refreshSignal(client, signalId, {
+      await refreshSignal(client, signalId, source.company_id, {
         score: primaryScore,
         scoreVersion: primaryScoreVersion,
         lastDetectedAt: observedAt,
@@ -716,7 +754,7 @@ async function processNormalizedJob(
   let createdNewSignal = 0;
   if (activeSignal) {
     signalId = activeSignal.id;
-    await refreshSignal(client, signalId, {
+    await refreshSignal(client, signalId, source.company_id, {
       score: scoreResult.score,
       scoreVersion: scoreResult.formulaVersion,
       lastDetectedAt: observedAt,
@@ -869,6 +907,14 @@ async function embedAndUpsertJob(
  * 0 for signalsCreated -- an absence never creates a signal on its own,
  * kept as a return value only so the caller's accumulation pattern
  * (`signalsCreated += ...`) stays uniform between both stages.
+ *
+ * The per-job applyLifecycleTransition + insertObservationIdempotent
+ * pair below looks like an obvious D1Client.batch() candidate (fixed
+ * params, no branch between them) -- it was investigated and rejected
+ * (see this file's header comment, point 2, and insertObservationIdempotent's
+ * own doc comment): batching them would make a legitimate idempotent
+ * retry's UNIQUE-constraint no-op roll back the lifecycle UPDATE too.
+ * Leave these as two independent statements.
  */
 async function processMissingJobs(
   client: ReturnType<typeof createD1Client>,
@@ -912,6 +958,13 @@ async function processMissingJobs(
  * copy -- code review flagged this as the third of three near-identical
  * copies (the other two, in sources-repo.ts/companies-repo.ts, were
  * already centralized) and this was the one left behind.
+ *
+ * DO NOT wrap this call's underlying insertJobObservation in a
+ * D1Client.batch() alongside any other statement (see this file's
+ * header comment, point 2) -- this function's whole job is to catch a
+ * UNIQUE-constraint failure from ITS OWN statement in isolation; batch()
+ * rolls back every statement in the sequence on any one failure, which
+ * would turn a legitimate idempotent retry into a lost sibling write.
  */
 async function insertObservationIdempotent(
   client: ReturnType<typeof createD1Client>,

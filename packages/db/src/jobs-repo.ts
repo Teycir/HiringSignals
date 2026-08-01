@@ -162,6 +162,16 @@ export interface UpsertJobResult {
  * pass it to insertJobObservation without a second SELECT, plus
  * contentChanged (see UpsertJobResult) so the caller can decide whether
  * to record a job_updated evidence row without a second query.
+ *
+ * The UPDATE branch's WHERE also qualifies on `company_id` (debug-
+ * codebase-audit.md H1, same tenant-isolation defense-in-depth as
+ * updateJobClassification/applyLifecycleTransition below): `existing`
+ * is looked up by (source_id, external_job_id) only, so its `company_id`
+ * isn't re-verified against `input.companyId` before this point --
+ * qualifying the UPDATE itself is what turns a caller passing a
+ * mismatched companyId (a bug elsewhere, not a normal path -- every
+ * real call site derives companyId from the same source row that
+ * produced sourceId) into a 0-row no-op instead of a cross-tenant write.
  */
 export async function upsertJob(client: D1Client, input: UpsertJobInput): Promise<UpsertJobResult> {
   const existing = await client.first<Pick<JobRow, "id" | "content_hash">>(
@@ -177,7 +187,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
          location_raw = ?, location_mode = ?, country_code = ?,
          region_code = ?, city = ?, posted_at = ?, source_updated_at = ?,
          last_seen_at = ?, content_hash = ?
-       WHERE id = ?`,
+       WHERE id = ? AND company_id = ?`,
       [
         input.canonicalUrl,
         input.title,
@@ -195,6 +205,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
         input.observedAt,
         input.contentHash,
         existing.id,
+        input.companyId,
       ],
     );
     return { id: existing.id, contentChanged: existing.content_hash !== input.contentHash };

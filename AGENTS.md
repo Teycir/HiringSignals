@@ -171,6 +171,48 @@ See ROADMAP.md Milestone J for the full list with per-item detail.
 
 ---
 
+## Policy: record session memory via butler MCP before ending a session
+
+**Before ending any working session in this repo, record what happened
+via the `butler` MCP server (`project_id: "HiringSignals"` — confirmed
+registered in butler's project list as of 2026-08-01, ADR-001), not just
+in chat.** Chat history is not durable across sessions the way butler's
+project memory is — the next session (this agent or another) starts
+cold unless the prior session wrote something down.
+
+- **What to record, and with which tool:**
+  - `butler:memorystore` (`type: "summary"`) — what was done this
+    session: files touched, what changed and why, what was verified
+    (typecheck/test command + exit code, not just "looks right" per the
+    fix-and-verify policy above).
+  - `butler:decisionrecord` — any real design/architecture decision made
+    (a new pattern adopted, a trade-off accepted, a policy change like
+    this one) — give it a `decision_id` (e.g. `ADR-00N`) so it's
+    referenceable later, the same way this file already references
+    `roadmapfix.md`-style tags in code comments.
+  - `butler:memorystore` (`type: "rule"`) — a durable constraint or
+    convention discovered this session that should bind future sessions
+    (e.g. "X must always be Y because Z") — the kind of thing that would
+    otherwise only live in one code comment or one person's head.
+  - `butler:memorystore` (`type: "wiki"`) — reference material worth
+    keeping around (a schema note, an external API's quirks) that isn't
+    a one-off summary or decision.
+- **Session lifecycle:** call `butler:sessionheartbeat` periodically
+  during a long-running session (per its own description, ~every 15s
+  while active), and call `butler:sessiondisconnect` when the session is
+  actually ending — it flushes a handoff log, so it's the real "close
+  out" step, not `memorystore` alone.
+- This is in addition to, not instead of, updating `ROADMAP.md` and
+  in-code comments. `ROADMAP.md`/code comments are what's true about the
+  *codebase*; butler memory is what's true about *how the work
+  happened* (reasoning, decisions, dead ends) — keep both current.
+- Skipping this at the end of a session is the same class of problem as
+  skipping verification before advancing (see "fix and verify before
+  advancing" above): a future session inherits a false sense of context
+  either way.
+
+---
+
 ## How to work in this repo
 
 - Package manager: pnpm workspaces (`pnpm-workspace.yaml`). Never use npm/yarn.

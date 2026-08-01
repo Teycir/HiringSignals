@@ -47,26 +47,36 @@ function testId(label: string): string {
 
 const client: D1Client = createLiveD1Client();
 
-/** Deletes everything under one seeded company, FK-safe order. */
+/** Deletes everything under one seeded company, FK-safe order, all 3
+ * statements in one client.batch() call -- D1's real atomicity
+ * primitive (see lib/d1/client.ts's batch() header comment; D1 has no
+ * BEGIN/COMMIT SQL surface via the Workers binding) -- so a mid-sequence
+ * process kill can't leave this company's rows half-deleted (data-
+ * integrity concern, 2026-08-02). */
 async function cleanupCompany(companyId: string, sourceId: string): Promise<void> {
-  await client.run(`DELETE FROM jobs WHERE company_id = ?`, [companyId]);
-  await client.run(`DELETE FROM sources WHERE id = ?`, [sourceId]);
-  await client.run(`DELETE FROM companies WHERE id = ?`, [companyId]);
+  await client.batch([
+    { sql: `DELETE FROM jobs WHERE company_id = ?`, params: [companyId] },
+    { sql: `DELETE FROM sources WHERE id = ?`, params: [sourceId] },
+    { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
+  ]);
 }
 
 /** Belt-and-suspenders sweep for anything left behind by a run that
  * didn't reach its own `finally` (hard kill, etc.) -- matches on the
- * shared TEST_PREFIX rather than a specific id. */
+ * shared TEST_PREFIX rather than a specific id. Same batch() atomicity
+ * reasoning as cleanupCompany above. */
 afterEach(async () => {
-  await client.run(
-    `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(`DELETE FROM companies WHERE slug LIKE ?`, [`${TEST_PREFIX}-%`]);
+  await client.batch([
+    {
+      sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    { sql: `DELETE FROM companies WHERE slug LIKE ?`, params: [`${TEST_PREFIX}-%`] },
+  ]);
 });
 
 async function seedCompanyAndSource(label: string) {

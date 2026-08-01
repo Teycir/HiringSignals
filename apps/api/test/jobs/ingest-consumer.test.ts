@@ -100,26 +100,35 @@ async function cleanupVector(jobId: string): Promise<void> {
   }
 }
 
+/** The 7 DELETEs run in one client.batch() call -- D1's real atomicity
+ * primitive (see lib/d1/client.ts's batch() header comment; D1 has no
+ * BEGIN/COMMIT SQL surface via the Workers binding) -- so a mid-sequence
+ * process kill can't leave this company's rows half-deleted (data-
+ * integrity concern, 2026-08-02). The job-id SELECT stays outside the
+ * batch: it only feeds the best-effort Vectorize cleanup below, not
+ * another SQL statement, so it isn't part of the atomic unit. */
 async function cleanupCompany(companyId: string): Promise<void> {
   const jobRows = await client
     .all<{ id: string }>(`SELECT id FROM jobs WHERE company_id = ?`, [companyId])
     .catch(() => [] as { id: string }[]);
-  await client.run(
-    `DELETE FROM signal_evidence WHERE signal_id IN (SELECT id FROM signals WHERE company_id = ?)`,
-    [companyId],
-  );
-  await client.run(`DELETE FROM signals WHERE company_id = ?`, [companyId]);
-  await client.run(
-    `DELETE FROM job_observations WHERE job_id IN (SELECT id FROM jobs WHERE company_id = ?)`,
-    [companyId],
-  );
-  await client.run(`DELETE FROM jobs WHERE company_id = ?`, [companyId]);
-  await client.run(
-    `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
-    [companyId],
-  );
-  await client.run(`DELETE FROM sources WHERE company_id = ?`, [companyId]);
-  await client.run(`DELETE FROM companies WHERE id = ?`, [companyId]);
+  await client.batch([
+    {
+      sql: `DELETE FROM signal_evidence WHERE signal_id IN (SELECT id FROM signals WHERE company_id = ?)`,
+      params: [companyId],
+    },
+    { sql: `DELETE FROM signals WHERE company_id = ?`, params: [companyId] },
+    {
+      sql: `DELETE FROM job_observations WHERE job_id IN (SELECT id FROM jobs WHERE company_id = ?)`,
+      params: [companyId],
+    },
+    { sql: `DELETE FROM jobs WHERE company_id = ?`, params: [companyId] },
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
+      params: [companyId],
+    },
+    { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
+    { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
+  ]);
   await Promise.all(jobRows.map((j) => cleanupVector(j.id)));
 }
 
@@ -135,37 +144,39 @@ afterEach(async () => {
     ),
   );
 
-  await client.run(
-    `DELETE FROM signal_evidence WHERE signal_id IN (
-       SELECT id FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
-     )`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM job_observations WHERE job_id IN (
-       SELECT id FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
-     )`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM source_runs WHERE source_id IN (
-       SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
-     )`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(`DELETE FROM companies WHERE slug LIKE ?`, [`${TEST_PREFIX}-%`]);
+  await client.batch([
+    {
+      sql: `DELETE FROM signal_evidence WHERE signal_id IN (
+         SELECT id FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+       )`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM job_observations WHERE job_id IN (
+         SELECT id FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+       )`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (
+         SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+       )`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    { sql: `DELETE FROM companies WHERE slug LIKE ?`, params: [`${TEST_PREFIX}-%`] },
+  ]);
 
   const allJobIds = jobRowsByCompany.flat().map((j) => j.id);
   await Promise.all(allJobIds.map((id) => cleanupVector(id)));

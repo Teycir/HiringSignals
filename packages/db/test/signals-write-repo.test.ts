@@ -74,41 +74,53 @@ function testSlug(label: string): string {
 const client: D1Client = createLiveD1Client();
 
 /** Everything this file seeds hangs off one company per test -- deletes
- * in FK-safe order (children before parents). */
+ * in FK-safe order (children before parents), all 5 statements in one
+ * client.batch() call so a mid-sequence process kill can't leave this
+ * company's rows half-deleted (debug-codebase-audit.md-adjacent data-
+ * integrity concern, 2026-08-02): D1's batch() runs every statement in
+ * one implicit transaction (see lib/d1/client.ts's batch() -- D1 has no
+ * BEGIN/COMMIT SQL surface via the Workers binding, batch() is the real
+ * atomicity primitive), so this either fully deletes or fully no-ops,
+ * never partially. */
 async function cleanupCompany(companyId: string): Promise<void> {
-  await client.run(
-    `DELETE FROM signal_evidence WHERE signal_id IN (SELECT id FROM signals WHERE company_id = ?)`,
-    [companyId],
-  );
-  await client.run(`DELETE FROM signals WHERE company_id = ?`, [companyId]);
-  await client.run(`DELETE FROM jobs WHERE company_id = ?`, [companyId]);
-  await client.run(`DELETE FROM sources WHERE company_id = ?`, [companyId]);
-  await client.run(`DELETE FROM companies WHERE id = ?`, [companyId]);
+  await client.batch([
+    {
+      sql: `DELETE FROM signal_evidence WHERE signal_id IN (SELECT id FROM signals WHERE company_id = ?)`,
+      params: [companyId],
+    },
+    { sql: `DELETE FROM signals WHERE company_id = ?`, params: [companyId] },
+    { sql: `DELETE FROM jobs WHERE company_id = ?`, params: [companyId] },
+    { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
+    { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
+  ]);
 }
 
 /** Belt-and-suspenders sweep for anything left behind by a run that
  * didn't reach its own `finally` (hard kill, etc.) -- matches on the
- * shared TEST_PREFIX rather than a specific id. */
+ * shared TEST_PREFIX rather than a specific id. Same batch() atomicity
+ * reasoning as cleanupCompany above. */
 afterEach(async () => {
-  await client.run(
-    `DELETE FROM signal_evidence WHERE signal_id IN (
-       SELECT id FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
-     )`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(
-    `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
-    [`${TEST_PREFIX}-%`],
-  );
-  await client.run(`DELETE FROM companies WHERE slug LIKE ?`, [`${TEST_PREFIX}-%`]);
+  await client.batch([
+    {
+      sql: `DELETE FROM signal_evidence WHERE signal_id IN (
+         SELECT id FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+       )`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    { sql: `DELETE FROM companies WHERE slug LIKE ?`, params: [`${TEST_PREFIX}-%`] },
+  ]);
 });
 
 async function seedCompany(label: string, displayName: string) {
@@ -260,7 +272,7 @@ describe("refreshSignal", () => {
       });
 
       const refreshedAt = "2026-07-28T00:00:00.000Z";
-      await refreshSignal(client, signalId, {
+      await refreshSignal(client, signalId, company.id, {
         score: 80,
         scoreVersion: "v2",
         lastDetectedAt: refreshedAt,
@@ -300,7 +312,7 @@ describe("updateSignalScore", () => {
         summary: "Summary.",
       });
 
-      const result = await updateSignalScore(client, signalId, {
+      const result = await updateSignalScore(client, signalId, company.id, {
         score: 42,
         scoreVersion: "v2",
       });
@@ -342,7 +354,7 @@ describe("updateSignalScore", () => {
       // invalid enum value.
       await client.run(`UPDATE signals SET status = 'expired' WHERE id = ?`, [signalId]);
 
-      const result = await updateSignalScore(client, signalId, {
+      const result = await updateSignalScore(client, signalId, company.id, {
         score: 99,
         scoreVersion: "v2",
       });

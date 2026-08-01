@@ -30,7 +30,30 @@ export interface D1Client {
   all<T>(sql: string, params?: unknown[]): Promise<T[]>;
   /** INSERT/UPDATE/DELETE. Returns rows affected. */
   run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
-  /** Multiple statements in one round trip. */
+  /**
+   * Multiple statements in one round trip -- D1's real atomicity
+   * primitive (D1 has no BEGIN/COMMIT SQL surface via the Workers
+   * binding). Runs as one SQL transaction: if ANY statement in the list
+   * fails, the ENTIRE sequence is rolled back, not just that statement
+   * (confirmed against Cloudflare's own D1 docs, 2026-08-02).
+   *
+   * That all-or-nothing rollback is exactly why batch() is safe for a
+   * fixed set of writes that must all succeed together, and exactly why
+   * it is UNSAFE to use for any statement whose caller relies on
+   * catching that specific statement's own failure in isolation (e.g. a
+   * UNIQUE-constraint violation used as an idempotent "already done,
+   * continue" signal) -- batching such a statement alongside others
+   * means a legitimate expected-failure retry now also discards every
+   * sibling write in that batch. See apps/api/src/jobs/ingest-consumer.ts's
+   * header comment for a concrete example of this trade-off in practice.
+   *
+   * batch() also cannot branch mid-sequence: every statement's SQL and
+   * params must be decided before the call, so it cannot express "read
+   * X, then decide whether to UPDATE or INSERT based on X" -- that shape
+   * needs a plain read via first()/all() followed by a separate
+   * decision, with only the resulting fixed writes (if independent of
+   * each other) passed to batch().
+   */
   batch<T>(statements: Array<{ sql: string; params?: unknown[] }>): Promise<T[][]>;
 }
 

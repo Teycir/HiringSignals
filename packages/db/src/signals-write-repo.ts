@@ -121,15 +121,26 @@ export interface RefreshSignalInput {
  * first_detected_at is never touched -- it's the anchor for "how long
  * has this been an active signal," which spec §7.1's persistent_demand
  * signal type (a later milestone) will need intact.
+ *
+ * companyId is required (debug-codebase-audit.md H1, same tenant-
+ * isolation defense-in-depth as sources-repo.ts's updateSource/
+ * jobs-repo.ts's applyLifecycleTransition): both real call sites
+ * (ingest-consumer.ts's two refreshSignal calls) already have
+ * `source.company_id` in scope from the same source row that produced
+ * the signal's companyId via findActiveSignal -- this is a defense-in-
+ * depth qualifier, not new plumbing. A caller passing a mismatched
+ * companyId for a genuine signalId now affects 0 rows instead of
+ * silently mutating another company's signal.
  */
 export async function refreshSignal(
   client: D1Client,
   signalId: string,
+  companyId: string,
   input: RefreshSignalInput,
 ): Promise<void> {
   await client.run(
-    `UPDATE signals SET score = ?, score_version = ?, last_detected_at = ? WHERE id = ?`,
-    [input.score, input.scoreVersion, input.lastDetectedAt, signalId],
+    `UPDATE signals SET score = ?, score_version = ?, last_detected_at = ? WHERE id = ? AND company_id = ?`,
+    [input.score, input.scoreVersion, input.lastDetectedAt, signalId, companyId],
   );
 }
 
@@ -143,17 +154,22 @@ export interface UpdateSignalScoreInput {
  * fields without touching last_detected_at, because no new evidence from
  * a source arrived. Mutating last_detected_at here would erase the very
  * staleness signal that reconciliation is meant to expose.
+ *
+ * companyId is required (debug-codebase-audit.md H1, same tenant-
+ * isolation defense-in-depth as refreshSignal above): reconciliation.ts's
+ * only call site already has `signal.company_id` in scope from
+ * listSignalsNeedingReconciliation's own SELECT.
  */
 export async function updateSignalScore(
   client: D1Client,
   signalId: string,
+  companyId: string,
   input: UpdateSignalScoreInput,
 ): Promise<{ changes: number }> {
-  return client.run(`UPDATE signals SET score = ?, score_version = ? WHERE id = ? AND status = 'active'`, [
-    input.score,
-    input.scoreVersion,
-    signalId,
-  ]);
+  return client.run(
+    `UPDATE signals SET score = ?, score_version = ? WHERE id = ? AND company_id = ? AND status = 'active'`,
+    [input.score, input.scoreVersion, signalId, companyId],
+  );
 }
 
 /**
@@ -325,16 +341,23 @@ export interface MarkSignalStillActiveInput {
  * a no-op and the caller (K.1's reconciliation pass) skips the
  * evidence-append, same "changes === 0 -> skip" pattern H.5 already
  * uses.
+ *
+ * companyId is required (debug-codebase-audit.md H1, same tenant-
+ * isolation defense-in-depth as updateSignalScore above):
+ * reconciliation.ts's only call site already has
+ * `candidate.company_id` in scope from listStillActiveCandidates's own
+ * SELECT.
  */
 export async function markSignalStillActive(
   client: D1Client,
   signalId: string,
+  companyId: string,
   input: MarkSignalStillActiveInput,
 ): Promise<{ changes: number }> {
-  return client.run(`UPDATE signals SET last_detected_at = ? WHERE id = ? AND status = 'active'`, [
-    input.lastDetectedAt,
-    signalId,
-  ]);
+  return client.run(
+    `UPDATE signals SET last_detected_at = ? WHERE id = ? AND company_id = ? AND status = 'active'`,
+    [input.lastDetectedAt, signalId, companyId],
+  );
 }
 
 export interface AppendSignalEvidenceInput {

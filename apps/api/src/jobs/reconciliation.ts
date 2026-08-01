@@ -76,7 +76,7 @@ export async function handleReconciliation(env: Bindings, now = new Date()): Pro
         ...activityStats,
       });
 
-      const updateResult = await updateSignalScore(client, signal.id, {
+      const updateResult = await updateSignalScore(client, signal.id, signal.company_id, {
         score: scoreResult.score,
         scoreVersion: scoreResult.formulaVersion,
       });
@@ -156,7 +156,7 @@ async function handleStillActive(client: ReturnType<typeof createD1Client>, now:
 
   for (const candidate of candidates) {
     try {
-      const updateResult = await markSignalStillActive(client, candidate.signal_id, {
+      const updateResult = await markSignalStillActive(client, candidate.signal_id, candidate.company_id, {
         lastDetectedAt: observedAt,
       });
 
