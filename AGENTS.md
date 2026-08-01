@@ -176,6 +176,31 @@ See ROADMAP.md Milestone J for the full list with per-item detail.
 - Package manager: pnpm workspaces (`pnpm-workspace.yaml`). Never use npm/yarn.
 - Typecheck a single workspace: `pnpm --filter @hiring-signals/<name> typecheck`
 - Typecheck everything: `pnpm -r typecheck`
+- **Scope test runs to the file(s) you actually touched.** Every test
+  that hits D1/AI/Vectorize (see "zero mocks, zero fakes" above) shells
+  out to a live `wrangler`/Cloudflare REST call per seed/assert step,
+  ~3.7s each -- a single file can legitimately take several minutes,
+  and `pnpm -r test` / `pnpm --filter <pkg> test` with no path runs
+  every live test in that scope, easily 10-15+ minutes. Run
+  `npx vitest run <path/to/file.test.ts>` (from inside the workspace
+  package directory, e.g. `cd packages/db && npx vitest run
+  test/jobs-repo.test.ts`) while iterating on one file --
+  `pnpm --filter <pkg> test -- <pattern>` does NOT reliably scope to a
+  pattern in this setup (confirmed 2026-08-01: it ran the full
+  workspace suite anyway) and its "whole suite" runtime should not be
+  the default cost of verifying a single new/changed test file. Only
+  run the full unscoped suite (`pnpm -r test` or a filter with no
+  path) as a final check before considering a milestone done, not as
+  the everyday inner-loop command.
+- If a test times out at the 90s per-test default (`vitest.config.ts`
+  in each workspace), the fix is almost always to seed fewer samples
+  per test or cut unnecessary seeding calls (e.g. skip
+  `recordSourceRunComplete` if the function under test never reads
+  `completed_at`/`status`) -- not to raise the timeout. Match
+  `company-role-stats-repo.test.ts`'s budget (its heaviest test uses 4
+  seed calls, no override) rather than reaching for a per-test timeout
+  override.
+
 - `tsconfig.base.json` has `noUncheckedIndexedAccess` on — array/tuple
   destructuring and indexed access are `T | undefined`. Handle it with a
   real fallback (`?? []`, a guard, etc.), not a non-null assertion.
