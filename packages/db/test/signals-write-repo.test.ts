@@ -381,7 +381,7 @@ describe("listSignalsNeedingReconciliation", () => {
       contentHash: "hash-job-1",
       observedAt: now,
     });
-    await updateJobClassification(client, job.id, {
+    await updateJobClassification(client, job.id, company.id, {
       rolePrimary: roleCategory,
       classificationConfidence: 0.85,
       classificationVersion: "v1",

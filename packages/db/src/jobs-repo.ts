@@ -75,15 +75,25 @@ export interface UpdateJobClassificationPatch {
  * repo function doesn't need to know about the classifier itself, only
  * the shape of its result. Previously inlined as raw SQL in
  * ingest-consumer.ts (same reasoning as getJobByExternalId above).
+ *
+ * companyId is required (debug-codebase-audit.md H1, tenant-isolation
+ * defense-in-depth, same pattern as sources-repo.ts's updateSource/
+ * markSourceSuccess): the row's own company_id is already in scope at
+ * every real call site (processNormalizedJob's `source.company_id`), so
+ * this is a defense-in-depth qualifier, not new plumbing -- a caller
+ * that passes the wrong company_id for a genuine jobId now affects 0
+ * rows instead of silently mutating a row belonging to a different
+ * company.
  */
 export async function updateJobClassification(
   client: D1Client,
   jobId: string,
+  companyId: string,
   patch: UpdateJobClassificationPatch,
 ): Promise<void> {
   await client.run(
-    `UPDATE jobs SET role_primary = ?, classification_confidence = ?, classification_version = ? WHERE id = ?`,
-    [patch.rolePrimary, patch.classificationConfidence, patch.classificationVersion, jobId],
+    `UPDATE jobs SET role_primary = ?, classification_confidence = ?, classification_version = ? WHERE id = ? AND company_id = ?`,
+    [patch.rolePrimary, patch.classificationConfidence, patch.classificationVersion, jobId, companyId],
   );
 }
 
@@ -440,22 +450,31 @@ export interface ApplyLifecycleTransitionPatch {
  * upsertJob already advances last_seen_at for jobs seen this run, so the
  * common "still active, still present" case doesn't need this function
  * to touch it at all.
+ *
+ * companyId is required (debug-codebase-audit.md H1, same tenant-
+ * isolation reasoning as updateJobClassification above). Both call sites
+ * (processNormalizedJob's `source.company_id`, processMissingJobs'
+ * `missingJob.company_id` -- the latter using the JobRow's own column
+ * rather than the source's, since it's the more precise scoping key for
+ * a row already loaded from `jobs`) have it in scope.
  */
 export async function applyLifecycleTransition(
   client: D1Client,
   jobId: string,
+  companyId: string,
   patch: ApplyLifecycleTransitionPatch,
 ): Promise<void> {
   if (patch.lastSeenAt !== undefined) {
     await client.run(
-      `UPDATE jobs SET status = ?, missing_run_count = ?, last_seen_at = ? WHERE id = ?`,
-      [patch.status, patch.missingRunCount, patch.lastSeenAt, jobId],
+      `UPDATE jobs SET status = ?, missing_run_count = ?, last_seen_at = ? WHERE id = ? AND company_id = ?`,
+      [patch.status, patch.missingRunCount, patch.lastSeenAt, jobId, companyId],
     );
   } else {
-    await client.run(`UPDATE jobs SET status = ?, missing_run_count = ? WHERE id = ?`, [
+    await client.run(`UPDATE jobs SET status = ?, missing_run_count = ? WHERE id = ? AND company_id = ?`, [
       patch.status,
       patch.missingRunCount,
       jobId,
+      companyId,
     ]);
   }
 }

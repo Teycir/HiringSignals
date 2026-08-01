@@ -588,7 +588,7 @@ async function processNormalizedJob(
     daysSinceLastSeen: 0,
   });
 
-  await applyLifecycleTransition(client, jobId, {
+  await applyLifecycleTransition(client, jobId, source.company_id, {
     status: lifecycle.nextState,
     missingRunCount: lifecycle.nextConsecutiveMissingRuns,
     lastSeenAt: observedAt,
@@ -660,7 +660,7 @@ async function processNormalizedJob(
     descriptionText: job.descriptionText,
   });
 
-  await updateJobClassification(client, jobId, {
+  await updateJobClassification(client, jobId, source.company_id, {
     rolePrimary: classification.rolePrimary ?? null,
     classificationConfidence: classification.confidence,
     classificationVersion: classification.classificationVersion,
@@ -887,7 +887,7 @@ async function processMissingJobs(
       daysSinceLastSeen,
     });
 
-    await applyLifecycleTransition(client, missingJob.id, {
+    await applyLifecycleTransition(client, missingJob.id, missingJob.company_id, {
       status: lifecycle.nextState,
       missingRunCount: lifecycle.nextConsecutiveMissingRuns,
     });
