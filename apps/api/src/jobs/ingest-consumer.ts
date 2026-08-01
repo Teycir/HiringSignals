@@ -135,8 +135,16 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
 
+  // Hoisted above the try so the outer catch blocks below can read
+  // source?.company_id when available (any failure after this line
+  // resolves) -- roadmapfix.md H1/F1a reasoning: `source` was
+  // previously `const` inside the try, which made it genuinely
+  // out-of-scope (not just falsy) in the catch, so markSourceFailure's
+  // two catch-block call sites had no way to pass companyId even when
+  // the row had actually been loaded moments before the throw.
+  let source: SourceRow | null;
   try {
-    const source = await getSourceById(client, sourceId);
+    source = await getSourceById(client, sourceId);
     if (!source) {
       // Source was deleted/disabled between enqueue and dequeue -- not a
       // retryable condition, nothing to fetch. Ack so it doesn't loop.
@@ -163,6 +171,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
       await finalizeConfigError(
         client,
         source.id,
+        source.company_id,
         sourceRunId,
         startTime,
         `Invalid provider="${source.provider}" in DB row`,
@@ -180,7 +189,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         // 4xx-style configuration issue (spec §13.4 row 3): mark source
         // degraded, no automatic hammering. Not retryable -- the adapter
         // simply doesn't exist yet.
-        await finalizeConfigError(client, source.id, sourceRunId, startTime, err.message);
+        await finalizeConfigError(client, source.id, source.company_id, sourceRunId, startTime, err.message);
         message.ack();
         return;
       }
@@ -202,7 +211,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
 
     if (fetchResult.httpStatus === 429) {
       const retrySeconds = fetchResult.retryAfterSeconds ?? backoffSeconds(attempt);
-      await finalizeRetryable(client, source.id, sourceRunId, startTime, {
+      await finalizeRetryable(client, source.id, source.company_id, sourceRunId, startTime, {
         httpStatus: fetchResult.httpStatus,
         errorCode: "rate_limited",
         errorMessageSafe: `429 Retry-After=${fetchResult.retryAfterSeconds ?? "none"}`,
@@ -212,7 +221,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     }
 
     if (fetchResult.httpStatus >= 500) {
-      await finalizeRetryable(client, source.id, sourceRunId, startTime, {
+      await finalizeRetryable(client, source.id, source.company_id, sourceRunId, startTime, {
         httpStatus: fetchResult.httpStatus,
         errorCode: "transient_5xx",
         errorMessageSafe: `Upstream returned ${fetchResult.httpStatus}`,
@@ -237,6 +246,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
       await finalizeConfigError(
         client,
         source.id,
+        source.company_id,
         sourceRunId,
         startTime,
         `Upstream returned ${fetchResult.httpStatus}`,
@@ -263,6 +273,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         await finalizeConfigError(
           client,
           source.id,
+          source.company_id,
           sourceRunId,
           startTime,
           `Schema mismatch: ${errorMessage(err)}`,
@@ -293,7 +304,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     signalsCreated += await processMissingJobs(client, source, sourceRunId, seenExternalIds, observedAt);
 
     const nextPollAt = computeNextPollAt(source.poll_interval_minutes, source.id);
-    await markSourceSuccess(client, source.id, nextPollAt);
+    await markSourceSuccess(client, source.id, source.company_id, nextPollAt);
 
     const durationMs = Date.now() - startTime;
     await recordSourceRunComplete(client, sourceRunId, {
@@ -923,6 +934,7 @@ function isAdapterSchemaError(err: unknown): boolean {
 async function finalizeConfigError(
   client: ReturnType<typeof createD1Client>,
   sourceId: string,
+  companyId: string,
   sourceRunId: string,
   startTime: number,
   message: string,
@@ -940,14 +952,18 @@ async function finalizeConfigError(
   // "Mark source degraded" (spec §13.4): disable further automatic
   // polling until an operator investigates via the ops script, rather
   // than repeatedly hammering an endpoint that will keep failing the
-  // same way.
-  await updateSource(client, sourceId, { enabled: false });
-  await markSourceFailure(client, sourceId);
+  // same way. companyId passed through -- every call site runs inside
+  // the outer try after `source` was loaded (roadmapfix.md H1 audit),
+  // so it's always genuinely available here, unlike markSourceFailure's
+  // two catch-block sites below.
+  await updateSource(client, sourceId, companyId, { enabled: false });
+  await markSourceFailure(client, sourceId, companyId);
 }
 
 async function finalizeRetryable(
   client: ReturnType<typeof createD1Client>,
   sourceId: string,
+  companyId: string,
   sourceRunId: string,
   startTime: number,
   input: { httpStatus: number; errorCode: string; errorMessageSafe: string },
@@ -960,7 +976,7 @@ async function finalizeRetryable(
     errorMessageSafe: input.errorMessageSafe,
     durationMs: Date.now() - startTime,
   });
-  await markSourceFailure(client, sourceId);
+  await markSourceFailure(client, sourceId, companyId);
 }
 
 /**

@@ -162,7 +162,7 @@ describe("handleScheduled", () => {
     try {
       const src = await seedDueSource(company.id, testSlug("notyet-src"));
       const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-      await updateSource(client, src.id, { nextPollAt: farFuture });
+      await updateSource(client, src.id, company.id, { nextPollAt: farFuture });
 
       const db = createLiveD1Database();
       const { env, sent } = makeEnv(db);

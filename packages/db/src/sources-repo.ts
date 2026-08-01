@@ -181,9 +181,21 @@ export interface UpdateSourcePatch {
  * Returns false if no row matched `sourceId` (the script prints a "not
  * found" message), true otherwise.
  */
+/**
+ * companyId is required (roadmapfix.md F1a, tenant-isolation
+ * defense-in-depth): every genuine caller has an already-loaded source
+ * row (and thus its company_id) in scope -- see ingest-consumer.ts's
+ * finalizeConfigError, whose 4 call sites all run inside the same try
+ * block that loaded `source`. companyId is checked, not just threaded
+ * through for show: a caller that genuinely doesn't have it yet (a
+ * hoisted `source` still `undefined` because getSourceById itself never
+ * resolved) fails the WHERE clause -- 0 rows affected -- instead of the
+ * qualifier being silently skipped.
+ */
 export async function updateSource(
   client: D1Client,
   sourceId: string,
+  companyId: string,
   patch: UpdateSourcePatch,
 ): Promise<boolean> {
   const sets: string[] = [];
@@ -208,10 +220,10 @@ export async function updateSource(
 
   if (sets.length === 0) return true; // nothing to change; not an error
 
-  const result = await client.run(`UPDATE sources SET ${sets.join(", ")} WHERE id = ?`, [
-    ...args,
-    sourceId,
-  ]);
+  const result = await client.run(
+    `UPDATE sources SET ${sets.join(", ")} WHERE id = ? AND company_id = ?`,
+    [...args, sourceId, companyId],
+  );
   return result.changes > 0;
 }
 
@@ -376,17 +388,19 @@ export async function recordSourceRunComplete(
  * absence from successful runs. Do not conflate the two (ROADMAP.md
  * Milestone A note, spec §5.4).
  */
+/** companyId required, same roadmapfix.md F1a reasoning as updateSource above. */
 export async function markSourceSuccess(
   client: D1Client,
   sourceId: string,
+  companyId: string,
   nextPollAt: string,
 ): Promise<void> {
   const now = new Date().toISOString();
   await client.run(
     `UPDATE sources
      SET consecutive_failures = 0, last_success_at = ?, next_poll_at = ?
-     WHERE id = ?`,
-    [now, nextPollAt, sourceId],
+     WHERE id = ? AND company_id = ?`,
+    [now, nextPollAt, sourceId, companyId],
   );
 }
 
@@ -403,7 +417,31 @@ export async function markSourceSuccess(
  * themselves, rather than this function guessing a single backoff policy
  * for every failure kind.
  */
-export async function markSourceFailure(client: D1Client, sourceId: string): Promise<void> {
+/**
+ * companyId is `string | undefined` (not required like updateSource/
+ * markSourceSuccess above, roadmapfix.md F1a) because 2 of this
+ * function's real call sites (ingest-consumer.ts's outer catch blocks,
+ * reached when the pipeline fails before or without ever loading the
+ * source row) genuinely have no company context available -- `source`
+ * there is block-scoped to the `try` and doesn't exist in `catch`.
+ * `sourceId` itself is trusted, schema-validated queue data (not
+ * user-facing input), so scoping by `id` alone in that specific,
+ * documented case is the accepted exception here, not a silent gap:
+ * every OTHER call site that does have companyId in scope should pass
+ * it, and does.
+ */
+export async function markSourceFailure(
+  client: D1Client,
+  sourceId: string,
+  companyId?: string,
+): Promise<void> {
+  if (companyId !== undefined) {
+    await client.run(
+      `UPDATE sources SET consecutive_failures = consecutive_failures + 1 WHERE id = ? AND company_id = ?`,
+      [sourceId, companyId],
+    );
+    return;
+  }
   await client.run(
     `UPDATE sources SET consecutive_failures = consecutive_failures + 1 WHERE id = ?`,
     [sourceId],
