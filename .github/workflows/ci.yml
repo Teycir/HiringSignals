@@ -1,0 +1,48 @@
+# CI: typecheck + lint across every workspace package (ROADMAP.md
+# Milestone J CI item). Deliberately does NOT run `pnpm -r test` yet --
+# every live test suite in this repo talks to real remote Cloudflare D1
+# (packages/test-support's live-d1-client.ts / d1-remote-transport.ts,
+# per AGENTS.md's "zero mocks, zero fakes" policy), authenticated via
+# wrangler's standard CLOUDFLARE_API_TOKEN env var. That token doesn't
+# exist as a repo secret yet -- the existing CF_TOKEN secret is
+# deliberately scoped to Workers AI + Vectorize only (see
+# .env.local.example's header comment) and does NOT have D1 permissions,
+# confirmed 2026-08-02. Wiring live-D1 tests into CI is a tracked
+# follow-up once a second, D1:Edit-scoped token is minted and added as
+# a new secret (see ROADMAP.md Milestone J's CI item for the exact plan).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version pinned from this repo's own .nvmrc (24.18.0) -- wrangler
+      # requires >=22, and every ops-script/test-support session in this
+      # repo has standardized on this exact version.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      # pnpm version pinned to match package.json's own
+      # "packageManager": "pnpm@11.17.0" exactly, so CI installs with
+      # the same resolver behavior as local dev.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (all workspaces)
+        run: pnpm -r typecheck
+
+      - name: Lint (all workspaces)
+        run: pnpm -r lint
