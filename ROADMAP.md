@@ -395,10 +395,48 @@ exceptions.
       `pnpm --filter @hiring-signals/api typecheck` clean; full test
       run exit code 0.
 
-- [ ] Update CI workflow (`.github/workflows/`) to provide `CF_TOKEN`
-      as secret and confirm `pnpm -r test` passes in CI against live
-      resources. (Directory `.github/workflows/` exists on disk but
-      contains no `*.yml`/`*.yaml` as of 2026-08-01 — not started.)
+- [x] **CI workflow — typecheck + lint** ✅ 2026-08-02
+      (`.github/workflows/ci.yml`)
+  - `.github/workflows/ci.yml` added: Node pinned via `.nvmrc`
+    (24.18.0), pnpm pinned to `11.17.0` (matches `package.json`'s
+    `packageManager` field), `pnpm install --frozen-lockfile`, then
+    `pnpm -r typecheck` and `pnpm -r lint`. Triggers on push/PR to
+    `main`.
+  - Deliberately does NOT run `pnpm -r test` yet. Checked (2026-08-02):
+    the existing `CF_TOKEN` GitHub secret is scoped to Workers AI +
+    Vectorize only (confirmed with the repo owner), matching
+    `.env.local.example`'s own documented scope — it does not have D1
+    permissions. Locally, D1 access instead piggybacks on wrangler's
+    browser-login session (no script-visible secret), which doesn't
+    exist in a CI runner. Wrangler's own non-interactive auth path is
+    the standard `CLOUDFLARE_API_TOKEN` env var (different from this
+    repo's app-level `CF_TOKEN`) — needs a **second**, `D1: Edit`-only
+    scoped token minted and added as a new secret before `pnpm -r test`
+    (every live suite in this repo talks to real remote D1 per
+    AGENTS.md's zero-mocks policy) can run in CI. Tracked as a
+    follow-up below, not done today.
+  - Verified locally by reproducing the exact workflow steps under
+    `nvm use 24.18.0`: `pnpm -r typecheck` — clean, exit 0, all 6
+    workspaces. `pnpm -r lint` — clean, exit 0 (5 pre-existing
+    warnings in `test-support`/`apps/api`, 0 errors) after deleting 5
+    tracked-but-unused one-off live-D1 debugging scratch scripts from
+    `packages/db` (`check_group.mjs`, `check_orphans.mjs`,
+    `check_query.mjs`, `cleanup_debug.mjs`, `debug-still-active.mjs`)
+    that were failing lint with `no-undef` on bare `console` calls and
+    would have made this workflow red on its first run — confirmed
+    unreferenced anywhere else in the repo before removing.
+
+- [ ] **Follow-up: wire `pnpm -r test` into CI** — mint a second
+      Cloudflare API token scoped to `D1: Edit` only (same account),
+      add as a new GitHub secret (name TBD — must not collide with the
+      existing AI/Vectorize-scoped `CF_TOKEN`), export it as
+      `CLOUDFLARE_API_TOKEN` in the workflow (wrangler's standard
+      non-interactive auth env var) so `wrangler d1 execute --remote`
+      calls in `packages/test-support`'s live-D1 transport succeed
+      unattended. Add a `test` job/step once that secret exists;
+      expect long runtimes (some suites here run 500–1500s against
+      real Cloudflare infrastructure per Milestone J's notes) — budget
+      CI timeout accordingly.
 
 - [x] Update AGENTS.md policy section's "Follow-up, tracked, not done
       today" note once `ingest-consumer.test.ts` lands too. Done
@@ -558,29 +596,40 @@ separate `add-company.mjs` + `add-source.mjs` invocations. CSV import
 removes that friction; prerequisite for registry growing fast enough
 to make the feed useful.
 
-- [ ] **M.1 — `import-sources.mjs` ops script**
+- [x] **M.1 — `import-sources.mjs` ops script** ✅ verified 2026-08-02
       (`infrastructure/scripts/import-sources.mjs`)
   - One argument: CSV file path. Columns: `company_slug`,
     `company_display_name`, `company_domain` (optional), `provider`,
     `board_token`, `public_url`, `poll_interval_minutes` (optional,
     default 90). One row = one source; multiple sources for same
     company share `company_slug`.
-  - Per row: check if `company_slug` exists → if not, `createCompany`
-    → then `createSource`. Use existing duplicate-detection
-    (`DuplicateCompanyError`/`DuplicateSourceError`); CSV duplicates
-    = skip-with-warning, not fatal, so re-run of same CSV is safe.
-  - Pre-write validation: parse entire CSV first, reject missing
-    required/invalid `provider` rows, print valid/invalid summary,
-    ask confirmation before writing (same "confirm before destructive
-    action" pattern as `update-source.mjs --disable`).
-  - Progress output: one line per row (`[OK]`, `[SKIP]`, `[ERROR]`)
-    plus final created/skipped/errored counts.
-  - Same `.mjs`-over-`wrangler d1 execute --json` pattern as other
-    ops scripts (no live `D1Database` binding outside Worker).
-  - Verify: test CSV with 5 rows (2 new companies, 1 duplicate
-    company + new source, 1 duplicate source, 1 invalid provider);
-    confirm counts match; confirm re-run = all-skipped. `nvm use
-    24.18.0` first.
+  - Two-pass design (no interactive TTY prompt exists anywhere in this
+    repo's ops scripts — confirmed via grep): pass 1 parses + validates
+    the entire CSV against live D1 (hand-rolled RFC 4180 parser, no
+    dependency), prints a per-row `[OK]`/`[SKIP]`/`[ERROR]` plan plus a
+    summary count, and pass 2 only writes if pass 1 found zero invalid
+    rows. Company created once per slug (`createdCompanyIds` map)
+    even when multiple rows share a `company_slug`; duplicate
+    `provider`+`board_token` (in-CSV or already-in-D1) is a skip, not
+    fatal — re-running the same CSV is safe/idempotent. Same
+    `.mjs`-over-`wrangler d1 execute --json` pattern as every other ops
+    script (`lib/d1-exec.mjs`, run from `apps/api`, DB name
+    `hiring-signals`).
+  - Verified 2026-08-02 against local D1 with `test-import-sources.csv`
+    (repo root, 4 data rows: 2 new companies, 1 second source sharing
+    an existing company, 1 in-file duplicate source): first run
+    created 2 companies + 3 sources exactly as planned, with the
+    plan-time "new company" vs "existing company" label correctly
+    reflecting one-create-per-slug (fixed a cosmetic mislabel found
+    during this same verification pass, tracked via
+    `slugsPlannedForCreation`). Re-ran the identical CSV a second time:
+    all 4 rows returned `[SKIP]` (3 pre-existing-in-D1, 1 in-file dup),
+    0 created, 0 written — idempotency confirmed on a real second run,
+    not just by code inspection. Test rows cleaned from local D1
+    afterward (`sources`/`companies` both confirmed at count 0 for the
+    `test-imp-%` prefix). `pnpm -r typecheck` was already clean from
+    the prior session that wrote the script; no code changes were
+    needed this session beyond the label fix already applied.
 
 ---
 
