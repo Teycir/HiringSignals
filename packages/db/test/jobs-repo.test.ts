@@ -3,7 +3,13 @@ import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
 import { createCompany } from "../src/companies-repo";
 import { createSource, recordSourceRunStart } from "../src/sources-repo";
-import { upsertJob, insertJobObservation, getDetectionLatencyStats } from "../src/jobs-repo";
+import {
+  upsertJob,
+  insertJobObservation,
+  getDetectionLatencyStats,
+  updateJobClassification,
+  applyLifecycleTransition,
+} from "../src/jobs-repo";
 
 /**
  * `getDetectionLatencyStats` (ROADMAP.md K.2, spec §15) test coverage.
@@ -303,6 +309,224 @@ describe("getDetectionLatencyStats", () => {
       expect(stats.p50LatencyMinutes).toBeCloseTo(12, 5);
     } finally {
       await cleanupCompany(company.id);
+    }
+  });
+});
+
+/**
+ * H1 tenant-isolation coverage (debug-codebase-audit.md) for the three
+ * jobs-repo.ts functions patched with a companyId qualifier:
+ * updateJobClassification, upsertJob (UPDATE branch), and
+ * applyLifecycleTransition. Each gets a happy-path test plus a
+ * wrong-companyId test asserting 0 rows affected / no data change, per
+ * the audit doc's own verification instruction.
+ */
+describe("updateJobClassification", () => {
+  async function seedJob(companyId: string, sourceId: string, externalJobId: string) {
+    const now = new Date().toISOString();
+    return upsertJob(client, {
+      sourceId,
+      companyId,
+      externalJobId,
+      canonicalUrl: `https://example.invalid/jobs/${externalJobId}`,
+      title: "Security Engineer",
+      titleNormalized: "security engineer",
+      contentHash: `hash-${externalJobId}`,
+      observedAt: now,
+    });
+  }
+
+  it("updates role_primary/classification_confidence/classification_version", async () => {
+    const company = await seedCompany("ujc-basic", "Update Classification Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJob(company.id, source.id, "job-1");
+
+      await updateJobClassification(client, job.id, company.id, {
+        rolePrimary: "cybersecurity",
+        classificationConfidence: 0.9,
+        classificationVersion: "v2",
+      });
+
+      const persisted = await client.first<{
+        role_primary: string | null;
+        classification_confidence: number | null;
+        classification_version: string | null;
+      }>(
+        `SELECT role_primary, classification_confidence, classification_version FROM jobs WHERE id = ?`,
+        [job.id],
+      );
+      expect(persisted?.role_primary).toBe("cybersecurity");
+      expect(persisted?.classification_confidence).toBeCloseTo(0.9, 5);
+      expect(persisted?.classification_version).toBe("v2");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("H1: does not update a job when passed a mismatched company_id", async () => {
+    const company = await seedCompany("ujc-tenant", "Update Classification Tenant Co");
+    const otherCompany = await seedCompany("ujc-tenant-other", "Update Classification Other Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJob(company.id, source.id, "job-1");
+
+      await updateJobClassification(client, job.id, otherCompany.id, {
+        rolePrimary: "cybersecurity",
+        classificationConfidence: 0.9,
+        classificationVersion: "v2",
+      });
+
+      const persisted = await client.first<{ role_primary: string | null }>(
+        `SELECT role_primary FROM jobs WHERE id = ?`,
+        [job.id],
+      );
+      // Unchanged -- the wrong companyId meant 0 rows matched.
+      expect(persisted?.role_primary).toBeNull();
+    } finally {
+      await cleanupCompany(company.id);
+      await cleanupCompany(otherCompany.id);
+    }
+  });
+});
+
+describe("upsertJob H1 tenant isolation (UPDATE branch)", () => {
+  it("H1: a second upsertJob call with a mismatched company_id does not update the existing row", async () => {
+    const company = await seedCompany("uj-tenant", "Upsert Job Tenant Co");
+    const otherCompany = await seedCompany("uj-tenant-other", "Upsert Job Other Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const now = new Date().toISOString();
+      const first = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-1",
+        canonicalUrl: `https://example.invalid/jobs/job-1`,
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-v1",
+        observedAt: now,
+      });
+      expect(first.contentChanged).toBe(false);
+
+      // Same (sourceId, externalJobId) natural key finds the existing
+      // row, but a mismatched companyId is passed -- the UPDATE branch's
+      // WHERE id = ? AND company_id = ? must match 0 rows.
+      const later = new Date(Date.now() + 60_000).toISOString();
+      await upsertJob(client, {
+        sourceId: source.id,
+        companyId: otherCompany.id,
+        externalJobId: "job-1",
+        canonicalUrl: `https://example.invalid/jobs/job-1`,
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-v2",
+        observedAt: later,
+      });
+
+      const persisted = await client.first<{ content_hash: string; company_id: string }>(
+        `SELECT content_hash, company_id FROM jobs WHERE id = ?`,
+        [first.id],
+      );
+      // Unchanged -- still the original hash and original company_id.
+      expect(persisted?.content_hash).toBe("hash-v1");
+      expect(persisted?.company_id).toBe(company.id);
+    } finally {
+      await cleanupCompany(company.id);
+      await cleanupCompany(otherCompany.id);
+    }
+  });
+});
+
+describe("applyLifecycleTransition", () => {
+  async function seedJob(companyId: string, sourceId: string, externalJobId: string) {
+    const now = new Date().toISOString();
+    return upsertJob(client, {
+      sourceId,
+      companyId,
+      externalJobId,
+      canonicalUrl: `https://example.invalid/jobs/${externalJobId}`,
+      title: "Security Engineer",
+      titleNormalized: "security engineer",
+      contentHash: `hash-${externalJobId}`,
+      observedAt: now,
+    });
+  }
+
+  it("updates status and missing_run_count, and last_seen_at when provided", async () => {
+    const company = await seedCompany("alt-basic", "Lifecycle Transition Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJob(company.id, source.id, "job-1");
+      const lastSeenAt = "2026-08-01T00:00:00.000Z";
+
+      await applyLifecycleTransition(client, job.id, company.id, {
+        status: "possibly_closed",
+        missingRunCount: 1,
+        lastSeenAt,
+      });
+
+      const persisted = await client.first<{
+        status: string;
+        missing_run_count: number;
+        last_seen_at: string;
+      }>(`SELECT status, missing_run_count, last_seen_at FROM jobs WHERE id = ?`, [job.id]);
+      expect(persisted?.status).toBe("possibly_closed");
+      expect(persisted?.missing_run_count).toBe(1);
+      expect(persisted?.last_seen_at).toBe(lastSeenAt);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("leaves last_seen_at untouched when lastSeenAt is omitted", async () => {
+    const company = await seedCompany("alt-no-last-seen", "Lifecycle No Last Seen Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJob(company.id, source.id, "job-1");
+      const before = await client.first<{ last_seen_at: string }>(
+        `SELECT last_seen_at FROM jobs WHERE id = ?`,
+        [job.id],
+      );
+
+      await applyLifecycleTransition(client, job.id, company.id, {
+        status: "possibly_closed",
+        missingRunCount: 1,
+      });
+
+      const after = await client.first<{ status: string; last_seen_at: string }>(
+        `SELECT status, last_seen_at FROM jobs WHERE id = ?`,
+        [job.id],
+      );
+      expect(after?.status).toBe("possibly_closed");
+      expect(after?.last_seen_at).toBe(before?.last_seen_at);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("H1: does not transition a job when passed a mismatched company_id", async () => {
+    const company = await seedCompany("alt-tenant", "Lifecycle Tenant Co");
+    const otherCompany = await seedCompany("alt-tenant-other", "Lifecycle Other Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJob(company.id, source.id, "job-1");
+
+      await applyLifecycleTransition(client, job.id, otherCompany.id, {
+        status: "closed",
+        missingRunCount: 5,
+      });
+
+      const persisted = await client.first<{ status: string; missing_run_count: number }>(
+        `SELECT status, missing_run_count FROM jobs WHERE id = ?`,
+        [job.id],
+      );
+      // Unchanged -- wrong companyId matched 0 rows.
+      expect(persisted?.status).toBe("active");
+      expect(persisted?.missing_run_count).toBe(0);
+    } finally {
+      await cleanupCompany(company.id);
+      await cleanupCompany(otherCompany.id);
     }
   });
 });

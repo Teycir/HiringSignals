@@ -9,6 +9,7 @@ import {
   createSignal,
   findActiveSignal,
   listSignalsNeedingReconciliation,
+  markSignalStillActive,
   refreshSignal,
   updateSignalScore,
 } from "../src/signals-write-repo";
@@ -294,6 +295,41 @@ describe("refreshSignal", () => {
       await cleanupCompany(company.id);
     }
   });
+
+  it("H1: does not update a signal when passed a mismatched company_id", async () => {
+    const company = await seedCompany("rs-tenant", "Refresh Signal Tenant Co");
+    const otherCompany = await seedCompany("rs-tenant-other", "Refresh Signal Other Co");
+    try {
+      const firstDetectedAt = "2026-07-01T00:00:00.000Z";
+      const signalId = await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        score: 50,
+        scoreVersion: "v1",
+        detectedAt: firstDetectedAt,
+        headline: "Initial headline",
+        summary: "Initial summary.",
+      });
+
+      await refreshSignal(client, signalId, otherCompany.id, {
+        score: 80,
+        scoreVersion: "v2",
+        lastDetectedAt: "2026-07-28T00:00:00.000Z",
+      });
+
+      const persisted = await client.first<{ score: number; score_version: string }>(
+        `SELECT score, score_version FROM signals WHERE id = ?`,
+        [signalId],
+      );
+      // Unchanged -- the wrong companyId meant 0 rows matched.
+      expect(persisted?.score).toBe(50);
+      expect(persisted?.score_version).toBe("v1");
+    } finally {
+      await cleanupCompany(company.id);
+      await cleanupCompany(otherCompany.id);
+    }
+  });
 });
 
 describe("updateSignalScore", () => {
@@ -369,6 +405,144 @@ describe("updateSignalScore", () => {
       expect(persisted?.score_version).toBe("v1");
     } finally {
       await cleanupCompany(company.id);
+    }
+  });
+
+  it("H1: does not update a signal when passed a mismatched company_id", async () => {
+    const company = await seedCompany("uss-tenant", "Update Score Tenant Co");
+    const otherCompany = await seedCompany("uss-tenant-other", "Update Score Other Co");
+    try {
+      const signalId = await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        score: 50,
+        scoreVersion: "v1",
+        detectedAt: "2026-07-20T00:00:00.000Z",
+        headline: "Headline",
+        summary: "Summary.",
+      });
+
+      const result = await updateSignalScore(client, signalId, otherCompany.id, {
+        score: 99,
+        scoreVersion: "v2",
+      });
+      expect(result.changes).toBe(0);
+
+      const persisted = await client.first<{ score: number; score_version: string }>(
+        `SELECT score, score_version FROM signals WHERE id = ?`,
+        [signalId],
+      );
+      // Unchanged -- the wrong companyId meant 0 rows matched.
+      expect(persisted?.score).toBe(50);
+      expect(persisted?.score_version).toBe("v1");
+    } finally {
+      await cleanupCompany(company.id);
+      await cleanupCompany(otherCompany.id);
+    }
+  });
+});
+
+describe("markSignalStillActive", () => {
+  it("updates last_detected_at without touching score/score_version, on an active signal", async () => {
+    const company = await seedCompany("msa-basic", "Mark Still Active Co");
+    try {
+      const detectedAt = "2026-07-20T00:00:00.000Z";
+      const signalId = await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        score: 50,
+        scoreVersion: "v1",
+        detectedAt,
+        headline: "Headline",
+        summary: "Summary.",
+      });
+
+      const newLastDetectedAt = "2026-08-01T00:00:00.000Z";
+      const result = await markSignalStillActive(client, signalId, company.id, {
+        lastDetectedAt: newLastDetectedAt,
+      });
+      expect(result.changes).toBe(1);
+
+      const persisted = await client.first<{
+        score: number;
+        score_version: string;
+        last_detected_at: string;
+      }>(`SELECT score, score_version, last_detected_at FROM signals WHERE id = ?`, [signalId]);
+      expect(persisted?.last_detected_at).toBe(newLastDetectedAt);
+      // Untouched -- a still-active confirmation is not new hiring evidence.
+      expect(persisted?.score).toBe(50);
+      expect(persisted?.score_version).toBe("v1");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("does NOT update a signal whose status is not 'active' (the AND status = 'active' guard)", async () => {
+    const company = await seedCompany("msa-guard", "Mark Still Active Guard Co");
+    try {
+      const signalId = await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        score: 50,
+        scoreVersion: "v1",
+        detectedAt: "2026-07-20T00:00:00.000Z",
+        headline: "Headline",
+        summary: "Summary.",
+      });
+
+      // Same "DB-level state not reachable through valid repo functions"
+      // precedent as updateSignalScore's own guard test above.
+      await client.run(`UPDATE signals SET status = 'expired' WHERE id = ?`, [signalId]);
+
+      const result = await markSignalStillActive(client, signalId, company.id, {
+        lastDetectedAt: "2026-08-01T00:00:00.000Z",
+      });
+      expect(result.changes).toBe(0);
+
+      const persisted = await client.first<{ last_detected_at: string }>(
+        `SELECT last_detected_at FROM signals WHERE id = ?`,
+        [signalId],
+      );
+      // Unchanged -- the guard prevented the write.
+      expect(persisted?.last_detected_at).toBe("2026-07-20T00:00:00.000Z");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("H1: does not update a signal when passed a mismatched company_id", async () => {
+    const company = await seedCompany("msa-tenant", "Mark Still Active Tenant Co");
+    const otherCompany = await seedCompany("msa-tenant-other", "Mark Still Active Other Co");
+    try {
+      const detectedAt = "2026-07-20T00:00:00.000Z";
+      const signalId = await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        score: 50,
+        scoreVersion: "v1",
+        detectedAt,
+        headline: "Headline",
+        summary: "Summary.",
+      });
+
+      const result = await markSignalStillActive(client, signalId, otherCompany.id, {
+        lastDetectedAt: "2026-08-01T00:00:00.000Z",
+      });
+      expect(result.changes).toBe(0);
+
+      const persisted = await client.first<{ last_detected_at: string }>(
+        `SELECT last_detected_at FROM signals WHERE id = ?`,
+        [signalId],
+      );
+      // Unchanged -- the wrong companyId meant 0 rows matched.
+      expect(persisted?.last_detected_at).toBe(detectedAt);
+    } finally {
+      await cleanupCompany(company.id);
+      await cleanupCompany(otherCompany.id);
     }
   });
 });
