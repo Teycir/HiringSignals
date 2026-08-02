@@ -208,17 +208,30 @@ describe("listSignals", () => {
   });
 
   it("orders by last_detected_at DESC for sort=newest", async () => {
+    // Bug fix 2026-08-02: both detectedAt values used to be hardcoded
+    // absolute dates ("2026-07-01"/"2026-07-20"). listSignals' default
+    // observedSince (buildCommonFilters) falls back to "now - 30 days"
+    // when the caller doesn't pass one explicitly -- exactly this call.
+    // A hardcoded date is only inside that rolling 30-day window on the
+    // day it's written; enough real time passing (as happened here) age
+    // it out and the older row silently disappears from the result,
+    // failing the length assertion with no code regression at all. Use
+    // relative-to-now offsets so this test's own pass/fail can never
+    // depend on which calendar day it happens to run.
+    const now = Date.now();
+    const older = new Date(now - 20 * 24 * 60 * 60 * 1000).toISOString();
+    const newer = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
     const company = await seedCompany("order-newest", "Order By Newest Co");
     try {
       await seedSignal({
         companyId: company.id,
         roleCategory: "cybersecurity",
-        detectedAt: "2026-07-01T00:00:00.000Z",
+        detectedAt: older,
       });
       await seedSignal({
         companyId: company.id,
         roleCategory: "software_engineering",
-        detectedAt: "2026-07-20T00:00:00.000Z",
+        detectedAt: newer,
       });
       const result = await listSignals(client, {
         company: company.slug,
@@ -227,8 +240,8 @@ describe("listSignals", () => {
         limit: 50,
       });
       expect(result.items).toHaveLength(2);
-      expect(result.items[0]?.lastDetectedAt).toBe("2026-07-20T00:00:00.000Z");
-      expect(result.items[1]?.lastDetectedAt).toBe("2026-07-01T00:00:00.000Z");
+      expect(result.items[0]?.lastDetectedAt).toBe(newer);
+      expect(result.items[1]?.lastDetectedAt).toBe(older);
     } finally {
       await cleanupCompany(company.id);
     }
@@ -504,6 +517,14 @@ describe("toListItem", () => {
       expires_at: null,
       headline: "New Cybersecurity role at Acme",
       summary: "Acme posted a new Security Engineer role.",
+      // Representative-job columns (2026-08-02 fix, see BASE_SELECT):
+      // default null here so existing overrides-free callers of makeRow()
+      // exercise the "no representative job" / company-level-signal path
+      // by default; tests that care about a populated job override these.
+      canonical_url: null,
+      location_mode: null,
+      country_code: null,
+      source_platform: null,
       ...overrides,
     };
   }
@@ -525,6 +546,10 @@ describe("toListItem", () => {
       expiresAt: null,
       headline: "New Cybersecurity role at Acme",
       summary: "Acme posted a new Security Engineer role.",
+      canonicalUrl: null,
+      locationMode: null,
+      countryCode: null,
+      sourcePlatform: null,
     });
   });
 

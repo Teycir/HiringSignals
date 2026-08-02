@@ -214,6 +214,29 @@ are current; check the provider's own developer docs.
 
 ## Milestone F — Dashboard UI (Phase 2, `apps/web`)
 
+**Pre-work bug fix (2026-08-02, found while scoping F, fixed and
+verified before any UI code was written):** `listSignals`/
+`getSignalDetail`/`findSignalsByJobIds` (all sharing `BASE_SELECT` in
+`packages/db/src/signals-repo.ts`) never returned `location_mode`,
+`country_code`, `source_platform`, or `canonical_url` — only
+`listSignalsForExport`'s one-off query had that join. Spec §10.3 (card:
+"Location / work mode if available", "Source platform label") and §10.5
+(detail: evidence table + `OPEN PUBLIC JOB POST ↗` link) both require
+these, so Milestone F would have had no data to render them with.
+Fixed by folding the representative-job LEFT JOIN into `BASE_SELECT`
+itself (new `REPRESENTATIVE_JOB_JOIN` fragment, shared by list/detail/
+semantic-search/export instead of export duplicating it); extended
+`SignalRow`/`SignalListItem` with the four new nullable fields;
+`SignalExportRow` is now a type alias, not a separate shape. Also fixed
+a pre-existing test time-bomb found during verification: `signals-repo
+.test.ts`'s `sort=newest` test used hardcoded absolute dates
+(`2026-07-01`/`2026-07-20`) that aged out of `listSignals`' rolling
+30-day default `observedSince` window as real time passed — switched to
+now-relative offsets. Verified: `pnpm -r typecheck` clean (6/6
+workspaces), `pnpm -r lint` 0 errors, `signals-repo.test.ts` 15/15 and
+`signals-export-repo.test.ts` 5/5 passing against live D1, `domain`
+70/70 + `adapters` 114/114 fast suites green.
+
 Spec §11 (Minimal Brutalist visual system), §12 (Next.js requirements),
 §10 (UX spec — route map, filters, signal cards, detail view, empty/
 loading/error states).

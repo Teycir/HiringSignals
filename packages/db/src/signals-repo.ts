@@ -24,7 +24,26 @@ export class InvalidCursorError extends Error {
   }
 }
 
-/** Raw D1 row shape (snake_case) for the `signals` table joined to company. */
+/**
+ * Raw D1 row shape (snake_case) for the `signals` table joined to company,
+ * plus a "representative job" LEFT JOIN (canonical_url/location_mode/
+ * country_code/source_platform). Bug fix 2026-08-02: these four columns
+ * were previously only computed in listSignalsForExport's own one-off
+ * query (SignalExportRow) -- listSignals/getSignalDetail/
+ * findSignalsByJobIds all went through this same BASE_SELECT *without*
+ * them, so neither the signal feed cards nor the detail page could ever
+ * show location/work-mode/source-platform/public-URL, even though spec
+ * §10.3 (card requirements: "Location / work mode if available", "Source
+ * platform label") and §10.5 (detail: evidence table + "OPEN PUBLIC JOB
+ * POST" link) both require them. Folded the export query's representative-
+ * job resolution (most-recently-observed signal_evidence row with a
+ * non-null job_id) into BASE_SELECT itself so every reader gets the same
+ * fields from one place, instead of duplicating the join per caller.
+ * Company-level signals (hiring_burst etc., no job-linked evidence) still
+ * resolve all four columns to null -- callers already have to handle that
+ * (export.ts's CSV writer already renders null as an empty cell; UI must
+ * do the equivalent, e.g. omit the location/source line on the card).
+ */
 export interface SignalRow {
   id: string;
   company_id: string;
@@ -40,6 +59,10 @@ export interface SignalRow {
   expires_at: string | null;
   headline: string;
   summary: string;
+  canonical_url: string | null;
+  location_mode: string | null;
+  country_code: string | null;
+  source_platform: string | null;
 }
 
 /** API-shaped signal (spec 9.2/9.3), derived from SignalRow. */
@@ -58,6 +81,10 @@ export interface SignalListItem {
   expiresAt: string | null;
   headline: string;
   summary: string;
+  canonicalUrl: string | null;
+  locationMode: string | null;
+  countryCode: string | null;
+  sourcePlatform: string | null;
 }
 
 /**
@@ -113,6 +140,10 @@ export function toListItem(row: SignalRow): SignalListItem {
     expiresAt: row.expires_at,
     headline: row.headline,
     summary: row.summary,
+    canonicalUrl: row.canonical_url,
+    locationMode: row.location_mode,
+    countryCode: row.country_code,
+    sourcePlatform: row.source_platform,
   };
 }
 
@@ -191,12 +222,40 @@ export interface ListSignalsResult {
   nextCursor: string | null;
 }
 
+// Representative-job resolution (most-recently-observed signal_evidence
+// row with a non-null job_id) shared by BASE_SELECT and
+// listSignalsForExport's own query below -- same correlated-subquery
+// shape and reasoning in both places (see listSignalsForExport's header
+// comment for the full "why a subquery, not a JOIN" rationale). Kept as
+// a standalone SQL fragment (not a function returning a query builder)
+// since both call sites just splice it into a larger FROM clause.
+const REPRESENTATIVE_JOB_JOIN = `
+  LEFT JOIN (
+    SELECT se.signal_id, se.job_id
+    FROM signal_evidence se
+    WHERE se.job_id IS NOT NULL
+      AND se.observed_at = (
+        SELECT MAX(se2.observed_at)
+        FROM signal_evidence se2
+        WHERE se2.signal_id = se.signal_id AND se2.job_id IS NOT NULL
+      )
+    GROUP BY se.signal_id
+  ) rep ON rep.signal_id = s.id
+  LEFT JOIN jobs rj ON rj.id = rep.job_id
+  LEFT JOIN sources src ON src.id = rj.source_id
+`;
+
 const BASE_SELECT = `
   SELECT s.id, s.company_id, c.slug AS company_slug, c.display_name AS company_display_name,
          s.role_category, s.signal_type, s.status, s.score, s.score_version,
-         s.first_detected_at, s.last_detected_at, s.expires_at, s.headline, s.summary
+         s.first_detected_at, s.last_detected_at, s.expires_at, s.headline, s.summary,
+         rj.canonical_url AS canonical_url,
+         rj.location_mode AS location_mode,
+         rj.country_code AS country_code,
+         src.provider AS source_platform
   FROM signals s
   JOIN companies c ON c.id = s.company_id
+  ${REPRESENTATIVE_JOB_JOIN}
 `;
 
 /**
@@ -418,35 +477,21 @@ export async function findSignalsByJobIds(
 }
 
 /**
- * Row shape for the CSV export (Milestone L.1, spec §9.2/§2.1). Extends
- * the base signal/company columns with fields from one representative
- * job -- `canonical_url`/`location_mode`/`country_code` (jobs) and
- * `source_platform` (sources.provider) -- all reached via
- * `signal_evidence`, none of which live on `signals` itself. A signal
- * can have multiple evidence rows (e.g. multiple new_job postings
- * feeding one hiring_burst signal), so "one representative job" is the
- * most-recently-observed evidence row (the latest
- * signal_evidence.observed_at with a non-null job_id), resolved via a
- * single correlated subquery (`representative_job_id`, joined once)
- * rather than a JOIN so the outer row count stays one-row-per-signal (a
- * JOIN would duplicate a signal once per evidence row, corrupting the
- * CSV's row count against what the UI's signal list shows for the same
- * filters) and rather than four separate correlated subqueries (one
- * subquery resolving the job id, then a single join, is cheaper than
- * re-running the same ORDER BY .. LIMIT 1 four times per row).
- *
- * Company-level signals (hiring_burst, role_acceleration, multi_location,
+ * Row shape for the CSV export (Milestone L.1, spec §9.2/§2.1). Was its
+ * own extension of SignalRow with four extra representative-job columns;
+ * now that the 2026-08-02 fix (see BASE_SELECT/REPRESENTATIVE_JOB_JOIN
+ * above) moved that same representative-job resolution into SignalRow
+ * itself, this is just an alias -- kept as a distinct exported name so
+ * export.ts's existing import doesn't need to change, and so a future
+ * reader searching for "export row shape" still finds it here with the
+ * historical CSV-column-mapping context below still attached. Company-
+ * level signals (hiring_burst, role_acceleration, multi_location,
  * persistent_demand -- Milestone H.4) may have every evidence row with a
  * NULL job_id (aggregate evidence, not tied to one posting), so all four
- * export columns are nullable here; the CSV writer (export.ts) renders
- * that as an empty cell, not an error.
+ * representative-job columns are nullable; the CSV writer (export.ts)
+ * renders that as an empty cell, not an error.
  */
-export interface SignalExportRow extends SignalRow {
-  canonical_url: string | null;
-  location_mode: string | null;
-  country_code: string | null;
-  source_platform: string | null;
-}
+export type SignalExportRow = SignalRow;
 
 /**
  * v1 cap per ROADMAP.md L.1: 2000 rows, documented as a v1 cap not a
@@ -487,42 +532,12 @@ export async function listSignalsForExport(
     args.push(pattern, pattern, pattern);
   }
 
-  const sql = `
-    SELECT s.id, s.company_id, c.slug AS company_slug, c.display_name AS company_display_name,
-           s.role_category, s.signal_type, s.status, s.score, s.score_version,
-           s.first_detected_at, s.last_detected_at, s.expires_at, s.headline, s.summary,
-           rj.canonical_url AS canonical_url,
-           rj.location_mode AS location_mode,
-           rj.country_code AS country_code,
-           src.provider AS source_platform
-    FROM signals s
-    JOIN companies c ON c.id = s.company_id
-    LEFT JOIN (
-      -- One row per signal_id: the evidence row(s) whose observed_at
-      -- equals that signal's own max observed_at (correlated subquery,
-      -- unambiguous per-signal_id -- not SQLite's bare-column MAX()
-      -- idiom, which only resolves to "the row with the max" when there
-      -- is exactly one group total). GROUP BY se.signal_id collapses an
-      -- exact-timestamp tie between two evidence rows for the same
-      -- signal down to one row (job_id is otherwise arbitrary among
-      -- ties, which is fine -- "representative job" doesn't require a
-      -- specific tie-break, just a stable single row per signal).
-      SELECT se.signal_id, se.job_id
-      FROM signal_evidence se
-      WHERE se.job_id IS NOT NULL
-        AND se.observed_at = (
-          SELECT MAX(se2.observed_at)
-          FROM signal_evidence se2
-          WHERE se2.signal_id = se.signal_id AND se2.job_id IS NOT NULL
-        )
-      GROUP BY se.signal_id
-    ) rep ON rep.signal_id = s.id
-    LEFT JOIN jobs rj ON rj.id = rep.job_id
-    LEFT JOIN sources src ON src.id = rj.source_id
-    WHERE ${where.join(" AND ")}
-    ORDER BY s.score DESC, s.last_detected_at DESC, s.id DESC
-    LIMIT ?
-  `;
+  // Reuses BASE_SELECT (which now includes REPRESENTATIVE_JOB_JOIN as of
+  // the 2026-08-02 fix) instead of a duplicated inline query -- was a
+  // hand-copied SELECT + JOIN block that had to be kept in sync with
+  // BASE_SELECT by hand; now there's one definition of "how a signal row
+  // resolves its representative job."
+  const sql = `${BASE_SELECT} WHERE ${where.join(" AND ")} ORDER BY s.score DESC, s.last_detected_at DESC, s.id DESC LIMIT ?`;
   const rows = await client.all<SignalExportRow>(sql, [...args, EXPORT_ROW_CAP + 1]);
 
   const truncated = rows.length > EXPORT_ROW_CAP;
@@ -594,6 +609,10 @@ export async function getSignalDetail(
         expiresAt: row.expires_at,
         headline: row.headline,
         summary: row.summary,
+        canonicalUrl: row.canonical_url,
+        locationMode: row.location_mode,
+        countryCode: row.country_code,
+        sourcePlatform: row.source_platform,
       };
     } else {
       throw err;
