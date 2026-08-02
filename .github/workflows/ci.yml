@@ -2,14 +2,19 @@
 # Milestone J CI item). Deliberately does NOT run `pnpm -r test` yet --
 # every live test suite in this repo talks to real remote Cloudflare D1
 # (packages/test-support's live-d1-client.ts / d1-remote-transport.ts,
-# per AGENTS.md's "zero mocks, zero fakes" policy), authenticated via
-# wrangler's standard CLOUDFLARE_API_TOKEN env var. That token doesn't
-# exist as a repo secret yet -- the existing CF_TOKEN secret is
-# deliberately scoped to Workers AI + Vectorize only (see
-# .env.local.example's header comment) and does NOT have D1 permissions,
-# confirmed 2026-08-02. Wiring live-D1 tests into CI is a tracked
-# follow-up once a second, D1:Edit-scoped token is minted and added as
-# a new secret (see ROADMAP.md Milestone J's CI item for the exact plan).
+# per AGENTS.md's "zero mocks, zero fakes" policy).
+#
+# Auth is no longer the blocker: the repo's CF_TOKEN was widened
+# 2026-08-02 to include D1:Edit (alongside its original Workers AI +
+# Vectorize scope, see .env.local.example's header comment) and
+# verified working as wrangler's CLOUDFLARE_API_TOKEN against
+# production D1. The remaining open question is scope/isolation, not
+# credentials: every live suite here writes real rows to the same
+# production `hiring-signals` database this app actually serves from,
+# and some suites alone run 500-1500s+ against real Cloudflare
+# infrastructure. Wiring `pnpm -r test` into this workflow is a
+# deliberate, tracked follow-up (see ROADMAP.md Milestone J's CI item)
+# pending a decision on test-DB isolation -- not an oversight.
 name: CI
 
 on:

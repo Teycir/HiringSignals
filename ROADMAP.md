@@ -402,19 +402,33 @@ exceptions.
     `packageManager` field), `pnpm install --frozen-lockfile`, then
     `pnpm -r typecheck` and `pnpm -r lint`. Triggers on push/PR to
     `main`.
-  - Deliberately does NOT run `pnpm -r test` yet. Checked (2026-08-02):
-    the existing `CF_TOKEN` GitHub secret is scoped to Workers AI +
-    Vectorize only (confirmed with the repo owner), matching
-    `.env.local.example`'s own documented scope — it does not have D1
-    permissions. Locally, D1 access instead piggybacks on wrangler's
-    browser-login session (no script-visible secret), which doesn't
-    exist in a CI runner. Wrangler's own non-interactive auth path is
-    the standard `CLOUDFLARE_API_TOKEN` env var (different from this
-    repo's app-level `CF_TOKEN`) — needs a **second**, `D1: Edit`-only
-    scoped token minted and added as a new secret before `pnpm -r test`
-    (every live suite in this repo talks to real remote D1 per
-    AGENTS.md's zero-mocks policy) can run in CI. Tracked as a
-    follow-up below, not done today.
+  - Deliberately does NOT run `pnpm -r test` yet, and this is now a
+    two-part status rather than one blocker:
+    - **Auth: resolved 2026-08-02.** Originally the `CF_TOKEN` GitHub
+      secret was scoped to Workers AI + Vectorize only (confirmed with
+      the repo owner), matching `.env.local.example`'s then-current
+      documented scope. Rather than mint a second token, the repo
+      owner widened `CF_TOKEN` itself in the Cloudflare dashboard to
+      add `D1: Edit` (same token value, broader permissions — no
+      GitHub secret rotation needed). Verified locally: exporting
+      `CF_TOKEN`'s value as `CLOUDFLARE_API_TOKEN` (wrangler's standard
+      non-interactive auth env var, distinct name from this repo's
+      `CF_TOKEN`) and running a real `wrangler d1 execute hiring-signals
+      --remote --json --command "SELECT 1"` succeeded against
+      production D1. `.env.local.example`'s header comment updated to
+      match the widened scope.
+    - **Wiring: deliberately deferred, repo owner's call.** Even with
+      auth solved, every live suite here (`packages/db/test/*.test.ts`,
+      `apps/api/test/jobs/*.test.ts`) writes real rows to the same
+      production `hiring-signals` D1 this app actually serves from
+      (test-prefixed slugs + `afterEach`/`try`-`finally` cleanup, but
+      a cancelled/timed-out CI run could still leave orphans), runs
+      500–1500+s total (Milestone J's own ingest-consumer.test.ts
+      timing notes), and would hit live Cloudflare AI/Vectorize/D1
+      quotas on every push/PR. Explicitly discussed and deferred
+      2026-08-02 — not an oversight. See follow-up below for the real
+      remaining decision (isolated test DB vs. accepted shared-DB
+      risk) before wiring `pnpm -r test` in.
   - Verified locally by reproducing the exact workflow steps under
     `nvm use 24.18.0`: `pnpm -r typecheck` — clean, exit 0, all 6
     workspaces. `pnpm -r lint` — clean, exit 0 (5 pre-existing
@@ -426,17 +440,19 @@ exceptions.
     would have made this workflow red on its first run — confirmed
     unreferenced anywhere else in the repo before removing.
 
-- [ ] **Follow-up: wire `pnpm -r test` into CI** — mint a second
-      Cloudflare API token scoped to `D1: Edit` only (same account),
-      add as a new GitHub secret (name TBD — must not collide with the
-      existing AI/Vectorize-scoped `CF_TOKEN`), export it as
-      `CLOUDFLARE_API_TOKEN` in the workflow (wrangler's standard
-      non-interactive auth env var) so `wrangler d1 execute --remote`
-      calls in `packages/test-support`'s live-D1 transport succeed
-      unattended. Add a `test` job/step once that secret exists;
-      expect long runtimes (some suites here run 500–1500s against
-      real Cloudflare infrastructure per Milestone J's notes) — budget
-      CI timeout accordingly.
+- [ ] **Follow-up: wire `pnpm -r test` into CI** — auth is no longer
+      the blocker (see above); the open decision is scope/isolation.
+      Options to weigh before implementing: (a) accept the shared-
+      production-D1 risk as-is, relying on existing test cleanup
+      discipline; (b) provision a genuinely separate D1 database for
+      CI (new `wrangler.toml` env or a second database binding) so a
+      bad CI run can never touch real data; (c) run only a fast subset
+      in CI (e.g. `packages/domain`'s pure-logic tests, which need no
+      live D1 at all) and leave the full live suite as a manual/
+      pre-release check. Whichever is chosen, budget CI
+      `timeout-minutes` generously (some suites alone run 500–1500s+
+      against real Cloudflare infrastructure) and export
+      `CLOUDFLARE_API_TOKEN: ${{ secrets.CF_TOKEN }}` in the job env.
 
 - [x] Update AGENTS.md policy section's "Follow-up, tracked, not done
       today" note once `ingest-consumer.test.ts` lands too. Done
