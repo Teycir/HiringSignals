@@ -395,61 +395,82 @@ exceptions.
       `pnpm --filter @hiring-signals/api typecheck` clean; full test
       run exit code 0.
 
-- [x] **CI workflow — typecheck + lint** ✅ 2026-08-02
-      (`.github/workflows/ci.yml`)
+- [x] **CI workflow — typecheck + lint + fast pure-logic tests** ✅
+      2026-08-02 (`.github/workflows/ci.yml`)
   - `.github/workflows/ci.yml` added: Node pinned via `.nvmrc`
     (24.18.0), pnpm pinned to `11.17.0` (matches `package.json`'s
     `packageManager` field), `pnpm install --frozen-lockfile`, then
-    `pnpm -r typecheck` and `pnpm -r lint`. Triggers on push/PR to
-    `main`.
-  - Deliberately does NOT run `pnpm -r test` yet, and this is now a
-    two-part status rather than one blocker:
-    - **Auth: resolved 2026-08-02.** Originally the `CF_TOKEN` GitHub
-      secret was scoped to Workers AI + Vectorize only (confirmed with
-      the repo owner), matching `.env.local.example`'s then-current
-      documented scope. Rather than mint a second token, the repo
-      owner widened `CF_TOKEN` itself in the Cloudflare dashboard to
-      add `D1: Edit` (same token value, broader permissions — no
-      GitHub secret rotation needed). Verified locally: exporting
-      `CF_TOKEN`'s value as `CLOUDFLARE_API_TOKEN` (wrangler's standard
-      non-interactive auth env var, distinct name from this repo's
-      `CF_TOKEN`) and running a real `wrangler d1 execute hiring-signals
-      --remote --json --command "SELECT 1"` succeeded against
-      production D1. `.env.local.example`'s header comment updated to
-      match the widened scope.
-    - **Wiring: deliberately deferred, repo owner's call.** Even with
-      auth solved, every live suite here (`packages/db/test/*.test.ts`,
-      `apps/api/test/jobs/*.test.ts`) writes real rows to the same
-      production `hiring-signals` D1 this app actually serves from
-      (test-prefixed slugs + `afterEach`/`try`-`finally` cleanup, but
-      a cancelled/timed-out CI run could still leave orphans), runs
-      500–1500+s total (Milestone J's own ingest-consumer.test.ts
-      timing notes), and would hit live Cloudflare AI/Vectorize/D1
-      quotas on every push/PR. Explicitly discussed and deferred
-      2026-08-02 — not an oversight. See follow-up below for the real
-      remaining decision (isolated test DB vs. accepted shared-DB
-      risk) before wiring `pnpm -r test` in.
+    `pnpm -r typecheck`, `pnpm -r lint`,
+    `pnpm --filter @hiring-signals/domain test`,
+    `pnpm --filter @hiring-signals/adapters test`. Triggers on
+    push/PR to `main`. One job, one runner, no duplicated setup steps.
+  - **Scope deliberately targeted, not `pnpm -r test`** — explicit
+    repo-owner decision 2026-08-02: this is a large, actively-growing
+    monorepo maintained solo, so CI needs to stay fast and cheap
+    enough to actually run on every push rather than become something
+    to avoid triggering. `packages/domain` (zero `@hiring-signals/*`
+    dependency at all) and `packages/adapters` (depends only on
+    `domain`) are pure logic — no live D1/AI/Vectorize, no secrets,
+    fixture-driven — confirmed via both packages' own `package.json`
+    dependency lists before wiring them in. Real numbers from a local
+    dry run reproducing the exact workflow steps: 70/70 domain tests +
+    114/114 adapter tests, combined test time ~4s, full four-step
+    sequence (typecheck+lint+both test suites) ~45s wall time
+    end-to-end including `pnpm install` overhead. This is the
+    "targeted, not 100%-of-tests-every-time" tier — catches real
+    regressions in classification, lifecycle, scoring, and every ATS
+    adapter's `normalize()` logic, on every commit, for free.
+  - `packages/db` and `apps/api`'s live-D1 suites (the slow,
+    infrastructure-dependent tier) are explicitly OUT of automatic CI.
+    Auth for running them manually is resolved (see below), but
+    running them on every push was discussed directly with the repo
+    owner and declined: they write real rows to the same production
+    `hiring-signals` D1 this app serves from (test-prefixed slugs +
+    cleanup, but a cancelled/timed-out run could still leave orphans),
+    run 500–1500+s total (Milestone J's own timing notes), and would
+    burn live Cloudflare AI/Vectorize/D1 quota on every commit — cost
+    disproportionate to a solo contributor's actual CI needs. Run
+    these manually/locally (`pnpm --filter @hiring-signals/db test`,
+    etc., see AGENTS.md) before something like a release, not
+    continuously.
+  - **Auth resolved 2026-08-02** (relevant to running the live-D1
+    suites manually, and to any future CI tier that does need them):
+    the repo owner widened the existing `CF_TOKEN` in the Cloudflare
+    dashboard to add `D1: Edit` alongside its original Workers AI +
+    Vectorize scope (same token value, broader permissions — no
+    GitHub secret rotation needed). Verified locally: exporting
+    `CF_TOKEN`'s value as `CLOUDFLARE_API_TOKEN` (wrangler's standard
+    non-interactive auth env var, distinct name from this repo's
+    `CF_TOKEN`) and running a real `wrangler d1 execute hiring-signals
+    --remote --json --command "SELECT 1"` succeeded against
+    production D1. `.env.local.example`'s header comment updated to
+    match.
   - Verified locally by reproducing the exact workflow steps under
-    `nvm use 24.18.0`: `pnpm -r typecheck` — clean, exit 0, all 6
-    workspaces. `pnpm -r lint` — clean, exit 0 (5 pre-existing
-    warnings in `test-support`/`apps/api`, 0 errors) after deleting 5
-    tracked-but-unused one-off live-D1 debugging scratch scripts from
-    `packages/db` (`check_group.mjs`, `check_orphans.mjs`,
-    `check_query.mjs`, `cleanup_debug.mjs`, `debug-still-active.mjs`)
-    that were failing lint with `no-undef` on bare `console` calls and
-    would have made this workflow red on its first run — confirmed
-    unreferenced anywhere else in the repo before removing.
+    `nvm use 24.18.0` (all four steps, one shot, exit 0): `pnpm -r
+    typecheck` clean across 6/6 workspaces; `pnpm -r lint` clean (5
+    pre-existing warnings, 0 errors) after deleting 5 tracked-but-
+    unused one-off live-D1 debugging scratch scripts from `packages/db`
+    (`check_group.mjs`, `check_orphans.mjs`, `check_query.mjs`,
+    `cleanup_debug.mjs`, `debug-still-active.mjs`) that were failing
+    lint with `no-undef` on bare `console` calls and would have made
+    this workflow red on its first run — confirmed unreferenced
+    anywhere else in the repo before removing; `packages/domain test`
+    70/70 passing; `packages/adapters test` 114/114 passing.
 
-- [ ] **Follow-up: wire `pnpm -r test` into CI** — auth is no longer
-      the blocker (see above); the open decision is scope/isolation.
-      Options to weigh before implementing: (a) accept the shared-
-      production-D1 risk as-is, relying on existing test cleanup
-      discipline; (b) provision a genuinely separate D1 database for
-      CI (new `wrangler.toml` env or a second database binding) so a
-      bad CI run can never touch real data; (c) run only a fast subset
-      in CI (e.g. `packages/domain`'s pure-logic tests, which need no
-      live D1 at all) and leave the full live suite as a manual/
-      pre-release check. Whichever is chosen, budget CI
+- [ ] **Follow-up: live-D1 suites in CI, if ever wanted** — not
+      currently planned given the cost/risk tradeoff above (the fast
+      pure-logic subset — option (c) below — is what actually shipped
+      2026-08-02), but if priorities change (e.g. a pre-release gate,
+      or a nightly/manual-dispatch job rather than every push), the
+      real open decision is scope/isolation, not auth (already
+      solved). Options: (a) accept the shared-production-D1 risk
+      as-is, relying on existing test cleanup discipline; (b)
+      provision a genuinely separate D1 database for CI (new
+      `wrangler.toml` env or a second database binding) so a bad CI
+      run can never touch real data; (c) *(shipped, current state)*
+      run only the fast pure-logic subset automatically and treat the
+      full live suite as a manual/pre-release check. Whichever of
+      (a)/(b) is chosen if this gets revisited, budget CI
       `timeout-minutes` generously (some suites alone run 500–1500s+
       against real Cloudflare infrastructure) and export
       `CLOUDFLARE_API_TOKEN: ${{ secrets.CF_TOKEN }}` in the job env.

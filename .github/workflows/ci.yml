@@ -1,20 +1,33 @@
-# CI: typecheck + lint across every workspace package (ROADMAP.md
-# Milestone J CI item). Deliberately does NOT run `pnpm -r test` yet --
-# every live test suite in this repo talks to real remote Cloudflare D1
-# (packages/test-support's live-d1-client.ts / d1-remote-transport.ts,
-# per AGENTS.md's "zero mocks, zero fakes" policy).
+# CI: typecheck + lint across every workspace package, plus fast
+# pure-logic tests (packages/domain, packages/adapters) on every
+# push/PR (ROADMAP.md Milestone J CI item). Deliberately does NOT run
+# the live-D1 suites (packages/db, apps/api) here -- every one of those
+# talks to real remote Cloudflare D1 (packages/test-support's
+# live-d1-client.ts / d1-remote-transport.ts, per AGENTS.md's "zero
+# mocks, zero fakes" policy), writes real rows to the same production
+# `hiring-signals` database this app actually serves from, and some
+# suites alone run 500-1500s+ against real Cloudflare infrastructure.
+# For a solo-maintainer project that value doesn't justify that cost
+# and risk on every commit -- explicitly discussed and decided
+# 2026-08-02, not an oversight. Run those manually/locally
+# (`pnpm --filter @hiring-signals/db test`, etc., see AGENTS.md) when
+# you actually want that confidence, e.g. before a release.
 #
-# Auth is no longer the blocker: the repo's CF_TOKEN was widened
-# 2026-08-02 to include D1:Edit (alongside its original Workers AI +
-# Vectorize scope, see .env.local.example's header comment) and
-# verified working as wrangler's CLOUDFLARE_API_TOKEN against
-# production D1. The remaining open question is scope/isolation, not
-# credentials: every live suite here writes real rows to the same
-# production `hiring-signals` database this app actually serves from,
-# and some suites alone run 500-1500s+ against real Cloudflare
-# infrastructure. Wiring `pnpm -r test` into this workflow is a
-# deliberate, tracked follow-up (see ROADMAP.md Milestone J's CI item)
-# pending a decision on test-DB isolation -- not an oversight.
+# packages/domain and packages/adapters are the safe, fast exception:
+# both are pure logic with zero @hiring-signals/test-support or live-D1
+# dependency (confirmed via their package.json dependency lists,
+# 2026-08-02) -- domain has none of this repo's own packages as a
+# dependency at all, adapters depends only on domain. Their vitest
+# suites run in seconds against fixtures/pure functions, so they cost
+# nothing extra to run on every push and catch real regressions in
+# classification, lifecycle, scoring, and every ATS adapter's
+# normalize() logic before merge.
+#
+# Auth for the live-D1 suites (when run manually) is no longer a
+# blocker either way: the repo's CF_TOKEN was widened 2026-08-02 to
+# include D1:Edit (alongside its original Workers AI + Vectorize
+# scope, see .env.local.example's header comment) and verified working
+# as wrangler's CLOUDFLARE_API_TOKEN against production D1.
 name: CI
 
 on:
@@ -24,7 +37,7 @@ on:
     branches: [main]
 
 jobs:
-  typecheck-and-lint:
+  fast-checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,3 +64,12 @@ jobs:
 
       - name: Lint (all workspaces)
         run: pnpm -r lint
+
+      # Pure-logic suites only -- no live D1/AI/Vectorize, no secrets
+      # needed, runs in seconds. See the header comment above for why
+      # packages/db and apps/api's live-D1 suites are NOT run here.
+      - name: Test (packages/domain)
+        run: pnpm --filter @hiring-signals/domain test
+
+      - name: Test (packages/adapters)
+        run: pnpm --filter @hiring-signals/adapters test
