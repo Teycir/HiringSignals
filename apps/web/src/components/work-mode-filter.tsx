@@ -3,17 +3,11 @@
 import { locationModeSchema } from "@hiring-signals/domain";
 import type { LocationMode } from "@hiring-signals/domain";
 import type { Facets } from "@hiring-signals/db/src/types";
+import { LOCATION_MODE_LABELS } from "@/lib/labels";
 import { Button } from "./ui/button";
 import { DataLabel } from "./ui/data-label";
 
 const LOCATION_MODES = locationModeSchema.options;
-
-const LOCATION_MODE_LABELS: Record<LocationMode, string> = {
-  remote: "Remote",
-  hybrid: "Hybrid",
-  onsite: "Onsite",
-  unknown: "Unknown",
-};
 
 interface WorkModeFilterProps {
   /** Single-select (unlike role-filter's multi-select): FilterState.

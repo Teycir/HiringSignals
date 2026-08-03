@@ -2,30 +2,9 @@
 
 import { ROLE_CATEGORIES, type RoleCategory } from "@hiring-signals/domain";
 import type { Facets } from "@hiring-signals/db/src/types";
+import { ROLE_LABELS } from "@/lib/labels";
 import { Checkbox } from "./ui/checkbox";
 import { DataLabel } from "./ui/data-label";
-
-/**
- * Human-readable labels for the canonical P0 role taxonomy (spec 6.1).
- * No display-label mapping exists anywhere else in the codebase yet --
- * ROLE_CATEGORIES (@hiring-signals/domain) is snake_case, machine-facing
- * only. Kept here rather than in @hiring-signals/domain since this is
- * the only place in the app that currently needs human-readable role
- * names; promote it to a shared location if a second consumer appears
- * (e.g. signal-card.tsx's role category display).
- */
-const ROLE_LABELS: Record<RoleCategory, string> = {
-  software_engineering: "Software Engineering",
-  data_engineering_analytics: "Data Engineering & Analytics",
-  cloud_platform_devops_sre: "Cloud / Platform / DevOps / SRE",
-  cybersecurity: "Cybersecurity",
-  it_support_help_desk: "IT Support / Help Desk",
-  systems_network_administration: "Systems & Network Administration",
-  qa_test_automation: "QA / Test Automation",
-  product_technical_program_management: "Product / Technical Program Mgmt",
-  erp_business_systems: "ERP / Business Systems",
-  ai_machine_learning: "AI / Machine Learning",
-};
 
 interface RoleFilterProps {
   /** Currently selected role categories (multi-select, OR within group --

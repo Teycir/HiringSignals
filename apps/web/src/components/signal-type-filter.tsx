@@ -2,18 +2,8 @@
 
 import { SIGNAL_TYPES } from "@hiring-signals/domain";
 import type { SignalType } from "@hiring-signals/domain";
+import { SIGNAL_TYPE_LABELS } from "@/lib/labels";
 import { Button } from "./ui/button";
-
-/** Display labels for signal types (spec 7.1). Same rationale as
- * role-filter.tsx's ROLE_LABELS. */
-const SIGNAL_TYPE_LABELS: Record<SignalType, string> = {
-  new_job: "New job",
-  reopened_job: "Reopened job",
-  hiring_burst: "Hiring burst",
-  role_acceleration: "Role acceleration",
-  multi_location: "Multi-location",
-  persistent_demand: "Persistent demand",
-};
 
 interface SignalTypeFilterProps {
   /** Single-select: FilterState.signalType is `SignalType | undefined`. */

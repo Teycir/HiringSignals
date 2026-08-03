@@ -3,25 +3,9 @@
 import { ATS_PROVIDERS } from "@hiring-signals/domain";
 import type { AtsProvider } from "@hiring-signals/domain";
 import type { Facets } from "@hiring-signals/db/src/types";
+import { PROVIDER_LABELS } from "@/lib/labels";
 import { Button } from "./ui/button";
 import { DataLabel } from "./ui/data-label";
-
-/** Display labels for the P0 ATS providers. Same rationale as
- * role-filter.tsx's ROLE_LABELS -- ATS_PROVIDERS is machine-facing
- * snake_case/lowercase, no display mapping exists elsewhere yet. */
-const PROVIDER_LABELS: Record<AtsProvider, string> = {
-  greenhouse: "Greenhouse",
-  lever: "Lever",
-  ashby: "Ashby",
-  smartrecruiters: "SmartRecruiters",
-  workable: "Workable",
-  recruitee: "Recruitee",
-  personio: "Personio",
-  teamtailor: "Teamtailor",
-  jazzhr: "JazzHR",
-  breezy: "Breezy",
-  bamboohr: "BambooHR",
-};
 
 interface SourceFilterProps {
   /** Single-select: FilterState.source is `AtsProvider | undefined`. */
