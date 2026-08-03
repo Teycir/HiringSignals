@@ -490,22 +490,47 @@ This is the main dashboard. Depends on F.1–F.3.
       filter changes call `router.replace`/`router.push` per spec
       §12.2 step 4 (decide replace vs push: rapid filter toggling should
       likely `replace`, not spam history).
-- [ ] `components/filter-rail.tsx` — composes role-filter,
+- [x] `components/filter-rail.tsx` — composes role-filter,
       company-combobox, score-filter, plus the P0 filters spec §10.4
       lists beyond the component-tree diagram (work mode, source
       provider, signal type, observed-since presets: 24h/7d/30d/custom).
       Filter groups compose with AND; multi-select within a group (role)
       composes with OR (spec §10.4).
-- [ ] `components/role-filter.tsx` — multi-select checkbox list, canonical
+      Done 2026-08-03: purely controlled (FilterState + one onChange),
+      takes an optional shared `facets` prop rather than each child
+      filter fetching independently. No `/signals` page exists yet to
+      own the actual fetch/URL-sync wiring or render `<FilterRail>` into
+      `AppShell`'s `filters` slot — that's the next item.
+- [x] `components/role-filter.tsx` — multi-select checkbox list, canonical
       role taxonomy from `@hiring-signals/domain`'s `roleCategorySchema`,
       counts sourced from `fetchFacets()`.
-- [ ] `components/company-combobox.tsx` — typeahead starting after 2
+- [x] `components/company-combobox.tsx` — typeahead starting after 2
       characters, ~250ms debounce (spec §12.2), searches display name/
       alias/domain, selecting sets the canonical slug in the URL as
       `company`. Single-company only in MVP (spec §10.4 — multi-company
       is P1, don't build the multi-select affordance now).
-- [ ] `components/score-filter.tsx` — 0–100 range or preset thresholds
+- [x] `components/score-filter.tsx` — 0–100 range or preset thresholds
       (spec §10.4); maps to `minScore` param.
+      Done 2026-08-03: preset threshold toggle buttons (Any/40+/60+/80+),
+      not a continuous slider — no slider primitive exists yet and every
+      other F.4 filter is discrete-choice. `aria-pressed` toggles, not
+      `role="radio"` (no roving-tabindex arrow-key support implemented).
+- [x] `components/work-mode-filter.tsx` — single-select toggle buttons
+      (remote/hybrid/onsite/unknown + Any), counts from
+      `Facets.locationModes`. Done 2026-08-03.
+- [x] `components/source-filter.tsx` — single-select toggle buttons over
+      `ATS_PROVIDERS`, counts from `Facets.sources`; only providers with
+      a nonzero facet count render as options (3 of 11 P0 providers are
+      deferred/unbuilt per Milestone list above and would otherwise be
+      permanently-empty options). Done 2026-08-03.
+- [x] `components/signal-type-filter.tsx` — single-select toggle buttons
+      over `SIGNAL_TYPES`. No facet counts: `Facets`
+      (`packages/db/src/types.ts`) has no `signalTypes` entry yet (only
+      roles/sources/locationModes are faceted) — add one first if counts
+      are wanted here. Done 2026-08-03.
+- [x] `components/since-filter.tsx` — 24h/7d/30d preset toggle buttons
+      plus a custom `YYYY-MM-DD` date input, mutually exclusive (mirrors
+      `FilterState["since"]`'s single-value shape). Done 2026-08-03.
 - [ ] `components/signal-feed.tsx` — client component, fetches via
       `fetchSignals`, cancels stale requests when filters change rapidly
       (spec §12.2 step 5 — `AbortController` keyed to the filter-state
