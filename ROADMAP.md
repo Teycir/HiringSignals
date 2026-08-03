@@ -531,12 +531,17 @@ This is the main dashboard. Depends on F.1–F.3.
 - [x] `components/since-filter.tsx` — 24h/7d/30d preset toggle buttons
       plus a custom `YYYY-MM-DD` date input, mutually exclusive (mirrors
       `FilterState["since"]`'s single-value shape). Done 2026-08-03.
-- [ ] `components/signal-feed.tsx` — client component, fetches via
+- [x] `components/signal-feed.tsx` — client component, fetches via
       `fetchSignals`, cancels stale requests when filters change rapidly
       (spec §12.2 step 5 — `AbortController` keyed to the filter-state
       dependency). Cursor-based "load more" / infinite scroll using
-      `meta.nextCursor`.
-- [ ] `components/signal-card.tsx` — spec §10.3's 9 required fields:
+      `meta.nextCursor`. Loading/error/no-match states use spec §10.6's
+      copy for the cases this component can support without server-side
+      `source_runs` context ("no data yet"/"source stale" remain open
+      F.6 work). Done 2026-08-04.
+- [x] `components/signal-card.tsx` — spec §10.3's fields #1–8 (field #9,
+      the public job-post link, is `/signals/[signalId]` detail-view
+      scope, not the card). Done 2026-08-04:
       score badge, company name (+domain if known), signal type label,
       role category + title/aggregate count, location/work mode (nullable
       — omit the line when `locationMode`/`countryCode` are null, per
