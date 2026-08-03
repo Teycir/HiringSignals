@@ -1,15 +1,9 @@
 import type { D1Client } from "./d1-client";
 
-export interface FacetCount {
-  value: string;
-  count: number;
-}
-
-export interface Facets {
-  roles: FacetCount[];
-  sources: FacetCount[];
-  locationModes: FacetCount[];
-}
+// FacetCount/Facets moved to ./types.ts so type-only consumers (apps/web)
+// don't pull in D1Client -- see that file's header comment.
+export type { FacetCount, Facets } from "./types";
+import type { Facets } from "./types";
 
 /**
  * Aggregate counts for the filter rail (spec 9.2, 10.4). Counts active

@@ -28,14 +28,10 @@ export interface CompanyRow {
   updated_at: string;
 }
 
-export interface CompanySummary {
-  id: string;
-  slug: string;
-  displayName: string;
-  domain: string | null;
-  industry: string | null;
-  employeeBand: string | null;
-}
+// CompanySummary moved to ./types.ts so type-only consumers (apps/web)
+// don't pull in D1Client -- see that file's header comment.
+export type { CompanySummary } from "./types";
+import type { CompanySummary } from "./types";
 
 function toSummary(row: CompanyRow): CompanySummary {
   return {

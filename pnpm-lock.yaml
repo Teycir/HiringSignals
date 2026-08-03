@@ -69,6 +69,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@hiring-signals/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@hiring-signals/domain':
         specifier: workspace:*
         version: link:../../packages/domain

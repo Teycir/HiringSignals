@@ -65,27 +65,12 @@ export interface SignalRow {
   source_platform: string | null;
 }
 
-/** API-shaped signal (spec 9.2/9.3), derived from SignalRow. */
-export interface SignalListItem {
-  id: string;
-  companyId: string;
-  companySlug: string;
-  companyDisplayName: string;
-  roleCategory: RoleCategory;
-  signalType: SignalType;
-  status: SignalStatus;
-  score: number;
-  scoreVersion: string;
-  firstDetectedAt: string;
-  lastDetectedAt: string;
-  expiresAt: string | null;
-  headline: string;
-  summary: string;
-  canonicalUrl: string | null;
-  locationMode: string | null;
-  countryCode: string | null;
-  sourcePlatform: string | null;
-}
+// SignalListItem/SignalDetail moved to ./types.ts (see that file's header
+// comment) so type-only consumers like apps/web don't pull in D1Client.
+// Re-exported here so existing imports of `{ SignalListItem } from
+// "./signals-repo"` (internal to this package) keep working unchanged.
+export type { SignalListItem, SignalDetail } from "./types";
+import type { SignalDetail, SignalListItem } from "./types";
 
 /**
  * Thrown when a DB row has a value outside the domain enum for a column
@@ -554,16 +539,6 @@ export interface SignalEvidenceRow {
   evidence_type: string;
   observed_at: string;
   payload_json: string;
-}
-
-export interface SignalDetail extends SignalListItem {
-  evidence: Array<{
-    id: string;
-    jobId: string | null;
-    evidenceType: string;
-    observedAt: string;
-    payload: unknown;
-  }>;
 }
 
 export async function getSignalDetail(
