@@ -1075,6 +1075,17 @@ exceptions.
       `pnpm --filter @hiring-signals/api typecheck` clean; full test
       run exit code 0.
 
+      **Update (2026-08-03):** the ~1501s/exit-0 result above no
+      longer reproduces reliably. A later run of this file (plus
+      `reconciliation.test.ts`) failed 27/32 tests, and re-running the
+      very first failing test alone still failed — pipeline execution
+      succeeded but the test's total duration (113.76s) exceeded the
+      90s `testTimeout`. Root cause and fix options are written up in
+      `AGENTS.md`, in the dated note right after Milestone J's "two
+      tracked items remain open" follow-up list, rather than duplicated
+      here. Not re-closing this checkbox since the original migration/exit-0
+      claim is what's now unverified, not the migration work itself.
+
 - [x] **CI workflow — typecheck + lint + fast pure-logic tests** ✅
       2026-08-02 (`.github/workflows/ci.yml`)
   - `.github/workflows/ci.yml` added: Node pinned via `.nvmrc`

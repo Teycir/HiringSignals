@@ -170,21 +170,45 @@ neither blocking use of the migrated suite:
 See ROADMAP.md Milestone J for the full list with per-item detail.
 
 **Observed (2026-08-03): the "concurrency risk accepted, not
-mitigated" clause above materialized for real, not just hypothetically.**
+mitigated" clause above materialized for real, not just hypothetically
+-- and one distinct, separate problem was found alongside it.**
+
 Running `pnpm -r test` for the whole workspace produced 2 failures in
 `packages/db` (`company-role-stats-repo.test.ts`'s
 `distinctLocationCount` assertion, and `jobs-repo.test.ts`'s
-`getDetectionLatencyStats` p50/p95 test timing out at 90s) plus similar
-transient timeouts/FK-constraint races in `apps/api`'s
-`ingest-consumer`/`reconciliation` suites. Re-running each failing test
-in isolation (`npx vitest run <file> -t "<name>"`) passed cleanly every
-time, confirming these are concurrency-under-load artifacts against the
-shared live D1 instance (many test files' overlapping inserts/deletes/
-reads), not real regressions in the code under test. Per the decision
-above, this is accepted and not being mitigated (no serialization, no
-vitest concurrency changes) — noting it here only so a future full-suite
-failure is triaged as "rerun in isolation first" before "bisect for a
-regression."
+`getDetectionLatencyStats` p50/p95 test timing out at 90s). Re-running
+each in isolation (`npx vitest run <file> -t "<name>"`) passed cleanly
+both times, confirming these were concurrency-under-load artifacts
+against the shared live D1 instance, not regressions. This part is
+accepted per the decision above and not being mitigated.
+
+**`apps/api`'s `ingest-consumer`/`reconciliation` suites are a
+different, worse case: mostly NOT flaky, genuinely too slow for their
+own 90s budget even alone.** A full concurrent run failed 27 of 32
+tests in these two files. Re-running the very first failure
+(`handleIngestMessage - happy path > runs the full pipeline...`) in
+complete isolation still failed: the pipeline itself succeeded
+(logged `ingest_success`), but the test — pipeline run plus read-back
+assertions — took 113.76s against the 90s `testTimeout`
+(`apps/api/vitest.config.ts`), throwing a `CircuitBreakerError('TIMEOUT')`
+on top. The pipeline call alone consumed 64.7s of that: `vitest.config.ts`'s
+own header already documents each live-D1 call costing ~3.7s, almost
+entirely `npx wrangler` cold-start, not the D1 round trip -- and
+`handleIngestMessage`'s full path (upsert → observation → lifecycle →
+classify → score → signal → evidence) makes enough sequential D1 calls
+for that per-call overhead to compound past the 90s ceiling on its own,
+with no concurrency involved. **Not yet fixed.** Options for a future
+session, cheapest first: raise `testTimeout` for this file specifically
+(a config change, not a speed fix); batch/parallelize the pipeline's D1
+calls where they don't have a true dependency order; or replace the
+per-call `npx wrangler` spawn with a single long-lived process per test
+run to amortize the cold-start cost (would touch
+`packages/test-support`'s `d1-remote-transport.ts`, shared by
+`packages/db` too, so needs care). Until resolved: treat a full
+concurrent `pnpm -r test` failure in `packages/db` as a rerun-first
+signal per the paragraph above, but treat any failure in
+`ingest-consumer.test.ts`/`reconciliation.test.ts` as a genuine timeout
+to investigate, not assumed flakiness — isolation does not clear it.
 
 ---
 
