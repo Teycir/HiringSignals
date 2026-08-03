@@ -277,20 +277,677 @@ AnimatedTagline, DecryptedText ports). `three` is explicitly NOT needed
 (ParticleBackground rejected). Install when F actually starts, check
 React 19 compatibility first.
 
-Not detailed task-by-task here yet beyond the animation-reuse decision
-— expand into same level of detail before starting; don't start UI work
-directly off spec references.
+### Sequencing
+
+F.1–F.3 (shell/tokens/primitives) must land before F.4 (feed) or F.5
+(detail) — every later task renders inside the app-shell using the F.2
+tokens and F.3 primitives. F.4 and F.5 can proceed in parallel once F.3
+is done. F.6 (empty/loading/error) threads through F.4/F.5 rather than
+following them, so build it alongside, not after. F.7 (a11y+responsive
+pass) is last because it audits everything built in F.1–F.6.
+
+I.4 (Search UI, Milestone I) explicitly slots in after F.4 exists — the
+search bar and filter-URL-param wiring built here are exactly what I.4
+needs; I.4 must not duplicate F.4's URL-state logic.
+
+### F.1 — Project setup (`apps/web`)
+
+Spec §12.1.
+
+- [x] **Install `framer-motion`** — ✅ done 2026-08-03. Installed
+      `framer-motion@^12.43.0` (resolved `12.43.0`), not the `^11.x`
+      line ArxivExplorer's source components were originally written
+      against — checked first: `framer-motion` v12 has full official
+      React 19 support (confirmed via the package's own docs/changelog),
+      and the package has since been renamed upstream to `motion`
+      (`motion/react` import path) with `framer-motion` kept as a
+      compat-named alias pointing at the same v12 code. Ported
+      components (F.3's Card/ScrollProgress/AnimatedTagline) can keep
+      `from "framer-motion"` imports unchanged for now; migrating to
+      `motion/react` is a low-priority future cleanup, not required for
+      F. `pnpm peers check` showed one unrelated pre-existing warning
+      (`@cloudflare/workers-types` vs. `wrangler`'s wanted range,
+      nothing to do with `framer-motion`/React 19). Verified:
+      `pnpm --filter @hiring-signals/web typecheck`/`lint` clean with
+      the dependency installed.
+- [x] **CSP** — ✅ already done; landed as part of Milestone G.2 (backend
+      hardening pass, 2026-08-03), not duplicated here.
+      `next.config.ts`'s `headers()` function sets
+      `Content-Security-Policy` (scoped to `'self'` +
+      `NEXT_PUBLIC_API_BASE_URL` for `connect-src`), plus
+      `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`.
+      See Milestone G.2 for the full rationale/verification.
+- [x] **`next/image` remote-pattern allow-list** — ✅ confirmed no-op,
+      2026-08-03. `next.config.ts` has no `images.remotePatterns` block
+      — correct, since nothing in the current data model serves company
+      logos or other remote images yet. Revisit only if/when a future
+      milestone actually needs `next/image` with a remote host (also
+      flagged in G.2's dependency-audit baseline re: the `sharp`
+      finding — that code path stays unexercised until this changes).
+- [x] Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint` clean
+      after dependency changes — confirmed 2026-08-03.
+
+### F.2 — Design tokens + global styles (spec §11.2, §11.3)
+
+- [ ] Replace `globals.css` (currently default Next.js starter, includes
+      `dark:` variants the spec doesn't call for — product is strict
+      black/white, no dark-mode toggle) with the token set from spec
+      §11.2 as CSS custom properties: `--ink`, `--paper`, `--muted`,
+      `--soft-ink`, `--accent` (`#dfff00`), `--border`, `--border-thin`,
+      `--radius: 0px`.
+  - Contrast-check `--accent` (#dfff00) against black text before
+    committing — spec §11.2 requires this explicitly; don't assume a
+    chartreuse passes AA without checking.
+- [ ] Typography: system sans-serif 700–900 weight for display/nav,
+      `ui-monospace`/`SFMono-Regular`/`Menlo`/`Monaco`/`Consolas` stack
+      for data points (score badges, timestamps, IDs). No web font load
+      unless a specific need is identified (spec §11.3 — avoid loading a
+      font merely for aesthetics).
+- [ ] Base font size 16px minimum; data labels 11–12px with adequate
+      line-height (spec §11.3).
+- [ ] Focus style: 3px solid black outline with offset, applied globally
+      via `:focus-visible` (spec §11.5) — this must exist before any
+      interactive component is built, not retrofitted in F.7.
+- [ ] `prefers-reduced-motion` global guard: all framer-motion entrance/
+      hover animations must respect it (spec §11.5); transitions under
+      150ms. Establish the pattern here (e.g. a `useReducedMotion` hook
+      wrapper) so every later port (F.3 Card, ScrollProgress,
+      AnimatedTagline) uses it from the start instead of needing a
+      follow-up pass.
+- [x] Verify: render the token sheet in a throwaway page, eyeball against
+      spec §10.2's ASCII mockup — hard borders, no shadow, no radius.
+      Done 2026-08-03: `page.tsx` was still 100% create-next-app
+      boilerplate (zinc palette, dark: variants, Vercel branding) —
+      F.2's token work in globals.css/layout.tsx had never actually been
+      exercised by any rendered markup. Replaced with a minimal, clearly
+      marked TEMPORARY showcase (removed wholesale by F.3). Playwright
+      screenshot confirmed: pure white/black paper/ink, chartreuse CTA
+      with black text per the WCAG-checked pairing, sharp 0px-radius
+      borders, `.data-label` monospace rendering correctly. No dark-mode
+      flicker, no starter branding.
+
+  **Bug found + fixed during this verification:** G.2's strict
+  `script-src 'self'` CSP (next.config.ts) broke `next dev` itself —
+  Turbopack's inline HMR bootstrap scripts and React's dev-mode
+  `eval()` (stack-trace reconstruction) were both blocked, cascading
+  into a client `InvariantError` that broke the dev app entirely (7
+  console errors on load). Fixed by making the CSP a function of
+  Next's build `phase` (`PHASE_DEVELOPMENT_SERVER` from
+  `next/constants`) rather than `process.env.NODE_ENV` — this
+  machine's shell has `NODE_ENV=production` set ambiently even under
+  `next dev` (Next.js itself warns about this), so an env-based check
+  would have silently shipped the strict prod CSP under dev and
+  reintroduced the exact breakage. `'unsafe-inline'` and `'unsafe-eval'`
+  are now scoped to `PHASE_DEVELOPMENT_SERVER` only.
+  Verified end-to-end: fresh-tab dev load → 0 console errors;
+  `pnpm typecheck`/`lint` → clean; `next build` → succeeds; `next
+  start` (production phase) → confirmed strict `script-src 'self'`
+  ships with no unsafe directives, dev relaxation does not leak into
+  prod.
+
+### F.3 — Base primitives + layout shell (spec §12.3, §11.4)
+
+Build `components/ui/` first (leaf nodes), then the shell that composes
+them. Every component below is new code — nothing in `apps/web/src`
+exists yet beyond the Next.js starter.
+
+- [x] `components/ui/button.tsx` — rectangular, black border, bold
+      uppercase; primary variant chartreuse fill; hover inverts fg/bg
+      (spec §11.4 table). Keyboard-operable, visible focus.
+      Done 2026-08-03: native `<button>` for free keyboard support +
+      F.2's global `:focus-visible` outline; `primary`/`secondary`
+      variants, primary inverts to black-on-chartreuse on hover matching
+      the WCAG-checked pairing from F.2.
+- [x] `components/ui/input.tsx` — white bg, 2px black border, square
+      corners, explicit `<label>` above (not placeholder-as-label).
+      Done 2026-08-03: `label` is a required prop (not optional
+      decoration), uses `useId()` so callers never have to wire
+      `htmlFor`/`id` manually.
+- [x] `components/ui/checkbox.tsx` — native or visibly custom, keyboard-
+      operable, chartreuse when selected.
+      Done 2026-08-03: native `<input type="checkbox">` restyled via
+      `accent-color` so screen readers keep the real checkbox role/state
+      rather than a fully custom div-based control.
+- [x] `components/ui/data-label.tsx` — small monospace label component
+      for score/timestamp/count display (11–12px per §11.3).
+      Done 2026-08-03: thin wrapper around F.2's `.data-label` CSS class
+      so every data-point element in F.4/F.5 goes through one component.
+- [x] `components/scroll-progress.tsx` — port `ArxivExplorer`'s
+      `ScrollProgress.tsx` near-verbatim (scroll-fraction state +
+      `scaleX` transform); restyle the bar to a 2px solid black/accent
+      line, drop the neon-red gradient. Wrap in the F.2 reduced-motion
+      guard.
+      Done 2026-08-03: ported near-verbatim (plain CSS transform via
+      inline style, no framer-motion involved in the original), added
+      the matching `.scroll-progress` CSS to globals.css (solid 2px
+      `--accent` line, fixed top, no gradient/blur).
+- [x] `components/app-shell.tsx` — top-level layout: masthead + filter
+      rail (fixed 280–320px desktop) + fluid content column (spec
+      §10.2). Mobile: filter rail collapses into a full-width `<details>`/
+      sheet control above results (spec §10.2). Semantic landmarks:
+      `header`, `nav`, `main`, `aside` (spec §11.5).
+      Done 2026-08-03: `filters` is an optional prop (no filter-rail
+      content exists until F.4) — pages without it simply don't render
+      the `<aside>`. Desktop rail is `md:w-[280px] lg:w-[320px]`; mobile
+      uses `<details>`/`<summary>` for free keyboard/a11y collapse state
+      instead of a JS-driven sheet component.
+- [x] `components/masthead.tsx` — `HIRING//SIGNALS` wordmark, last-sync
+      timestamp, `[EXPORT CSV]` button (wired to Milestone L's route in
+      F.4, stubbed/disabled here if F lands before L.1's route params
+      are threaded through). Port `AnimatedTagline.tsx`'s per-character
+      stagger-in for the wordmark only — drop color-shift/text-shadow
+      hover; guard with `prefers-reduced-motion`.
+      Done 2026-08-03: Export CSV ships `disabled` with a `title`
+      explaining why (L.1 not landed yet) rather than a dead/broken
+      link. `AnimatedTagline` ported with the neon-red glow hover
+      stripped per spec §11.1 — kept only the opacity stagger-in, hover
+      is now a plain 2px lift gated by `useReducedMotion`.
+- [x] Update `src/app/layout.tsx` to use `app-shell.tsx` instead of the
+      current bare passthrough; remove default Next.js starter content
+      from `page.tsx` (currently the create-next-app template — logo,
+      "Deploy Now" links, etc.).
+      Done 2026-08-03: `AppShell` wraps every route at the root layout
+      level (masthead/scroll-progress are global chrome); `page.tsx`
+      replaced with a minimal F.4 placeholder (previously F.2's
+      temporary token-showcase, itself replacing the original
+      create-next-app starter content).
+- [x] Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`
+      clean; manual check at 320px width and 200% zoom (spec §11.5)
+      that the shell doesn't break.
+      Done 2026-08-03: typecheck/lint clean throughout. **Bug found at
+      320px:** the masthead's single-row `flex justify-between` broke
+      down — wordmark line-wrapped mid-word ("HIRING//SI / GNALS") and
+      the timestamp/button were crushed into narrow columns. Fixed with
+      `flex-wrap` on the header plus `whitespace-nowrap` on the wordmark
+      and timestamp (added a `className` prop to `AnimatedTagline` to
+      allow this), so the layout now cleanly drops to two rows instead
+      of squeezing everything horizontally. Reverified at 320px (clean
+      two-row wrap, no overflow), at a 640×450 viewport simulating 200%
+      zoom on 1280px desktop (clean single row, no clipping), and back
+      at 1280px desktop (no regression). Zero console errors at every
+      width tested.
+
+### F.4 — Signal feed + filters (`/signals`, spec §10.2–§10.4, §12.2)
+
+This is the main dashboard. Depends on F.1–F.3.
+
+- [ ] Firm up `lib/api-client.ts`'s `unknown` response typings —
+      `fetchSignals`/`fetchSignalDetail`/`fetchFacets` currently return
+      `{ data: unknown[]; meta: Record<string, unknown> }`. Import the
+      real `SignalListItem`/`SignalDetail` shapes from
+      `@hiring-signals/db` (already a workspace dependency of
+      `apps/web`, confirm it exports these — currently only
+      `@hiring-signals/domain` is wired in `package.json`, may need
+      adding). Match `fetchSignals`' params to the live query schema
+      exactly: `roles`, `company`, `q`, `locationMode`, `country`,
+      `source`, `signalType`, `minScore`, `observedSince`, `sort`,
+      `cursor`, `limit` — `api-client.ts` is currently missing `q`,
+      `locationMode`, `country`, `source`, `signalType`.
+- [ ] `lib/searchParams.ts` (new) — parse + validate URL search params
+      into the filter state on initial render (spec §12.2 step 1), using
+      the same param names/shapes as the API's Zod schema so URL state
+      and API request state never drift. URL is the source of truth;
+      filter changes call `router.replace`/`router.push` per spec
+      §12.2 step 4 (decide replace vs push: rapid filter toggling should
+      likely `replace`, not spam history).
+- [ ] `components/filter-rail.tsx` — composes role-filter,
+      company-combobox, score-filter, plus the P0 filters spec §10.4
+      lists beyond the component-tree diagram (work mode, source
+      provider, signal type, observed-since presets: 24h/7d/30d/custom).
+      Filter groups compose with AND; multi-select within a group (role)
+      composes with OR (spec §10.4).
+- [ ] `components/role-filter.tsx` — multi-select checkbox list, canonical
+      role taxonomy from `@hiring-signals/domain`'s `roleCategorySchema`,
+      counts sourced from `fetchFacets()`.
+- [ ] `components/company-combobox.tsx` — typeahead starting after 2
+      characters, ~250ms debounce (spec §12.2), searches display name/
+      alias/domain, selecting sets the canonical slug in the URL as
+      `company`. Single-company only in MVP (spec §10.4 — multi-company
+      is P1, don't build the multi-select affordance now).
+- [ ] `components/score-filter.tsx` — 0–100 range or preset thresholds
+      (spec §10.4); maps to `minScore` param.
+- [ ] `components/signal-feed.tsx` — client component, fetches via
+      `fetchSignals`, cancels stale requests when filters change rapidly
+      (spec §12.2 step 5 — `AbortController` keyed to the filter-state
+      dependency). Cursor-based "load more" / infinite scroll using
+      `meta.nextCursor`.
+- [ ] `components/signal-card.tsx` — spec §10.3's 9 required fields:
+      score badge, company name (+domain if known), signal type label,
+      role category + title/aggregate count, location/work mode (nullable
+      — omit the line when `locationMode`/`countryCode` are null, per
+      `SignalRow`'s documented degrade for company-level signals),
+      "Observed" time (never an invented posting time — use
+      `lastDetectedAt`, not a fabricated posted-date), source platform
+      label, `VIEW EVIDENCE →` CTA linking to `/signals/[signalId]`.
+      Score block styling per §11.4: monospace, black-fill/white-text
+      normal, chartreuse-fill/black-text at score ≥ 80.
+  - Port `Card.tsx`'s hover mechanics only: `y: -3` lift, 0.18s
+    transition, corner-accent squares (4px→6px on hover, solid black
+    border, square not rounded). **Do not port** the mouse-tracking
+    radial glow/blur (`useMotionValue`/`useMotionTemplate` gradient) or
+    `backdrop-blur`/drop-shadow — spec §11.1 explicitly forbids
+    glassmorphism and drop shadows.
+- [ ] URL example round-trip test (manual or automated): spec §10.4's
+      `/signals?roles=cybersecurity,cloud_platform_devops_sre&company=acme-corp&minScore=60&since=7d`
+      loads with those filters pre-applied and results match what the
+      same params would return from `GET /api/v1/signals` directly.
+- [ ] Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`
+      clean; manual filter-combination smoke test against a running
+      `apps/api` dev server; keyboard-only navigation through filter
+      rail → feed → card CTA.
+
+### F.5 — Signal detail (`/signals/[signalId]`, spec §10.5)
+
+Depends on F.1–F.3. Can build in parallel with F.4.
+
+- [ ] `components/signal-detail.tsx` — company header + outbound domain
+      link if known, score + plain-language breakdown, exact signal
+      rule + detection time, trend block (active matching roles over 7/
+      30/90 days — check whether this needs a new API field; `SignalDetail`
+      as currently shaped doesn't carry it, may need a follow-up repo
+      function or can defer to Milestone O's timeline work if out of
+      scope for F).
+- [ ] `components/evidence-table.tsx` — job title, source, observed
+      time, location, status, public URL columns, sourced from
+      `SignalDetail.evidence[]`. Strong column headers, horizontal
+      overflow on narrow screens (spec §11.4).
+- [ ] `components/score-breakdown.tsx` — plain-language explanation of
+      the score components (R/V/A/B/Q from `computeNewJobScore`,
+      Milestone C) — not the raw formula, a legible summary.
+- [ ] `OPEN PUBLIC JOB POST ↗` link — `canonicalUrl` field, external-link
+      arrow suffix per spec §11.4's Link row. Handle `null` (company-level
+      signals with no representative job) by omitting the link, not
+      showing a dead one.
+- [ ] Data limitations note (verbatim per spec §10.5): "Based on publicly
+      available job-board information; listing status may change."
+- [ ] Copyable outreach research prompt — spec §10.5 explicitly requires
+      this to be a research *prompt*, not a fabricated personalized
+      message. Draft template text grounded only in fields already on
+      `SignalDetail` (no invented facts about the company).
+- [ ] Optional side panel on wide screens vs. direct route (spec §10.5
+      "A direct route plus optional side panel") — decide at
+      implementation time; direct route is required, side panel is the
+      enhancement.
+- [ ] Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`
+      clean; manual check that a company-level signal (null
+      canonicalUrl/locationMode/countryCode) renders without a broken
+      link or blank crash.
+
+### F.6 — Empty, loading, and error states (spec §10.6)
+
+Build alongside F.4/F.5, not after — these states are properties of the
+feed/detail components, not a separate screen.
+
+- [ ] `components/empty-state.tsx` — covers all four spec §10.6 rows:
+      first-load skeleton (dense-layout-preserving skeleton rows, not a
+      generic spinner), no-filters-match ("NO SIGNALS MATCH THIS QUERY."
+      + `RESET FILTERS` CTA that clears URL params), no-data-yet
+      (explains monitored-source scope — pull copy from spec/README, not
+      "no hiring exists"), source-stale ("Source last confirmed X ago" —
+      needs a data source; check whether `source_runs` timing is already
+      exposed via any current API response or needs a new field).
+- [ ] `components/status-line.tsx` — compact API-error panel with retry
+      action, no raw stack trace exposed to the user (spec §10.6).
+      Wraps `ApiClientError` from `api-client.ts`.
+- [ ] Verify: manually trigger each state (empty filters, API down,
+      fresh/empty DB) against a local dev API and confirm required copy
+      appears verbatim.
+
+### F.7 — Accessibility + responsive pass (spec §11.5)
+
+Last — audits everything F.1–F.6 built, not built in isolation.
+
+- [ ] WCAG 2.2 AA contrast check across all text/background pairs,
+      especially `--accent` usage (chartreuse background + black text
+      only, never chartreuse body copy on white, per §11.2).
+- [ ] Confirm every filter input has a persistent visible label (not
+      placeholder-only).
+- [ ] Confirm focus order follows visual order across app-shell → filter
+      rail → feed → card → detail.
+- [ ] Confirm no interaction relies on hover alone (evidence/actions must
+      be keyboard/touch reachable) — audit `signal-card.tsx`'s CTA and
+      any hover-revealed affordances.
+- [ ] Test at 200% zoom and 320px CSS-pixel width (spec §11.5) across
+      `/signals`, `/signals/[signalId]`, and the mobile filter-sheet
+      collapse.
+- [ ] Confirm all framer-motion animations respect
+      `prefers-reduced-motion` and stay under 150ms where non-essential
+      (spec §11.5) — re-check this wasn't lost in F.4/F.5 component
+      work even though F.2 established the pattern.
+- [ ] Verify: manual audit pass with a screen reader spot-check (landmark
+      navigation, form label announcement) plus browser DevTools
+      accessibility tree check; document any deferred issues here rather
+      than silently shipping known gaps.
 
 ---
 
 ## Milestone G — Hardening, deploy (Phase 3 remainder / Phase 4)
 
-Spec §14.1 (security controls — no auth required/wanted; app public/free
-permanently), §16.2/§16.3 (ops health + alerting on top of ops scripts),
-§18 (CI/CD), §19 (acceptance criteria).
+Spec §14 (security controls, privacy posture, legal copy), §15
+(performance/reliability targets), §16 (observability/ops), §18
+(CI/CD), §19 (acceptance criteria).
 
-Not detailed task-by-task yet — expand before starting. No auth item:
-single-tenant, public, no login, ever (spec §22 preamble).
+**Framing, confirmed by audit before writing these tasks (2026-08-03):**
+unlike Milestone F, this is not a blank slate. `apps/api` already has a
+real middleware chain (`request-id`, `client-ip`, `security-headers`,
+`freeReadTier` rate limiting, `adminAuth` with SHA-256-hashed-IP strike
+lockout), a dedicated `RAW_PAYLOADS` KV namespace with 30-day auto-expiry
+(reviewed 2026-07-30, CWE-668), and adapter fetch targets that are
+hard-coded per provider in `registry.ts`/each adapter file — not built
+from arbitrary DB input — so SSRF surface is small by construction
+already. G is mostly a **verification and gap-closing pass**, not net-new
+construction: confirm what's built actually meets each spec §14/§15/§16
+bullet, then build the specific items that audit found missing. Don't
+treat this milestone as "build security from scratch."
+
+No auth item: single-tenant, public, no login, ever (spec §22 preamble).
+
+### Sequencing
+
+G.1 (security audit) must run first — it determines which of G.2–G.5's
+sub-items are real gaps vs. already-satisfied. Don't build G.2's items
+blind; the audit in G.1 already found several are done. G.6 (CI/CD) and
+G.7 (acceptance criteria) close the milestone once G.1–G.5 land.
+
+### G.1 — Security control audit against spec §14.1 (do this first)
+
+Go through spec §14.1's bullet list one at a time and record a verified
+disposition (✅ already satisfied / ⚠️ partial / ❌ gap) for each, citing
+the actual file. Findings so far from this session's read-through
+(confirm/extend, don't retake from scratch):
+
+- [x] **"Public API routes are unauthenticated"** — ✅ confirmed.
+      `freeReadTier()` (no auth check) applied to every `/api/v1/*` read
+      route in `index.ts`; `/api/v1/admin/*` is the sole
+      secret-gated exception (`adminAuth()`, spec §13.5a).
+- [x] **"Parameterize every SQL query"** — ✅ spot-checked
+      `signals-repo.ts` — uses `?` placeholders throughout, no string
+      interpolation into SQL found in the files read this session. Full
+      sweep still worth a dedicated grep pass (see G.1 verify below)
+      rather than relying on spot checks alone before declaring this
+      item closed.
+- [x] **"Validate all external payloads"** — ✅ every adapter
+      (`greenhouse.ts` confirmed) runs the raw ATS response through a
+      Zod schema (`greenhouseBoardSchema` etc.) before use; Worker route
+      query params go through `signalsQuerySchema`/equivalents.
+- [ ] **"Escape/sanitize untrusted job descriptions; no
+      `dangerouslySetInnerHTML`"** — not yet verified. This is an
+      `apps/web` concern (rendering `content`/description fields from
+      adapters) and `apps/web` doesn't render any job descriptions yet
+      (Milestone F not started). Re-check once F.5's evidence
+      table/detail view exists — flag as a blocking check before F.5
+      ships, not just a G item.
+- [x] **"Limit outbound URL fetching to adapter-defined, allow-listed
+      hosts (SSRF)"** — ✅ effectively satisfied by construction:
+      `registry.ts`'s `ADAPTERS` map is a fixed, code-defined
+      provider→adapter lookup (not DB-driven), and each adapter
+      (`greenhouse.ts`'s `boardUrl()` confirmed) interpolates only an
+      `encodeURIComponent`-escaped `boardToken` into a hard-coded host
+      template — the host itself is never attacker/DB-controlled. Gap:
+      this guarantee isn't written down anywhere as a deliberate
+      invariant — add a one-paragraph comment to `adapter-contract.ts`
+      stating the rule explicitly ("adapters MUST hard-code their host;
+      only path segments may come from SourceConfig") so a future
+      adapter doesn't accidentally break the invariant.
+- [x] **"Set CSP, X-Content-Type-Options, Referrer-Policy,
+      Permissions-Policy"** — ✅ for `apps/api`:
+      `lib/http/security-headers.ts` sets all four on every response.
+      ❌ **gap for `apps/web`**: `next.config.ts` has zero headers
+      configuration; this is the same gap Milestone F.1 already flagged
+      independently. Track the fix in G.2, not duplicated in F — F.1
+      can link here instead of owning the implementation.
+- [ ] **"Redact authorization headers, cookies, source payload bodies
+      from logs"** — spot-checked `error-handler.ts` (clean — logs only
+      `requestId`+`message`, never raw `err` or headers) and
+      `admin-auth.ts` (logs SHA-256 IP hash, never the raw
+      `Authorization` value). Not yet a full sweep of every
+      `console.log`/`console.error`/`console.warn` call site in
+      `apps/api/src` (19+ call sites found this session, only a handful
+      inspected). Do the full sweep in G.2.
+- [ ] **"Dependency scanning + lockfiles; patch critical vulnerabilities
+      promptly"** — ⚠️ partial. `pnpm-lock.yaml` exists and is committed
+      (lockfile requirement met). ❌ **gap**: `.github/workflows/ci.yml`
+      has no `pnpm audit` (or equivalent) step — confirmed by reading
+      the workflow file this session. Real, actionable gap for G.2.
+
+- [x] **Full grep sweep for raw SQL string interpolation** — ✅ done
+      2026-08-03. Checked every template-literal-built SQL string in
+      `packages/db/src/*.ts` (regex for `` `...${...WHERE|SELECT|
+      INSERT|UPDATE|DELETE...}...` `` plus manual read of
+      `signals-repo.ts`'s `listSignals`). Pattern confirmed clean
+      throughout: `where`/`args` are built as parallel arrays —
+      `where.push("column = ?")` + `args.push(value)` — column names and
+      SQL keywords are hard-coded strings, actual values always flow
+      through `?` placeholders into `client.all(sql, args)`, never
+      spliced into the SQL text. The one template-literal-interpolated
+      piece per query is `orderBy`, which is itself a closed ternary
+      over the already-Zod-validated `sort` enum (`newest`/
+      `company_asc`/score-default) — never raw user input. LIKE-pattern
+      free-text search (`q` param) escapes `%`/`_` via
+      `escapeLikePattern()` before wrapping in wildcards. No
+      SQL-injection surface found.
+- [x] **Full sweep of every `console.*` call site in `apps/api/src`** —
+      ✅ done 2026-08-03. All 19+ call sites (across
+      `error-handler.ts`, `admin-auth.ts`, `semantic-search.ts`,
+      `signals.ts`, `reconciliation.ts`, `ingest-consumer.ts`) log only
+      structured fields: request/source/run/signal/company IDs, error
+      *names* and *messages* via an `errorMessage()`/`errorMessageSafe`
+      helper pattern — never the raw `Error` object, never request
+      headers, never raw ATS payload bodies. `admin-auth.ts` logs a
+      SHA-256 hash of the IP, never the raw `Authorization` header
+      value. No redaction gap found.
+- [x] Document final disposition of every spec §14.1 bullet — done
+      above; final tally as of 2026-08-03: 6 of 8 bullets ✅ fully
+      satisfied (unauthenticated routes, SQL parameterization, payload
+      validation, SSRF allow-listing by construction, log redaction,
+      `apps/api` security headers), 1 partial with a real gap (dependency
+      scanning — lockfile yes, CI audit step no), 1 not yet checkable
+      (job-description sanitization — blocked on Milestone F.5 existing).
+      `apps/web` CSP is a separate, already-identified gap (not one of
+      the 8 §14.1 bullets directly, but required by §12.1/§14.1
+      together). G.2 closes the two real gaps found.
+
+### G.2 — Close confirmed gaps from G.1
+
+Only build what G.1 actually found missing — don't rebuild what's
+already there.
+
+- [x] **CI dependency scanning** — ✅ done 2026-08-03. Added
+      `pnpm audit --audit-level=high || true` as a non-blocking step to
+      `.github/workflows/ci.yml`'s `fast-checks` job, after the
+      domain/adapters test steps. Warn-only (`|| true`) per the decision
+      above — ran it locally first to establish a real baseline before
+      deciding blocking-vs-warn was even the right call.
+  - **Baseline run (2026-08-03, local, `pnpm audit --audit-level=high`):**
+    13 findings (1 critical, 7 high, 5 moderate). All 13 are
+    devDependency-only or a not-yet-exercised feature, none is live
+    runtime-exposed attack surface today: `vitest` <3.2.6 (critical —
+    arbitrary file read/execute, but only when its UI server is
+    listening, which nothing in this repo's scripts/CI ever starts),
+    `vite` <=6.4.2 (transitively via vitest, dev-only), `postcss`
+    <=8.5.17 ×2 advisories (transitively via `next`'s build tooling,
+    not shipped to the browser), `brace-expansion` <1.1.18/<5.0.9 ×3
+    advisories (transitively via `eslint`'s `minimatch` chain, dev-only,
+    DoS-class not data-exposure), `sharp` <0.35.0 (via `next`'s
+    `next/image` optimizer — real runtime dependency, but Milestone F.1
+    already decided no remote image hosts are configured/used yet, so
+    this code path isn't exercised; re-flag as higher-priority the
+    moment F.1 or any later milestone actually wires up `next/image`
+    with a remote pattern).
+  - **Action taken:** none of the 13 justified blocking CI today given
+    the above; recorded here as a dated baseline so future `pnpm audit`
+    runs can be diffed against it (new findings vs. this list) rather
+    than re-triaged from zero each time. Revisit `vitest`/`sharp`
+    specifically at the next dependency-bump pass since patched
+    versions exist for both.
+- [x] **SSRF invariant documentation** — ✅ done 2026-08-03. Added the
+      explicit invariant comment to
+      `packages/adapters/src/adapter-contract.ts`'s `AtsAdapter`
+      interface doc comment, spelling out that `fetchBoard`'s request
+      host must always be a string literal in the adapter's own file,
+      never built from `SourceConfig` fields.
+- [x] **`apps/web` security headers/CSP** — ✅ done 2026-08-03 (pulled
+      forward from the item above, implemented together). Added an
+      `async headers()` function to `next.config.ts` setting
+      `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+      a locked-down `Permissions-Policy`, and a CSP
+      (`default-src 'self'`, `connect-src 'self' <NEXT_PUBLIC_API_BASE_URL>`,
+      `frame-ancestors 'none'`, etc. — `style-src` allows
+      `'unsafe-inline'` for Tailwind's runtime injection). Verified:
+      `pnpm --filter @hiring-signals/web typecheck`/`lint` both clean
+      after the change.
+- [x] Verify: re-ran G.1's SQL/log sweeps conceptually against the new
+      code — neither touched SQL or logging, no re-sweep needed. G.1's
+      disposition list updated to ✅ above with 2026-08-03 dates.
+  - **Correction (2026-08-03, found during F.2):** the CSP above as
+      originally shipped applied `script-src 'self'` unconditionally,
+      which broke `next dev` itself (Turbopack HMR + React dev-mode
+      `eval()` both blocked). Fixed to scope `'unsafe-inline'`/
+      `'unsafe-eval'` to `PHASE_DEVELOPMENT_SERVER` only, using Next's
+      `phase` argument rather than `NODE_ENV` (unreliable on this
+      machine — see F.2 for the full writeup). Production's
+      `script-src 'self'` is unchanged and reverified clean.
+
+### G.3 — Privacy posture (spec §14.2) + legal copy (spec §14.3)
+
+- [ ] Confirm no candidate-personal-data fields (names, emails, resumes)
+      are captured anywhere in the ingestion pipeline — audit
+      `packages/adapters/src/*.ts`'s Zod schemas for any field that
+      could carry personal applicant data (as opposed to organization/
+      job-post data, which is the explicitly in-scope data type per
+      §14.2). Spot-checked `greenhouseJobSchema` this session — only
+      job/org fields (title, location, department, url) — extend the
+      check to every adapter.
+- [ ] Operator-accessible source removal workflow (§14.2: "if a company
+      requests removal... disable its source and remove retained raw
+      payloads according to policy after legal review") — check whether
+      `infrastructure/scripts/update-source.mjs` already supports
+      disabling a source; if so this may already be satisfied for the
+      "disable" half. The "remove retained raw payloads" half: raw
+      payloads already auto-expire after 30 days (`raw-payload-store.ts`)
+      — confirm whether an immediate-delete-on-request path is needed
+      beyond that passive expiry, or whether 30-day auto-expiry plus
+      immediate source-disable satisfies the spec's intent as written.
+- [ ] Footer/legal copy — spec §14.3 requires this **verbatim** string
+      somewhere in the app: "Signals are derived from publicly accessible
+      job listings and may be incomplete or outdated. Verify current
+      information at the linked source before contacting an
+      organization." This is an `apps/web` UI item (Milestone F's
+      `app-shell.tsx` footer) — cross-reference: add it there when F
+      builds the shell, track completion here since it's a spec §14
+      requirement, not a design-system one.
+- [ ] Audit signal/summary copy for the forbidden phrasing spec §14.3
+      calls out ("actively buying," "in market," "budget approved") —
+      check `buildHeadline`/`buildSummary` functions (Milestone C/H/K)
+      use only the sanctioned phrasing ("public hiring signal," "matching
+      role observed," "recent posting activity").
+- [ ] Verify: grep for the three forbidden phrases across
+      `packages/domain/src` and `apps/api/src` to confirm none appear in
+      generated copy.
+
+### G.4 — Performance targets verification (spec §15)
+
+Mostly verification against already-built infrastructure (facet KV
+cache, cursor pagination, indexed queries already exist per completed
+milestones) rather than new implementation.
+
+- [ ] Measure actual p95 latency for cached facet response and
+      uncached `/api/v1/signals` query against the targets (facet <
+      250ms, uncached signals query < 800ms for 50 results) — needs a
+      populated D1 with realistic row counts, not just the 20-company
+      seed fixture. Decide whether to test against seed data (fast,
+      low-fidelity) or a larger synthetic dataset (slower to set up,
+      more representative) before treating a pass/fail as meaningful.
+- [ ] Confirm first dashboard payload stays ≤ 50 signal rows — this is
+      an `apps/web`/Milestone F.4 default `limit` concern; cross-check
+      once F.4 ships that its `fetchSignals` default matches.
+- [ ] Confirm Queues/D1 daily usage stays ≤ 85% of free-tier allowance —
+      needs real production traffic data or a synthetic load estimate
+      based on current cadence math (spec §5.2); likely not fully
+      answerable until Milestone E's adapters have been running against
+      a real source cohort for a while (ties to spec §20 Phase 4).
+- [ ] Confirm source ingestion success rate ≥ 98% and duplicate job rate
+      < 1% — both measurable now from `source_runs`/`jobs` tables against
+      real ingestion history; write a quick ops-script query (extend
+      `source-health.mjs`?) rather than a one-off manual check, so this
+      is repeatable.
+- [ ] Verify: record actual measured numbers against each spec §15
+      target in this section once measured, dated, so drift is
+      detectable later instead of a one-time unrecorded check.
+
+### G.5 — Observability: structured events + alerting (spec §16)
+
+- [ ] Audit `ingest-consumer.ts`'s structured log events against spec
+      §16.1's required field list (`request_id`, `source_id`, `provider`,
+      `run_id`, `adapter_version`, `http_status`, `duration_ms`,
+      `jobs_received`, `jobs_normalized`, `signals_created`,
+      `error_code`) — confirm every field is actually emitted, not just
+      some; note any gap.
+- [ ] `source-health.mjs` ops script — confirm it already implements
+      spec §16.2's compact table (Source/Company/Provider/Last
+      success/Next poll/Jobs/Failures/Status) and the four status
+      definitions (Healthy/Delayed/Degraded/Disabled) — this predates
+      this roadmap expansion (Milestone D), verify it matches the
+      spec table exactly rather than assuming.
+- [ ] Alerting (spec §16.3: provider-wide failure > 20%/1h, source
+      missing 24h+ beyond cadence, schema mismatch, queue retries
+      exhausted, API 5xx threshold, D1 query duration regression) — spec
+      explicitly frames this as "alert *the operator*, not user-facing
+      push" (§20 Phase 3 step 4). Given no dashboard/paging
+      infrastructure exists yet, decide the actual delivery mechanism
+      for a solo-maintainer project (e.g. a periodic ops-script run
+      that prints an alert-worthy table, vs. real push/email) before
+      building — don't assume a notification service is in scope
+      without deciding this first.
+- [ ] Verify: confirm each alert condition above is at least
+      *computable* from existing structured logs/D1 tables today, even
+      if delivery isn't automated yet — flag any condition that needs a
+      new logged field to even be computable.
+
+### G.6 — CI/CD hardening (spec §18)
+
+Spec §18 describes a 4-environment model (Local/Preview/Staging/
+Production) and a 7-step deployment sequence. Current CI
+(`.github/workflows/ci.yml`) covers typecheck/lint/fast-tests only — no
+deploy automation exists yet per this session's read of the workflow
+file.
+
+- [ ] Decide realistic environment scope for a solo-maintainer project —
+      spec's 4-tier model (with separate Preview/Staging D1 registries)
+      may be more process than a single maintainer needs; consider
+      collapsing to Local + Production with a manual smoke-test step
+      before promoting, and document that deliberate simplification here
+      (same "explicitly discussed and decided" pattern Milestone J's CI
+      scope decision used) rather than silently diverging from spec §18.
+- [ ] If any deploy automation is added: never point preview/staging at
+      production secrets or write bindings (spec §18.1) — a hard
+      constraint regardless of how simplified the environment tier
+      structure ends up.
+- [ ] Rollback readiness (spec §18.3): confirm Cloudflare Workers
+      versioned deployments are actually in use (not just theoretically
+      available) and that a rollback has been test-run at least once
+      manually, not just assumed to work.
+- [ ] Feature-flag pattern for scoring formula changes (spec §18.3) —
+      check whether `score_version`/`velocity_score_version` fields
+      (already in the schema per Milestone C/Q) are sufficient for this,
+      or whether an actual runtime flag mechanism is needed; likely
+      already sufficient given versioned fields exist — confirm rather
+      than build something new.
+
+### G.7 — Acceptance criteria sign-off (spec §19)
+
+Run this last, after G.1–G.6 and Milestone F are both complete — several
+§19 items are UI-dependent (F) and several are backend-dependent (G).
+Don't attempt this checklist until both are done; it's a joint
+sign-off, not a G-only task.
+
+- [ ] Walk every checkbox in spec §19.1 (functional), §19.2 (visual/
+      interaction), §19.3 (security/operations) and mark pass/fail with
+      a one-line note on how it was verified (manual test, automated
+      test, code audit). §19.3 items are mostly backend/G; §19.2 items
+      are entirely F; §19.1 is mixed.
+- [ ] Any failing item gets its own follow-up task here rather than
+      being silently marked "close enough."
 
 ---
 

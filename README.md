@@ -45,7 +45,7 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 - [Use Cases](#-use-cases)
 - [Tech Stack](#-tech-stack)
 - [Layout](#layout)
-- [Status](#status-2026-07-30-phases-0-1--milestones-a-e-h-i1-i2-complete--ingestion-scoring-and-reconciliation-running-dashboard-ui-and-query-side-semantic-search-not-started)
+- [Status](#status-2026-08-03-phases-0-1--milestones-a-e-h-i1-i2-complete-milestone-f-dashboard-ui-in-progress--app-shell--base-primitives-done-signal-feedfiltersdetail-not-yet-built-milestone-g-hardening-largely-audited-and-closed)
 - [Key Features](#key-features)
 - [Local dev](#local-dev)
 - [AI Agent Metadata](#ai-agent-metadata)
@@ -58,13 +58,18 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 ## Layout
 
 ```
-apps/web/        Next.js 16 UI -> Cloudflare Pages (still near-scaffold; dashboard is Milestone F)
+apps/web/        Next.js 16 UI -> Cloudflare Pages (app shell + design tokens + base
+                  primitives done [Milestone F.1-F.3]; signal feed/filters/detail
+                  still pending [F.4-F.7])
 apps/api/        Cloudflare Worker API: routes, middleware, cron scheduler,
                   queue consumer, reconciliation job, semantic-search service
 packages/domain/ Zod schemas, taxonomies, classification, lifecycle,
                   signal scoring (v2), embedding-text, search-merge logic
-packages/adapters/ AtsAdapter interface (spec 5.3); greenhouse + lever implemented,
-                  9 more P0 providers not yet built
+packages/adapters/ AtsAdapter interface (spec 5.3); 8 of 11 P0 providers built
+                  (greenhouse, lever, ashby, smartrecruiters, workable, recruitee,
+                  personio, breezy); teamtailor/jazzhr/bamboohr blocked -- no
+                  constructable unauthenticated per-company endpoint (see ROADMAP.md
+                  Milestone E)
 packages/db/     D1 client + repository functions -- read paths (signals/
                   companies/facets), write paths (sources/jobs/signals),
                   company-role activity stats
@@ -84,7 +89,7 @@ infrastructure/  D1 migrations (0001-0004 landed), ops scripts (add-source,
 - **Validation**: Zod schemas
 - **Code Quality**: ESLint, Prettier, strict TypeScript
 
-## Status (2026-07-30): Phases 0-1 + Milestones A-E, H, I.1-I.2 complete — ingestion, scoring, and reconciliation running; dashboard UI and query-side semantic search not started
+## Status (2026-08-03): Phases 0-1 + Milestones A-E, H, I.1-I.2 complete; Milestone F (dashboard UI) in progress — app shell + base primitives done, signal feed/filters/detail not yet built; Milestone G (hardening) largely audited and closed
 
 See `ROADMAP.md` for the full task-by-task breakdown; this is a summary,
 kept in sync with it rather than a competing status source.
@@ -97,17 +102,19 @@ Done:
 - **Milestone B — Classification & lifecycle:** Deterministic title/department/description classification with confidence scoring, negative-term guards, lifecycle state machine (active→possibly_closed→closed→reopened)
 - **Milestone C — Signal generation (new_job):** `computeNewJobScore`, `signals-write-repo.ts` (createSignal/refreshSignal/findActiveSignal/appendSignalEvidence)
 - **Milestone D — Scheduler, queue consumer, ops scripts:** `apps/api/src/jobs/scheduler.ts` (due-source enqueue with per-source jitter, never fetches), `apps/api/src/jobs/ingest-consumer.ts` (full fetch→validate→normalize→upsert→observe→lifecycle→classify→score→signal pipeline, idempotent per (sourceId, runId), every §13.4 failure branch handled), `infrastructure/scripts/` ops CLIs (add-source, update-source, add-company, source-health)
-- **Milestone E — Adapters:** Greenhouse and Lever, both fixture-tested with location inference and malformed-payload handling. 9 more P0 providers (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR) not yet built
+- **Milestone E — Adapters (closed):** 8 of 11 P0 providers built and fixture-tested with location inference and malformed-payload handling (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy). The remaining 3 (Teamtailor, JazzHR, BambooHR) are investigated-and-blocked, not built -- each verified against its own vendor docs to have no constructable unauthenticated per-company endpoint, and removed from the active build list (kept in the domain enum/seed data). See `ROADMAP.md` Milestone E for the per-provider verification notes.
 - **Milestone H — Signal-quality logic pass:** real Volume/Acceleration/Breadth scoring (`score_version` v2, replacing the v1 fixed-0.5 stub), company-level signal generation (`hiring_burst`, `role_acceleration`, `multi_location`, `persistent_demand` — previously typed but never created), a description-channel classification-noise fix, and a daily reconciliation job (`apps/api/src/jobs/reconciliation.ts`) that recomputes stale active signals' scores without touching `last_detected_at`
 - **Milestone I.1-I.2 — Semantic search, write path only:** `hiring-signals-jobs` Vectorize index (768-dim, cosine) + Workers AI binding provisioned; jobs are embedded and upserted into Vectorize at ingest time (`embedAndUpsertJob` in `ingest-consumer.ts`), best-effort and non-blocking (an embedding failure never fails ingestion). The query-side service (`apps/api/src/services/semantic-search.ts`) and merge logic (`packages/domain/src/signal-search-merge.ts`) are both implemented but **not yet called from `GET /api/v1/signals`** — see Milestone I.3 in `ROADMAP.md`
+- **Milestone F.1-F.3 — Dashboard app shell (closed):** `apps/web` is no longer scaffold-only. Minimal Brutalist design tokens (`--ink`/`--paper`/`--accent`/`--font-display`/`--font-mono`, WCAG-checked chartreuse-on-black) landed in `globals.css`; base UI primitives (`Button`, `Input`, `Checkbox`, `DataLabel`) and the app shell (`AppShell` + `Masthead` with a reduced-motion-gated animated wordmark, `ScrollProgress`) are built and wired into the root layout, verified at desktop/320px/200%-zoom widths. F.2's verification also caught and fixed a real bug: the strict CSP (G.2) blocked Turbopack's inline HMR scripts under `next dev`, breaking the dev client; `next.config.ts` now branches on Next's `PHASE_DEVELOPMENT_SERVER` (not `process.env.NODE_ENV`, which is non-standard on this machine) to relax `script-src` in dev only, confirmed not to leak into `next build`/`next start`. Signal feed, filters, and signal detail (F.4-F.7) are not yet built — `/` currently renders a placeholder.
+- **Milestone G.1-G.2 — Backend hardening audit:** full spec §14.1 checklist walked against `apps/api`'s actual code — SQL parameterization, SSRF allow-listing, log redaction, and security headers all confirmed solid; the two real gaps found (no CI dependency scanning, no CSP on `apps/web`) are closed (`pnpm audit` added to CI as warn-only with a dated baseline, CSP + security headers added to `apps/web`). G.3-G.7 (privacy copy, performance targets, observability, CI/CD strategy, final sign-off) not yet started.
 - **`/api/v1/admin/*` (spec §13.5a):** re-added after the earlier no-auth removal, but as a narrow, secret-bearer-token-gated set of three idempotent pipeline triggers (source-run, scheduler-flush, reconcile) — never a login a user sees, never reachable from `apps/web`, and source add/edit still lives only in the local ops scripts
 
-Test coverage: 163 tests passing workspace-wide (`pnpm -r test`; domain 70, adapters 30, db 35, api 28). `pnpm -r typecheck` and `pnpm -r lint` both clean across all 5 workspace projects (lint: 0 errors, 3 pre-existing `consistent-type-imports` warnings in test files).
+Test coverage (2026-08-03, re-verified): domain 70 and adapters 114 tests, both pure/fixture-based and fast (<2s each). `packages/db` and `apps/api` are integration-tested against a real, shared, live Cloudflare D1 database (`AGENTS.md`'s "zero mocks, zero fakes" policy) rather than an in-memory fake — `packages/db` has 72 tests (~12 min, since every test round-trips the network); `apps/api` (`ingest-consumer`, `scheduler`, `reconciliation`) is larger still and can take 20-30+ min end to end. Because these share one live database, running the full suite concurrently (`pnpm -r test`) can produce a handful of intermittent timeouts/FK-race failures under load (observed: 2/72 in `packages/db`, similar pattern in `apps/api`) — every such failure re-ran clean in isolation, so treat a lone failure on a full concurrent run as a rerun-it signal, not necessarily a regression, before treating it as a real bug. `pnpm -r typecheck` and `pnpm -r lint` are clean across all workspace projects (lint: 0 errors, 6 pre-existing warnings -- 5 `no-console` in a smoke-test script, 1 `consistent-type-imports` in a test file).
 
 Not yet done:
 
-- 9 remaining P0 ATS adapters (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR — spec §4.1/§5.3)
-- Brutalist design tokens / dashboard UI (Phase 2 / Milestone F) — `apps/web` is still the default Next.js scaffold, no real routes yet. Animation/interaction inspiration decided: reuse `ArxivExplorer`'s animation mechanics (scroll progress, card hover/lift, staggered text entrance), restyled from scratch against spec §11's Brutalist tokens, never its neon visual styling — see `ROADMAP.md` Milestone F.
+- 3 blocked P0 ATS adapters (Teamtailor, JazzHR, BambooHR — spec §4.1/§5.3): investigated and confirmed to have no constructable unauthenticated per-company endpoint; not planned unless that changes upstream
+- Dashboard signal feed, filters, and signal detail (Milestone F.4-F.7) — app shell + design tokens + base primitives (F.1-F.3) are done (see above); `/signals` feed/filter-rail, `/signals/[id]` detail, empty/loading/error states, and the accessibility pass remain. Animation/interaction approach: `ArxivExplorer`'s mechanics (scroll progress, card hover/lift, staggered text entrance) restyled from scratch against spec §11's Brutalist tokens, never its neon visual styling — see `ROADMAP.md` Milestone F.
 - Query-side hybrid search wiring + backfill script + search UI (Milestone I.3/I.4) and classification assist (I.5, deferred until I.3/I.4 ship)
 - CSV export endpoint (spec §10.6)
 - Production deployment (Cloudflare Pages + Workers)

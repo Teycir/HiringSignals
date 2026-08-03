@@ -73,3 +73,14 @@ jobs:
 
       - name: Test (packages/adapters)
         run: pnpm --filter @hiring-signals/adapters test
+
+      # Dependency vulnerability scan (ROADMAP.md Milestone G.1/G.2,
+      # spec 14.1's "use dependency scanning; patch critical
+      # vulnerabilities promptly"). Warn-only for now (`|| true`): a
+      # solo-maintainer project shouldn't have every push go red on a
+      # transitive advisory with no available fix, and the actual
+      # noise level here isn't known yet. Revisit to fail-on-critical
+      # (drop the `|| true`, or gate on `--audit-level=critical`
+      # specifically) once a baseline of real vs. noise findings exists.
+      - name: Dependency audit (non-blocking)
+        run: pnpm audit --audit-level=high || true

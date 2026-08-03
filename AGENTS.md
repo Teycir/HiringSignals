@@ -169,6 +169,23 @@ neither blocking use of the migrated suite:
 
 See ROADMAP.md Milestone J for the full list with per-item detail.
 
+**Observed (2026-08-03): the "concurrency risk accepted, not
+mitigated" clause above materialized for real, not just hypothetically.**
+Running `pnpm -r test` for the whole workspace produced 2 failures in
+`packages/db` (`company-role-stats-repo.test.ts`'s
+`distinctLocationCount` assertion, and `jobs-repo.test.ts`'s
+`getDetectionLatencyStats` p50/p95 test timing out at 90s) plus similar
+transient timeouts/FK-constraint races in `apps/api`'s
+`ingest-consumer`/`reconciliation` suites. Re-running each failing test
+in isolation (`npx vitest run <file> -t "<name>"`) passed cleanly every
+time, confirming these are concurrency-under-load artifacts against the
+shared live D1 instance (many test files' overlapping inserts/deletes/
+reads), not real regressions in the code under test. Per the decision
+above, this is accepted and not being mitigated (no serialization, no
+vitest concurrency changes) — noting it here only so a future full-suite
+failure is triaged as "rerun in isolation first" before "bisect for a
+regression."
+
 ---
 
 ## Policy: record session memory via butler MCP before ending a session
