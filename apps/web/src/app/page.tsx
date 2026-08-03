@@ -1,12 +1,17 @@
-// F.3 placeholder for the /signals dashboard (spec 10.2). AppShell
-// (masthead, scroll-progress, filter-rail scaffolding) now wraps this
-// via src/app/layout.tsx -- this page only needs to render its own
-// content column. F.4 replaces this body with the real signal-feed +
-// filter-rail composition; nothing here is meant to survive F.4.
+import { AppShell } from "@/components/app-shell";
+
+// Root ("/") placeholder. The real signal feed now lives at /signals
+// (app/signals/page.tsx, F.4) -- this page wraps itself in AppShell
+// directly (root layout no longer renders AppShell itself, see
+// layout.tsx's comment) with no `filters`, same as before.
 export default function Home() {
   return (
-    <div className="p-6">
-      <p className="text-soft-ink">Signal feed lands in Milestone F.4.</p>
-    </div>
+    <AppShell>
+      <div className="p-6">
+        <p className="text-soft-ink">
+          The signal feed lives at <a href="/signals" className="underline">/signals</a>.
+        </p>
+      </div>
+    </AppShell>
   );
 }
