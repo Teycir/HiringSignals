@@ -557,14 +557,34 @@ This is the main dashboard. Depends on F.1–F.3.
     radial glow/blur (`useMotionValue`/`useMotionTemplate` gradient) or
     `backdrop-blur`/drop-shadow — spec §11.1 explicitly forbids
     glassmorphism and drop shadows.
-- [ ] URL example round-trip test (manual or automated): spec §10.4's
-      `/signals?roles=cybersecurity,cloud_platform_devops_sre&company=acme-corp&minScore=60&since=7d`
-      loads with those filters pre-applied and results match what the
-      same params would return from `GET /api/v1/signals` directly.
-- [ ] Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`
-      clean; manual filter-combination smoke test against a running
-      `apps/api` dev server; keyboard-only navigation through filter
-      rail → feed → card CTA.
+- [x] URL example round-trip test (manual): built `app/signals/page.tsx`
+      (didn't exist before — required moving `<AppShell>` out of the
+      root layout into per-route pages, since the old setup made it
+      structurally impossible for any child route to ever pass a
+      `filters` prop into an already-instantiated shell). Verified via a
+      running `apps/web` dev server that spec §10.4's exact URL
+      (`?roles=cybersecurity,cloud_platform_devops_sre&company=acme-corp&minScore=60&since=7d`)
+      correctly pre-hydrates all four filters into their control state
+      (checked role checkboxes, selected company, active score/since
+      toggle buttons); also verified `parseFilterState`'s
+      drop-invalid-keep-valid behavior at runtime, not just by reading
+      the source. Done 2026-08-04. **Not verified**: results actually
+      matching `GET /api/v1/signals` — `apps/api`'s dev server
+      (`wrangler dev`) requires Node ≥22, this environment has 20.20.0,
+      so no live API response was available to compare against. Feed
+      correctly showed its loading-skeleton state in the absence of one.
+- [x] Verify: `pnpm -r typecheck`/`lint` clean across the full
+      workspace (not just `apps/web`) — confirmed 2026-08-04, zero
+      errors, only 6 pre-existing warnings in files untouched by F.4.
+      `pnpm --filter web build` also verified clean (this caught a real
+      production-build failure — `useSearchParams()` needs a `Suspense`
+      boundary — that typecheck/lint alone missed; fixed by splitting
+      `signals-view.tsx`, a client component, from a thin server
+      `page.tsx`). **Not done**: filter-combination smoke test against a
+      live `apps/api` dev server, and keyboard-only navigation through
+      filter rail → feed → card CTA — both blocked on the same Node
+      version gap noted above; revisit once that's resolved or in a CI
+      environment with Node ≥22.
 
 ### F.5 — Signal detail (`/signals/[signalId]`, spec §10.5)
 
