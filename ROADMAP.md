@@ -967,13 +967,18 @@ caught before it's copy-pasted into the next nine.
   - Verified: `pnpm --filter @hiring-signals/adapters typecheck`/`lint`/
     `test` clean, 13 Breezy-specific tests passing as part of the
     package's 114-test suite (re-confirmed this session).
-- [ ] `teamtailor` — blocked, see note below
-- [ ] `jazzhr` — blocked, see note below
-- [ ] `bamboohr` — unresolved, see note below
+- [x] `teamtailor` — **not building: gated, no public tier (standing
+      decision 2026-08-04).** See policy note + provider note below.
+- [x] `jazzhr` — **not building: gated, no public tier (standing
+      decision 2026-08-04).** See policy note + provider note below.
+- [ ] `bamboohr` — unverified, not gated — see note below, stays open
 
 **Status (2026-08-04): 8 of 11 P0 adapters done** (greenhouse, lever,
-ashby, smartrecruiters, workable, recruitee, personio, breezy) — only
-`teamtailor`, `jazzhr`, `bamboohr` remain. Re-verified this session:
+ashby, smartrecruiters, workable, recruitee, personio, breezy).
+`teamtailor`/`jazzhr` are resolved as standing won't-builds (gated, no
+public tier — see policy note below, not open tasks). `bamboohr` is
+the only genuinely open item in this milestone, pending live-board
+verification. Re-verified this session:
 `pnpm -r typecheck`/`lint` clean across all 6 workspace projects, zero
 errors (only the same pre-existing warnings this file already
 documents elsewhere); `pnpm --filter @hiring-signals/domain test`
@@ -985,6 +990,24 @@ still live and documented *before* writing the schema (spec §21: "Never
 invent API endpoints ... Verify source contracts first") — don't assume
 last-known-good API shapes from training data are current; check the
 provider's own developer docs.
+
+**Policy on gated providers, decided with the user 2026-08-04: do not
+force it.** If a provider's data requires an account-scoped secret
+key with no public/unauthenticated tier, that provider stays a
+documented blocker permanently, not a task to route around (no
+building against the authenticated API with a placeholder-token
+story, no scraping the rendered HTML as a substitute, no silently
+dropping the provider from the roadmap either). This repo's own value
+is a reliable pipeline over sources that *choose* to publish openly
+(spec §21's whole premise) — a provider that gates its data is a
+closed door, not a puzzle to solve, and a coverage gap here is
+strictly better than an unreliable or credential-dependent adapter
+that could break the "no secrets in source config" posture (spec
+§14.1) or silently stop working when a borrowed/scraped path changes.
+`teamtailor`/`jazzhr` below fall under this permanently — not
+"blocked for now," blocked as a standing decision. `bamboohr` is a
+different case (see its own note below): not gated, just unverified,
+so it stays open pending verification rather than closed by policy.
 
 **`teamtailor` — blocked, not a gap in effort (checked 2026-08-04).**
 Confirmed against Teamtailor's own official API docs
