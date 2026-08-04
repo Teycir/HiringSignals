@@ -590,38 +590,57 @@ This is the main dashboard. Depends on F.1–F.3.
 
 Depends on F.1–F.3. Can build in parallel with F.4.
 
-- [ ] `components/signal-detail.tsx` — company header + outbound domain
-      link if known, score + plain-language breakdown, exact signal
-      rule + detection time, trend block (active matching roles over 7/
-      30/90 days — check whether this needs a new API field; `SignalDetail`
-      as currently shaped doesn't carry it, may need a follow-up repo
-      function or can defer to Milestone O's timeline work if out of
-      scope for F).
-- [ ] `components/evidence-table.tsx` — job title, source, observed
+- [x] `components/signal-detail.tsx` — company header + source-platform
+      line (no separate company-domain field exists on `SignalDetail`,
+      see file header comment), score + plain-language breakdown, exact
+      signal rule + detection time, trend block. Trend's 7/30/90-day
+      series needs a new API field `SignalDetail` doesn't carry today —
+      confirmed via `getSignalDetail`/schema inspection, not fixed here;
+      ships an honest "not available yet" state instead of fabricated
+      numbers. Deferred to Milestone O's timeline work.
+- [x] `components/evidence-table.tsx` — job title, source, observed
       time, location, status, public URL columns, sourced from
       `SignalDetail.evidence[]`. Strong column headers, horizontal
-      overflow on narrow screens (spec §11.4).
-- [ ] `components/score-breakdown.tsx` — plain-language explanation of
-      the score components (R/V/A/B/Q from `computeNewJobScore`,
-      Milestone C) — not the raw formula, a legible summary.
-- [ ] `OPEN PUBLIC JOB POST ↗` link — `canonicalUrl` field, external-link
-      arrow suffix per spec §11.4's Link row. Handle `null` (company-level
-      signals with no representative job) by omitting the link, not
-      showing a dead one.
-- [ ] Data limitations note (verbatim per spec §10.5): "Based on publicly
+      overflow on narrow screens (spec §11.4). Required a real backend
+      fix: `getSignalDetail`'s evidence query had no join to `jobs`, only
+      a bare `job_id` — added a `LEFT JOIN jobs` in signals-repo.ts and
+      extended `SignalEvidenceRow`/`SignalDetail` types (packages/db) to
+      carry jobTitle/jobCanonicalUrl/jobLocationMode/jobCountryCode/
+      jobStatus through. Uses `title_raw` (human-facing), not
+      `title_normalized` (lowercased, classification-only) — caught via
+      live API check, not just typecheck. Every field renders an em dash
+      defensively on null rather than crashing or showing "null".
+- [x] `components/score-breakdown.tsx` — plain-language explanation of
+      the score components. R/V/A/B/Q (`computeNewJobScore`, Milestone C)
+      are computed at write time but never persisted/exposed via the API
+      — confirmed against `packages/db/src/types.ts` and the API route,
+      not assumed — so this explains what the formula weighs generically
+      rather than fabricating per-signal component numbers that don't
+      exist.
+- [x] `OPEN PUBLIC JOB POST ↗` link — `canonicalUrl` field, external-link
+      arrow suffix per spec §11.4's Link row. `{signal.canonicalUrl && (...)}`
+      omits the link entirely when null rather than showing a dead one.
+- [x] Data limitations note (verbatim per spec §10.5): "Based on publicly
       available job-board information; listing status may change."
-- [ ] Copyable outreach research prompt — spec §10.5 explicitly requires
-      this to be a research *prompt*, not a fabricated personalized
-      message. Draft template text grounded only in fields already on
-      `SignalDetail` (no invented facts about the company).
-- [ ] Optional side panel on wide screens vs. direct route (spec §10.5
-      "A direct route plus optional side panel") — decide at
-      implementation time; direct route is required, side panel is the
-      enhancement.
-- [ ] Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`
-      clean; manual check that a company-level signal (null
-      canonicalUrl/locationMode/countryCode) renders without a broken
-      link or blank crash.
+- [x] Copyable outreach research prompt — grounded only in fields already
+      on `SignalDetail` (no invented facts about the company), per spec
+      §10.5's requirement that this be a research prompt, not a
+      fabricated personalized message.
+- [x] Direct route shipped (`app/signals/[signalId]/page.tsx`); optional
+      wide-screen side panel deferred as the explicitly-optional
+      enhancement spec §10.5 allows.
+- [x] Verified: `pnpm -r typecheck`/`lint` clean across all 6 packages
+      (same 6 pre-existing warnings as before F.5, none introduced by
+      it); `pnpm --filter web build` succeeds, `/signals/[signalId]`
+      correctly shows as a dynamic route; live browser click-through
+      against seeded D1 data confirms score/evidence/trend/outreach
+      sections all render real data end-to-end with zero console errors.
+      Also found and fixed a real, separate bug while verifying: the
+      shared `apps/api/src/middleware/security-headers.ts` CORS wrapper
+      dropped its base middleware's return value, which is a Response
+      for `OPTIONS` (204, no `next()` call) — Hono saw an unfinalized
+      context and every CORS preflight 500'd. This affected all routes,
+      not just F.5; fixed by returning `baseResult` from the wrapper.
 
 ### F.6 — Empty, loading, and error states (spec §10.6)
 
