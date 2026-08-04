@@ -33,7 +33,14 @@ export function securityHeaders(): MiddlewareHandler<AppEnv> {
   const base = securityHeaders_({ allowedOrigins: ALLOWED_ORIGINS });
   return async (c, next) => {
     const origin = c.req.header("Origin");
-    await base(c, next);
+    // base() returns a Response for OPTIONS (c.body(null, 204), no next()
+    // call) and returns undefined for every other method (it calls
+    // await next() internally instead). We must propagate whatever it
+    // returns -- dropping the OPTIONS Response here left Hono's context
+    // unfinalized ("Context is not finalized. Did you forget to return a
+    // Response object or `await next()`?"), a real bug that broke every
+    // CORS preflight in local dev.
+    const baseResult = await base(c, next);
     if (ALLOW_ALL_ORIGINS && origin) {
       // Set *after* base so our per-origin reflection always wins over any
       // AC-A-O header the strict helper emitted (it only sets one for
@@ -43,5 +50,6 @@ export function securityHeaders(): MiddlewareHandler<AppEnv> {
       c.header("Vary", "Origin");
       c.header("Access-Control-Allow-Credentials", "true");
     }
+    return baseResult;
   };
 }
