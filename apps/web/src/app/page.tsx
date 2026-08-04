@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 
 // Root ("/") placeholder. The real signal feed now lives at /signals
@@ -9,7 +10,7 @@ export default function Home() {
     <AppShell>
       <div className="p-6">
         <p className="text-soft-ink">
-          The signal feed lives at <a href="/signals" className="underline">/signals</a>.
+          The signal feed lives at <Link href="/signals" className="underline">/signals</Link>.
         </p>
       </div>
     </AppShell>
