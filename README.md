@@ -45,7 +45,7 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 - [Use Cases](#-use-cases)
 - [Tech Stack](#-tech-stack)
 - [Layout](#layout)
-- [Status](#status-2026-08-03-phases-0-1--milestones-a-e-h-i1-i2-complete-milestone-f-dashboard-ui-in-progress--app-shell--base-primitives-done-signal-feedfiltersdetail-not-yet-built-milestone-g-hardening-largely-audited-and-closed)
+- [Status](#status-2026-08-04-phases-0-1--milestones-a-m-complete-except-j2-follow-ups-k2-latency-metric-l2-export-ui-button-milestone-g-hardening-largely-audited-and-closed-milestones-n-q-saved-filters-company-page-trends-velocity-not-yet-started)
 - [Key Features](#key-features)
 - [Local dev](#local-dev)
 - [AI Agent Metadata](#ai-agent-metadata)
@@ -58,11 +58,14 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 ## Layout
 
 ```
-apps/web/        Next.js 16 UI -> Cloudflare Pages (app shell + design tokens + base
-                  primitives done [Milestone F.1-F.3]; signal feed/filters/detail
-                  still pending [F.4-F.7])
+apps/web/        Next.js 16 UI -> Cloudflare Pages. Full signal feed (/signals)
+                  with filter rail, signal cards, loading/error/empty states;
+                  signal detail page (/signals/[signalId]) with evidence
+                  table, score breakdown, and trend blocks. App shell +
+                  Brutalist design tokens + base primitives all complete.
 apps/api/        Cloudflare Worker API: routes, middleware, cron scheduler,
-                  queue consumer, reconciliation job, semantic-search service
+                  queue consumer, reconciliation job, semantic-search service,
+                  CSV export route, secret-bearer-token admin triggers
 packages/domain/ Zod schemas, taxonomies, classification, lifecycle,
                   signal scoring (v2), embedding-text, search-merge logic
 packages/adapters/ AtsAdapter interface (spec 5.3); 8 of 11 P0 providers built
@@ -71,11 +74,20 @@ packages/adapters/ AtsAdapter interface (spec 5.3); 8 of 11 P0 providers built
                   constructable unauthenticated per-company endpoint (see ROADMAP.md
                   Milestone E)
 packages/db/     D1 client + repository functions -- read paths (signals/
-                  companies/facets), write paths (sources/jobs/signals),
-                  company-role activity stats
+                  companies/facets/export), write paths (sources/jobs/signals),
+                  company-role activity stats, signals-export repo
+packages/test-support/ Live Cloudflare bindings for zero-mocks integration
+                  testing (live D1 client, live AI/Vectorize/KV, remote
+                  transport layer). Used by packages/db and apps/api suites.
 packages/ui/     Optional shared UI primitives (not scaffolded; see its README)
+lib/             Cross-workspace utilities: D1 helpers (client, LIKE pattern,
+                  unique-constraint), HTTP primitives (circuit-breaker,
+                  rate-limit, security-headers), KV TTL store, audit logging,
+                  cursor pagination, text utilities (base64url, content-hash,
+                  CSV, location-mode)
 infrastructure/  D1 migrations (0001-0004 landed), ops scripts (add-source,
-                  update-source, add-company, source-health, backfill-embeddings)
+                  update-source, add-company, source-health, backfill-embeddings,
+                  import-sources)
 ```
 
 ## 🛠 Tech Stack
@@ -89,7 +101,7 @@ infrastructure/  D1 migrations (0001-0004 landed), ops scripts (add-source,
 - **Validation**: Zod schemas
 - **Code Quality**: ESLint, Prettier, strict TypeScript
 
-## Status (2026-08-03): Phases 0-1 + Milestones A-E, H, I.1-I.2 complete; Milestone F (dashboard UI) in progress — app shell + base primitives done, signal feed/filters/detail not yet built; Milestone G (hardening) largely audited and closed
+## Status (2026-08-04): Phases 0-1 + Milestones A-M complete (except J.2 follow-ups, K.2 latency metric, L.2 export UI button); Milestone G (hardening) largely audited and closed; Milestones N-Q (saved filters, company page, trends, velocity) not yet started
 
 See `ROADMAP.md` for the full task-by-task breakdown; this is a summary,
 kept in sync with it rather than a competing status source.
@@ -103,36 +115,47 @@ Done:
 - **Milestone C — Signal generation (new_job):** `computeNewJobScore`, `signals-write-repo.ts` (createSignal/refreshSignal/findActiveSignal/appendSignalEvidence)
 - **Milestone D — Scheduler, queue consumer, ops scripts:** `apps/api/src/jobs/scheduler.ts` (due-source enqueue with per-source jitter, never fetches), `apps/api/src/jobs/ingest-consumer.ts` (full fetch→validate→normalize→upsert→observe→lifecycle→classify→score→signal pipeline, idempotent per (sourceId, runId), every §13.4 failure branch handled), `infrastructure/scripts/` ops CLIs (add-source, update-source, add-company, source-health)
 - **Milestone E — Adapters (closed):** 8 of 11 P0 providers built and fixture-tested with location inference and malformed-payload handling (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy). The remaining 3 (Teamtailor, JazzHR, BambooHR) are investigated-and-blocked, not built -- each verified against its own vendor docs to have no constructable unauthenticated per-company endpoint, and removed from the active build list (kept in the domain enum/seed data). See `ROADMAP.md` Milestone E for the per-provider verification notes.
+- **Milestone F — Dashboard UI (complete):** Full signal feed at `/signals` with bidirectional URL-param filter rail (role, company combobox, score, signal type, source, work mode, recency), paginated signal cards with hover/lift states, reduced-motion-gated animated tagline, and scroll progress. Signal detail page at `/signals/[signalId]` with evidence table, score breakdown, trend block, and loading/error/not-found states. Brutalist design tokens verified at desktop/320px/200%-zoom. CSP dev-mode HMR fix (PHASE_DEVELOPMENT_SERVER check) landed during F.2 verification.
 - **Milestone H — Signal-quality logic pass:** real Volume/Acceleration/Breadth scoring (`score_version` v2, replacing the v1 fixed-0.5 stub), company-level signal generation (`hiring_burst`, `role_acceleration`, `multi_location`, `persistent_demand` — previously typed but never created), a description-channel classification-noise fix, and a daily reconciliation job (`apps/api/src/jobs/reconciliation.ts`) that recomputes stale active signals' scores without touching `last_detected_at`
 - **Milestone I.1-I.2 — Semantic search, write path only:** `hiring-signals-jobs` Vectorize index (768-dim, cosine) + Workers AI binding provisioned; jobs are embedded and upserted into Vectorize at ingest time (`embedAndUpsertJob` in `ingest-consumer.ts`), best-effort and non-blocking (an embedding failure never fails ingestion). The query-side service (`apps/api/src/services/semantic-search.ts`) and merge logic (`packages/domain/src/signal-search-merge.ts`) are both implemented but **not yet called from `GET /api/v1/signals`** — see Milestone I.3 in `ROADMAP.md`
-- **Milestone F.1-F.3 — Dashboard app shell (closed):** `apps/web` is no longer scaffold-only. Minimal Brutalist design tokens (`--ink`/`--paper`/`--accent`/`--font-display`/`--font-mono`, WCAG-checked chartreuse-on-black) landed in `globals.css`; base UI primitives (`Button`, `Input`, `Checkbox`, `DataLabel`) and the app shell (`AppShell` + `Masthead` with a reduced-motion-gated animated wordmark, `ScrollProgress`) are built and wired into the root layout, verified at desktop/320px/200%-zoom widths. F.2's verification also caught and fixed a real bug: the strict CSP (G.2) blocked Turbopack's inline HMR scripts under `next dev`, breaking the dev client; `next.config.ts` now branches on Next's `PHASE_DEVELOPMENT_SERVER` (not `process.env.NODE_ENV`, which is non-standard on this machine) to relax `script-src` in dev only, confirmed not to leak into `next build`/`next start`. Signal feed, filters, and signal detail (F.4-F.7) are not yet built — `/` currently renders a placeholder.
+- **Milestone J.1 — Zero-mocks test migration + CI workflow:** `packages/test-support/` package implemented with live Cloudflare bindings (`live-d1-database`, `live-ai-binding`, `live-vectorize-index`, `live-kv-namespace`) and remote D1 transport via wrangler CLI. `apps/api/test/jobs/ingest-consumer.test.ts` fully migrated to live resources (21 tests against real D1/AI/Vectorize). `.github/workflows/ci.yml` added: Node 24.18.0, pnpm 11.17.0, runs typecheck + lint + domain (70 tests) + adapters (114 tests) on every push/PR (~45s total). Live-D1/db/api suites are manual-only by deliberate cost/risk decision (shared production D1, ~25 min full suite).
+- **Milestone K.1 — `still_active` signal:** Daily reconciliation pass appends `still_active` evidence rows to recently-confirmed-open active `new_job` signals, preventing score decay for listings that stay live. Trigger: `status='active'` AND job `last_seen_at` within `pollIntervalMinutes * 1.5` AND signal `last_detected_at` older than 24h. String-comparison bug fixed during verification (SQLite `datetime()` space-separated vs. ISO T/Z timestamps normalized).
+- **Milestone L.1 — CSV export endpoint:** `GET /api/v1/export/signals.csv` accepts same full filter set as `/api/v1/signals`, returns RFC 4180 CSV via `lib/text/csv.ts` (zero-dependency encoder). Cap 2000 rows with `X-Export-Truncated: true` header when exceeded. All job/company public fields only (spec §14.2), same `freeReadTier` middleware. `signals-export-repo.test.ts` (5 tests) verified against live D1.
+- **Milestone M.1 — Bulk source onboarding (CSV import):** `infrastructure/scripts/import-sources.mjs` with two-pass plan/apply design, RFC 4180 CSV parser (no dep), idempotent re-runs (skip existing sources), company auto-creation per slug. Verified against local D1 with 4-row test fixture including in-file duplicate and shared-company sources.
 - **Milestone G.1-G.2 — Backend hardening audit:** full spec §14.1 checklist walked against `apps/api`'s actual code — SQL parameterization, SSRF allow-listing, log redaction, and security headers all confirmed solid; the two real gaps found (no CI dependency scanning, no CSP on `apps/web`) are closed (`pnpm audit` added to CI as warn-only with a dated baseline, CSP + security headers added to `apps/web`). G.3-G.7 (privacy copy, performance targets, observability, CI/CD strategy, final sign-off) not yet started.
 - **`/api/v1/admin/*` (spec §13.5a):** re-added after the earlier no-auth removal, but as a narrow, secret-bearer-token-gated set of three idempotent pipeline triggers (source-run, scheduler-flush, reconcile) — never a login a user sees, never reachable from `apps/web`, and source add/edit still lives only in the local ops scripts
 
-Test coverage (2026-08-03, re-verified): domain 70 and adapters 114 tests, both pure/fixture-based and fast (<2s each). `packages/db` and `apps/api` are integration-tested against a real, shared, live Cloudflare D1 database (`AGENTS.md`'s "zero mocks, zero fakes" policy) rather than an in-memory fake — `packages/db` has 72 tests (~12 min, since every test round-trips the network); `apps/api` (`ingest-consumer`, `scheduler`, `reconciliation`) is larger still and can take 20-30+ min end to end. `packages/db`'s 2 failures under a full concurrent `pnpm -r test` run were confirmed to be load-related (both passed cleanly re-run in isolation) and are a known, accepted trade-off of the shared live database (see `AGENTS.md`). `apps/api`'s `ingest-consumer`/`reconciliation` suites are a separate, unresolved issue: they can fail even run alone (one pipeline call plus its read-back assertions measured at 113.76s against a 90s test timeout) — see `AGENTS.md` for the full note; not a regression in this session's changes, but not yet fixed either. `pnpm -r typecheck` and `pnpm -r lint` are clean across all workspace projects (lint: 0 errors, 6 pre-existing warnings -- 5 `no-console` in a smoke-test script, 1 `consistent-type-imports` in a test file).
+Test coverage (2026-08-04): pure-logic suites fast and deterministic — `packages/domain` 70 tests, `packages/adapters` 114 tests, both <2s. Integration suites use live shared Cloudflare resources per `AGENTS.md`'s zero-mocks policy: `packages/db` 72 tests (~12 min, network round-trips per assertion); `apps/api` (`ingest-consumer`, `scheduler`, `reconciliation`) migrated to live bindings with `packages/test-support`. Known live-D1 caveats: load-related flakiness under concurrent full-suite runs (accepted trade-off of shared DB); `ingest-consumer`/`reconciliation` single-test runs can exceed 90s timeout at peak remote latency (noted in `AGENTS.md`, not a correctness failure). `pnpm -r typecheck` and `pnpm -r lint` clean across 6 workspace projects (lint: 0 errors, pre-existing warnings limited to smoke-test `no-console` and one test-file `consistent-type-imports`).
 
 Not yet done:
 
 - 3 blocked P0 ATS adapters (Teamtailor, JazzHR, BambooHR — spec §4.1/§5.3): investigated and confirmed to have no constructable unauthenticated per-company endpoint; not planned unless that changes upstream
-- Dashboard signal feed, filters, and signal detail (Milestone F.4-F.7) — app shell + design tokens + base primitives (F.1-F.3) are done (see above); `/signals` feed/filter-rail, `/signals/[id]` detail, empty/loading/error states, and the accessibility pass remain. Animation/interaction approach: `ArxivExplorer`'s mechanics (scroll progress, card hover/lift, staggered text entrance) restyled from scratch against spec §11's Brutalist tokens, never its neon visual styling — see `ROADMAP.md` Milestone F.
 - Query-side hybrid search wiring + backfill script + search UI (Milestone I.3/I.4) and classification assist (I.5, deferred until I.3/I.4 ship)
-- CSV export endpoint (spec §10.6)
+- CSV export button in dashboard UI (Milestone L.2, spec §10.2 masthead `[EXPORT CSV]` — route implemented, UI button not yet wired to filter state)
+- `packages/test-support` follow-ups (Milestone J.2 follow-ups list): dotenv parser for `.env.local`, factored `execRemote` helper, credential preflight consistency, error truncation, package README
+- Detection-latency tracking metric (Milestone K.2): p50/p95 per source, surfaced in `source-health.mjs`
+- Saved filters (Milestone N): client-side `localStorage` filter profile save/restore
+- Company hiring timeline page + API (Milestone O): `/companies/[slug]` timeline view, `/api/v1/companies/:slug/timeline` endpoint
+- Cross-company hiring trends API + page (Milestone P)
+- Company-level hiring velocity score (Milestone Q)
 - Production deployment (Cloudflare Pages + Workers)
 
 ## 🚀 Key Features
 
 ### Signal Detection
 
-- **Role-level signals**: New matching roles, reopened roles, still active roles
+- **Role-level signals**: New matching roles, reopened roles, still active roles (daily reconciliation appends `still_active` evidence to prevent score decay)
 - **Company-level signals**: Hiring bursts, role acceleration, multi-location expansion, persistent demand
 - **Evidence trails**: Source platform, canonical public URL, source job identifier, timestamps
 
 ### Core Functionality
 
-- **Multi-ATS integration**: Official documented ATS API adapters (no scraping)
+- **Multi-ATS integration**: Official documented ATS API adapters (no scraping) — 8 of 11 P0 providers built
 - **Real-time monitoring**: Scheduled ingestion with adaptive cadence per provider
-- **Filtering**: By role, location, source, signal type, and company (query params live; keyword `q` search on company/headline/summary works today, semantic search is write-path only — see Status)
-- **Export**: CSV export of filtered signal list (spec §10.6, not yet built)
+- **Filtering**: By role, location, source, signal type, and company (URL-param + UI filter rail live at `/signals`; keyword `q` search on company/headline/summary works today; semantic search is write-path only — see Status)
+- **Dashboard UI**: Full signal feed at `/signals` with paginated cards, filter rail (role/company/score/source/signal-type/work-mode/recency), and loading/error/empty states. Signal detail page at `/signals/[signalId]` with evidence table, score breakdown, trend block.
+- **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; UI export button pending)
+- **Bulk onboarding**: CSV import (`import-sources.mjs`) for batch source/company onboarding
 - **Health isolation**: Per-source error isolation prevents cascading failures
 
 ### Design Philosophy
@@ -146,8 +169,29 @@ Not yet done:
 
 ```bash
 pnpm install
-pnpm --filter @hiring-signals/web dev     # Next.js dev server
+pnpm --filter @hiring-signals/web dev     # Next.js dev server (dashboard at /signals)
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
+```
+
+Ops scripts (run from repo root, requires `nvm use 24.18.0` for wrangler's Node >=22):
+
+```bash
+node infrastructure/scripts/add-company.mjs --help
+node infrastructure/scripts/add-source.mjs --help
+node infrastructure/scripts/import-sources.mjs path/to/sources.csv   # bulk CSV onboarding
+node infrastructure/scripts/source-health.mjs                    # source status table
+node infrastructure/scripts/backfill-embeddings.mjs               # Vectorize backfill (semantic search)
+```
+
+Quality commands:
+
+```bash
+pnpm -r typecheck                           # all 6 workspace projects
+pnpm -r lint                                 # ESLint across workspaces
+pnpm --filter @hiring-signals/domain test   # fast pure-logic suite (70 tests, ~1s)
+pnpm --filter @hiring-signals/adapters test # fast fixture suite (114 tests, ~3s)
+# packages/db and apps/api suites require live CF_TOKEN — see AGENTS.md zero-mocks policy
+# Scope live tests to one file at a time: cd packages/db && npx vitest run test/signals-export-repo.test.ts
 ```
 
 `apps/api`'s `wrangler.toml` is wired to real Cloudflare resources: the
@@ -160,6 +204,10 @@ the `hiring-signals-jobs` Vectorize index + Workers AI binding for
 semantic search (write path only so far -- see Status). Raw payloads
 live in KV under TTL-based keys rather than R2, so the project doesn't
 require Cloudflare billing/a credit card on the account.
+
+CI (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
+typecheck + lint + domain/adapters pure-logic tests (~45s total).
+Live-D1/db/api suites are manual-only (see Status).
 
 ---
 
