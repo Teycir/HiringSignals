@@ -63,6 +63,10 @@ export interface SignalRow {
   location_mode: string | null;
   country_code: string | null;
   source_platform: string | null;
+  // Only used by getSignalDetail (spec §10.6 "source-stale" state) to
+  // look up the source's most recent successful run -- never surfaced
+  // on SignalListItem/toListItem, deliberately dropped for list rows.
+  source_id: string | null;
 }
 
 // SignalListItem/SignalDetail moved to ./types.ts (see that file's header
@@ -237,7 +241,8 @@ const BASE_SELECT = `
          rj.canonical_url AS canonical_url,
          rj.location_mode AS location_mode,
          rj.country_code AS country_code,
-         src.provider AS source_platform
+         src.provider AS source_platform,
+         src.id AS source_id
   FROM signals s
   JOIN companies c ON c.id = s.company_id
   ${REPRESENTATIVE_JOB_JOIN}
@@ -579,6 +584,26 @@ export async function getSignalDetail(
     [signalId],
   );
 
+  // Spec §10.6 "source-stale" state ("source last confirmed X ago").
+  // row.source_id is null for a company-level signal with no
+  // representative job (REPRESENTATIVE_JOB_JOIN found nothing), in
+  // which case there's no source to check and this stays null. Only
+  // status='success' runs count as "confirmed" -- a failed/retrying
+  // run isn't a confirmation the source is still live (see
+  // ingest-consumer.ts's status values: "success" vs "failed"/
+  // "failed_final").
+  const lastSourceRunAt = row.source_id
+    ? (
+        await client.first<{ completed_at: string | null }>(
+          `SELECT completed_at FROM source_runs
+           WHERE source_id = ? AND status = 'success'
+           ORDER BY completed_at DESC
+           LIMIT 1`,
+          [row.source_id],
+        )
+      )?.completed_at ?? null
+    : null;
+
   // Same per-row degrade as listSignals for the header row -- on the detail
   // page this is less catastrophic than on list (only one signal is broken),
   // but we still want structured logs + a decision that doesn't leave the
@@ -621,6 +646,7 @@ export async function getSignalDetail(
 
   return {
     ...header,
+    lastSourceRunAt,
     evidence: evidenceRows.map((e) => {
       // A single truncated/corrupt payload_json (partial write, old schema
       // version, manual edit) must not 500 the whole detail endpoint --

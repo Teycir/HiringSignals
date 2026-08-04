@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
 import { createCompany } from "../src/companies-repo";
-import { createSource } from "../src/sources-repo";
+import { createSource, recordSourceRunStart, recordSourceRunComplete } from "../src/sources-repo";
 import { upsertJob } from "../src/jobs-repo";
 import { createSignal, appendSignalEvidence } from "../src/signals-write-repo";
 import {
   CorruptSignalRowError,
   InvalidCursorError,
   findSignalsByJobIds,
+  getSignalDetail,
   listSignals,
   toListItem,
   type SignalRow,
@@ -75,6 +76,10 @@ async function cleanupCompany(companyId: string): Promise<void> {
     },
     { sql: `DELETE FROM signals WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM jobs WHERE company_id = ?`, params: [companyId] },
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
+      params: [companyId],
+    },
     { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
   ]);
@@ -98,6 +103,12 @@ afterEach(async () => {
     },
     {
       sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (
+         SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+       )`,
       params: [`${TEST_PREFIX}-%`],
     },
     {
@@ -500,6 +511,153 @@ describe("findSignalsByJobIds", () => {
   });
 });
 
+describe("getSignalDetail", () => {
+  it("returns null for an unknown signal id", async () => {
+    const result = await getSignalDetail(client, "00000000-0000-0000-0000-000000000000");
+    expect(result).toBeNull();
+  });
+
+  it("returns evidence with joined job fields and null lastSourceRunAt when the source has no successful run", async () => {
+    const company = await seedCompany("detail-no-run", "Detail No Run Co");
+    try {
+      const source = await createSource(client, {
+        companyId: company.id,
+        provider: "greenhouse",
+        boardToken: company.slug,
+        publicUrl: `https://example.invalid/${company.slug}`,
+      });
+      const now = new Date().toISOString();
+      const job = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-detail-1",
+        canonicalUrl: "https://example.invalid/jobs/job-detail-1",
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-job-detail-1",
+        observedAt: now,
+      });
+      const signalId = await seedSignal({
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        detectedAt: now,
+      });
+      await appendSignalEvidence(client, {
+        signalId,
+        jobId: job.id,
+        evidenceType: "new_job_posting",
+        observedAt: now,
+        payload: {},
+      });
+
+      const detail = await getSignalDetail(client, signalId);
+      expect(detail).not.toBeNull();
+      expect(detail!.evidence).toHaveLength(1);
+      const evidenceRow = detail!.evidence[0]!;
+      expect(evidenceRow.jobTitle).toBe("Security Engineer");
+      expect(evidenceRow.jobCanonicalUrl).toBe(
+        "https://example.invalid/jobs/job-detail-1",
+      );
+      // No source_runs row exists at all for this source yet.
+      expect(detail!.lastSourceRunAt).toBeNull();
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("returns lastSourceRunAt from the most recent successful run, ignoring failed/running rows", async () => {
+    const company = await seedCompany("detail-run", "Detail Run Co");
+    try {
+      const source = await createSource(client, {
+        companyId: company.id,
+        provider: "greenhouse",
+        boardToken: company.slug,
+        publicUrl: `https://example.invalid/${company.slug}`,
+      });
+      const now = new Date().toISOString();
+      const job = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-detail-2",
+        canonicalUrl: "https://example.invalid/jobs/job-detail-2",
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        contentHash: "hash-job-detail-2",
+        observedAt: now,
+      });
+      const signalId = await seedSignal({
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        detectedAt: now,
+      });
+      await appendSignalEvidence(client, {
+        signalId,
+        jobId: job.id,
+        evidenceType: "new_job_posting",
+        observedAt: now,
+        payload: {},
+      });
+
+      // Oldest successful run -- should be superseded by the newer one below.
+      const oldRunId = await recordSourceRunStart(client, {
+        sourceId: source.id,
+        startedAt: "2026-07-01T00:00:00.000Z",
+      });
+      await recordSourceRunComplete(client, oldRunId, {
+        completedAt: "2026-07-01T00:05:00.000Z",
+        status: "success",
+      });
+
+      // A more recent run that FAILED must not win over the older success.
+      const failedRunId = await recordSourceRunStart(client, {
+        sourceId: source.id,
+        startedAt: "2026-07-15T00:00:00.000Z",
+      });
+      await recordSourceRunComplete(client, failedRunId, {
+        completedAt: "2026-07-15T00:05:00.000Z",
+        status: "failed_final",
+      });
+
+      // The true most-recent success -- this is the one that should win.
+      const latestRunId = await recordSourceRunStart(client, {
+        sourceId: source.id,
+        startedAt: "2026-07-20T00:00:00.000Z",
+      });
+      await recordSourceRunComplete(client, latestRunId, {
+        completedAt: "2026-07-20T00:05:00.000Z",
+        status: "success",
+      });
+
+      const detail = await getSignalDetail(client, signalId);
+      expect(detail).not.toBeNull();
+      expect(detail!.lastSourceRunAt).toBe("2026-07-20T00:05:00.000Z");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("returns null lastSourceRunAt for a company-level signal with no representative job/source", async () => {
+    const company = await seedCompany("detail-no-source", "Detail No Source Co");
+    try {
+      const now = new Date().toISOString();
+      const signalId = await seedSignal({
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        detectedAt: now,
+      });
+      // No source/job/evidence seeded at all -- REPRESENTATIVE_JOB_JOIN
+      // finds nothing, so source_id (and therefore lastSourceRunAt)
+      // must stay null rather than erroring.
+      const detail = await getSignalDetail(client, signalId);
+      expect(detail).not.toBeNull();
+      expect(detail!.evidence).toHaveLength(0);
+      expect(detail!.lastSourceRunAt).toBeNull();
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+});
+
 describe("toListItem", () => {
   function makeRow(overrides: Partial<SignalRow> = {}): SignalRow {
     return {
@@ -525,6 +683,7 @@ describe("toListItem", () => {
       location_mode: null,
       country_code: null,
       source_platform: null,
+      source_id: null,
       ...overrides,
     };
   }

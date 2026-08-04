@@ -51,6 +51,13 @@ export interface SignalDetail extends SignalListItem {
     jobCountryCode: string | null;
     jobStatus: string | null;
   }>;
+  // Spec §10.6 "source-stale" state ("source last confirmed X ago").
+  // completed_at of the signal's source's most recent successful
+  // (status='success') source_runs row -- see getSignalDetail's
+  // LEFT JOIN. Null if the source has never completed a successful run
+  // yet, or sourcePlatform itself is null (company-level signal with
+  // no representative job/source).
+  lastSourceRunAt: string | null;
 }
 
 export interface CompanySummary {
