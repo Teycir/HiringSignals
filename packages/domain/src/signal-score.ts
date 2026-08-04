@@ -57,10 +57,15 @@ function clamp(value: number, min: number, max: number): number {
 
 /**
  * Computes R = e^(-d/14) where d is days (can be fractional) since the
- * most recent evidence observation.
+ * most recent evidence observation. Clamped to [0,1] like every other
+ * component (computeVolume/computeAcceleration/computeBreadth) --
+ * without this, clock skew producing a negative d makes e^(-d/14)
+ * exceed 1.0, which would violate ScoreComponents' documented [0,1]
+ * range and get persisted verbatim to signal_evidence.payload_json,
+ * breaking spec §7.2 recomputability.
  */
 export function computeFreshness(daysSinceObservation: number): number {
-  return Math.exp(-daysSinceObservation / FRESHNESS_DECAY_DAYS);
+  return clamp(Math.exp(-daysSinceObservation / FRESHNESS_DECAY_DAYS), 0, 1);
 }
 
 /**
@@ -132,7 +137,7 @@ export function computeNewJobScore(input: ComputeNewJobScoreInput): ScoreResult 
     volume: computeVolume(input.activeMatchingCount),
     acceleration: computeAcceleration(input.newInLast14Days, input.newInPrior56Days),
     breadth: computeBreadth(input.distinctLocationCount),
-    quality: input.classificationConfidence,
+    quality: clamp(input.classificationConfidence, 0, 1),
     penalty: 0,
   };
 
@@ -203,7 +208,7 @@ export function computeReconciliationScore(input: ComputeReconciliationScoreInpu
     volume: computeVolume(input.activeMatchingCount),
     acceleration: computeAcceleration(input.newInLast14Days, input.newInPrior56Days),
     breadth: computeBreadth(input.distinctLocationCount),
-    quality: input.classificationConfidence,
+    quality: clamp(input.classificationConfidence, 0, 1),
     penalty: 0,
   };
 

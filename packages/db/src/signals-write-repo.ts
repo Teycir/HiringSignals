@@ -1,5 +1,8 @@
+import { roleCategorySchema, signalScoreSchema, signalTypeSchema } from "@hiring-signals/domain";
 import type { RoleCategory, SignalType } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+import { isUniqueConstraintError } from "../../../lib/d1/unique-constraint";
+import { CorruptSignalRowError } from "./signals-repo";
 
 /**
  * Write-path repo for `signals`/`signal_evidence` (ROADMAP.md Milestone
@@ -9,6 +12,60 @@ import type { D1Client } from "./d1-client";
  * concerns here (dedup checks, single-row inserts). Mixing the two would
  * make signals-repo.ts harder to reason about for either purpose.
  */
+
+/**
+ * Thrown by createSignal/refreshSignal/updateSignalScore when the
+ * caller-supplied score fails domain's signalScoreSchema (an integer in
+ * [0,100], the same contract the `signals.score INTEGER NOT NULL`
+ * column implies but doesn't itself enforce). Without this check, a
+ * caller that forgot to route through computeNewJobScore's own
+ * round(min(100,max(0,...))) -- a non-integer from bad arithmetic, a
+ * negative value, or an over-100 value from an upstream clamp bug --
+ * would be written verbatim: SQLite's INTEGER affinity silently
+ * truncates a non-integer, and out-of-range values persist with no
+ * diagnostic. Same "client-caused error, not a server fault" pattern as
+ * InvalidCursorError in signals-repo.ts -- callers map it to whatever's
+ * appropriate for their context.
+ */
+export class InvalidSignalScoreError extends Error {
+  constructor(score: number) {
+    super(`Invalid signal score ${score}: must be an integer in [0, 100].`);
+    this.name = "InvalidSignalScoreError";
+  }
+}
+
+function assertValidScore(score: number): void {
+  if (!signalScoreSchema.safeParse(score).success) {
+    throw new InvalidSignalScoreError(score);
+  }
+}
+
+/**
+ * Thrown when createSignal's INSERT violates migration 0006's
+ * `idx_signals_one_active_per_role` partial UNIQUE index (one active
+ * signal per (company_id, role_category, signal_type)). This is the
+ * genuine TOCTOU race the index exists to catch: two concurrent callers
+ * both ran findActiveSignal, both saw no match, and both reached
+ * createSignal for the same triple -- the DB constraint is the actual
+ * enforcement point, this error just gives the loser of the race a
+ * typed signal instead of a raw D1 constraint message. Same
+ * "client-caused error, not a server fault" pattern as
+ * DuplicateCompanyError/DuplicateSourceError. Callers should treat this
+ * as "someone else just created it -- re-run findActiveSignal and
+ * refresh that row instead," not as an unrecoverable failure.
+ */
+export class DuplicateActiveSignalError extends Error {
+  constructor(
+    public readonly companyId: string,
+    public readonly roleCategory: RoleCategory,
+    public readonly signalType: SignalType,
+  ) {
+    super(
+      `An active signal already exists for company_id="${companyId}", role_category="${roleCategory}", signal_type="${signalType}".`,
+    );
+    this.name = "DuplicateActiveSignalError";
+  }
+}
 
 export interface SignalRowMinimal {
   id: string;
@@ -28,6 +85,42 @@ export interface SignalReconciliationRow {
   first_detected_at: string;
   last_detected_at: string;
   classification_confidence: number;
+}
+
+/** Raw D1 row shape before enum validation -- role_category/signal_type
+ * are untyped strings here, same as signals-repo.ts's SignalRow, since
+ * the DB doesn't itself enforce the domain enum. */
+interface RawSignalReconciliationRow {
+  id: string;
+  company_id: string;
+  role_category: string;
+  signal_type: string;
+  score: number;
+  score_version: string;
+  first_detected_at: string;
+  last_detected_at: string;
+  classification_confidence: number;
+}
+
+/**
+ * Validates role_category/signal_type against domain's enums, same
+ * per-row degrade discipline as signals-repo.ts's toListItem/
+ * CorruptSignalRowError -- a stale write, manual edit, or taxonomy
+ * change that put an invalid value in one of these columns should throw
+ * a typed, identifiable error instead of silently trusting the DB and
+ * letting the corrupt value flow into reconciliation.ts's downstream
+ * getCompanyRoleActivityStats/updateSignalScore calls.
+ */
+function toReconciliationRow(row: RawSignalReconciliationRow): SignalReconciliationRow {
+  const roleCategory = roleCategorySchema.safeParse(row.role_category);
+  if (!roleCategory.success) {
+    throw new CorruptSignalRowError(`Signal ${row.id} has invalid role_category="${row.role_category}".`);
+  }
+  const signalType = signalTypeSchema.safeParse(row.signal_type);
+  if (!signalType.success) {
+    throw new CorruptSignalRowError(`Signal ${row.id} has invalid signal_type="${row.signal_type}".`);
+  }
+  return { ...row, role_category: roleCategory.data, signal_type: signalType.data };
 }
 
 /**
@@ -52,17 +145,31 @@ const ACTIVE_SIGNAL_LOOKBACK_DAYS = 28;
  * last_detected_at is further back than that is treated as not-a-match
  * here, so a fresh burst after a long pause creates a new signal instead
  * of quietly refreshing (and thus resurrecting) a dormant one.
+ *
+ * The lookback cutoff is computed in JS and bound as a real `?`
+ * parameter, never interpolated into the SQL text -- AGENTS.md's
+ * repo-wide rule ("Every SQL query is parameterized via .bind(). Never
+ * interpolate values into SQL text") applies to every value, including
+ * ones that happen to be internal constants today, since there's no
+ * structural guard stopping a future caller from making the lookback
+ * window caller-configurable and turning this into a live SQLi vector.
+ * This also fixes a second issue for free: computing the cutoff from
+ * the Worker's own `Date.now()` instead of `datetime('now', ...)`
+ * removes the D1/SQLite-runtime-clock vs. Worker-clock skew that could
+ * otherwise make the 28-day boundary non-deterministic.
  */
 export async function findActiveSignal(
   client: D1Client,
-  params: { companyId: string; roleCategory: RoleCategory; signalType: SignalType },
+  params: { companyId: string; roleCategory: RoleCategory; signalType: SignalType; nowIso?: string },
 ): Promise<SignalRowMinimal | null> {
+  const now = params.nowIso ? new Date(params.nowIso) : new Date();
+  const cutoff = new Date(now.getTime() - ACTIVE_SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
   return client.first<SignalRowMinimal>(
     `SELECT id, status, score, first_detected_at, last_detected_at
      FROM signals
      WHERE company_id = ? AND role_category = ? AND signal_type = ? AND status = 'active'
-       AND last_detected_at >= datetime('now', '-${ACTIVE_SIGNAL_LOOKBACK_DAYS} days')`,
-    [params.companyId, params.roleCategory, params.signalType],
+       AND last_detected_at >= ?`,
+    [params.companyId, params.roleCategory, params.signalType, cutoff],
   );
 }
 
@@ -84,28 +191,43 @@ export interface CreateSignalInput {
  * triple -- this function does not check for you, since checking here
  * would mean an extra round trip on the common "signal already exists,
  * just append evidence" path.
+ *
+ * Migration 0006's partial UNIQUE index is the real enforcement for
+ * that invariant (findActiveSignal + this function is otherwise a
+ * check-then-act race) -- a violation here means a concurrent caller
+ * won the race and already created the active row this call was also
+ * trying to create, surfaced as DuplicateActiveSignalError instead of a
+ * raw D1 constraint message.
  */
 export async function createSignal(client: D1Client, input: CreateSignalInput): Promise<string> {
+  assertValidScore(input.score);
   const id = crypto.randomUUID();
-  await client.run(
-    `INSERT INTO signals (
-       id, company_id, role_category, signal_type, status, score,
-       score_version, first_detected_at, last_detected_at, expires_at,
-       headline, summary
-     ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, ?, ?)`,
-    [
-      id,
-      input.companyId,
-      input.roleCategory,
-      input.signalType,
-      input.score,
-      input.scoreVersion,
-      input.detectedAt,
-      input.detectedAt,
-      input.headline,
-      input.summary,
-    ],
-  );
+  try {
+    await client.run(
+      `INSERT INTO signals (
+         id, company_id, role_category, signal_type, status, score,
+         score_version, first_detected_at, last_detected_at, expires_at,
+         headline, summary
+       ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, ?, ?)`,
+      [
+        id,
+        input.companyId,
+        input.roleCategory,
+        input.signalType,
+        input.score,
+        input.scoreVersion,
+        input.detectedAt,
+        input.detectedAt,
+        input.headline,
+        input.summary,
+      ],
+    );
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      throw new DuplicateActiveSignalError(input.companyId, input.roleCategory, input.signalType);
+    }
+    throw err;
+  }
   return id;
 }
 
@@ -131,15 +253,33 @@ export interface RefreshSignalInput {
  * depth qualifier, not new plumbing. A caller passing a mismatched
  * companyId for a genuine signalId now affects 0 rows instead of
  * silently mutating another company's signal.
+ *
+ * `status = 'active'` guard, same race-safety reasoning as
+ * updateSignalScore/markSignalStillActive below: without it, a signal
+ * that flips to 'expired' (expiration cron) between the caller's
+ * findActiveSignal SELECT and this UPDATE would have its
+ * last_detected_at/score bumped anyway, resurrecting an expired signal
+ * until the cron sweeps it again. The write becomes a no-op instead.
+ *
+ * Returns `{ changes: number }`, mirroring updateSignalScore/
+ * markSignalStillActive -- previously this returned `void`, discarding
+ * client.run()'s own `{ changes }` result. That made the H1
+ * tenant-mismatch guard and the status='active' race guard above
+ * silently indistinguishable from success: a caller had no way to know
+ * 0 rows were touched and would go on to call appendSignalEvidence for
+ * a signal whose last_detected_at was never actually bumped. Callers
+ * should check `changes === 0` and skip the evidence append, same
+ * pattern reconciliation.ts already uses for the other two functions.
  */
 export async function refreshSignal(
   client: D1Client,
   signalId: string,
   companyId: string,
   input: RefreshSignalInput,
-): Promise<void> {
-  await client.run(
-    `UPDATE signals SET score = ?, score_version = ?, last_detected_at = ? WHERE id = ? AND company_id = ?`,
+): Promise<{ changes: number }> {
+  assertValidScore(input.score);
+  return client.run(
+    `UPDATE signals SET score = ?, score_version = ?, last_detected_at = ? WHERE id = ? AND company_id = ? AND status = 'active'`,
     [input.score, input.scoreVersion, input.lastDetectedAt, signalId, companyId],
   );
 }
@@ -166,6 +306,7 @@ export async function updateSignalScore(
   companyId: string,
   input: UpdateSignalScoreInput,
 ): Promise<{ changes: number }> {
+  assertValidScore(input.score);
   return client.run(
     `UPDATE signals SET score = ?, score_version = ? WHERE id = ? AND company_id = ? AND status = 'active'`,
     [input.score, input.scoreVersion, signalId, companyId],
@@ -185,12 +326,21 @@ export async function updateSignalScore(
  * intentionally not moved by reconciliation, so this recent-evidence guard
  * is what makes cron retries/manual double-runs idempotent-ish instead of
  * appending duplicate daily decay evidence for the same stale row.
+ *
+ * Per-row degrade for role_category/signal_type (same discipline as
+ * signals-repo.ts's listSignals): a stale enum value, manual edit, or
+ * taxonomy change on one row must not fail the entire reconciliation
+ * batch, especially since this repo function has no per-item try/catch
+ * of its own the way the read-repo's page-rendering caller does --
+ * skipping and logging here, before the bad row ever reaches
+ * reconciliation.ts, keeps that guarantee without pushing enum-
+ * validation concerns into the caller.
  */
 export async function listSignalsNeedingReconciliation(
   client: D1Client,
   params: { staleBefore: string; limit: number },
 ): Promise<SignalReconciliationRow[]> {
-  return client.all<SignalReconciliationRow>(
+  const rows = await client.all<RawSignalReconciliationRow>(
     `SELECT
        s.id,
        s.company_id,
@@ -220,6 +370,23 @@ export async function listSignalsNeedingReconciliation(
      LIMIT ?`,
     [params.staleBefore, params.staleBefore, params.limit],
   );
+
+  const validated: SignalReconciliationRow[] = [];
+  for (const row of rows) {
+    try {
+      validated.push(toReconciliationRow(row));
+    } catch (err) {
+      if (err instanceof CorruptSignalRowError) {
+        console.error("corrupt_signal_row_skipped_reconciliation", {
+          signalId: row.id,
+          reason: err.message,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+  return validated;
 }
 
 /**
@@ -374,6 +541,24 @@ export interface AppendSignalEvidenceInput {
 }
 
 /**
+ * Serializes `payload` for storage, guarding against JSON.stringify's
+ * deterministic throws on circular references and BigInt values.
+ * `payload: unknown` on AppendSignalEvidenceInput explicitly allows any
+ * shape -- current callers only ever pass a ScoreResult (safe), but the
+ * signature is a footgun for future callers, so this fails predictably
+ * (a clear error) instead of crashing the caller's transaction with an
+ * opaque TypeError deep inside an INSERT.
+ */
+function serializeEvidencePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`appendSignalEvidence: payload is not JSON-serializable (${reason})`, { cause: error });
+  }
+}
+
+/**
  * One row per (signal, evidence event) per spec §8.2's signal_evidence
  * table. Called once per createSignal/refreshSignal so every score
  * change has an accompanying evidence row explaining its inputs (spec
@@ -389,7 +574,7 @@ export async function appendSignalEvidence(
   await client.run(
     `INSERT INTO signal_evidence (id, signal_id, job_id, evidence_type, observed_at, payload_json)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, input.signalId, input.jobId, input.evidenceType, input.observedAt, JSON.stringify(input.payload)],
+    [id, input.signalId, input.jobId, input.evidenceType, input.observedAt, serializeEvidencePayload(input.payload)],
   );
   return id;
 }

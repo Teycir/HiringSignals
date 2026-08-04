@@ -345,6 +345,43 @@ made TS infer a concrete non-generic signature that didn't satisfy the
 generic interface -- fixed by building the fake as a plain object literal
 with its own generic method signatures instead of `vi.fn()` wrapping.
 
+**Post-hoc code review fix (2026-08-04):** an independent code review
+(validated 2/2 by sub-agents) against `signal-score.ts` and
+`signals-write-repo.ts` found 5 concrete defects, all confirmed against
+the current code and fixed:
+1. `findActiveSignal`'s dedup query filters on `(company_id,
+   role_category, signal_type, status)` but no index covered
+   `company_id`, forcing a table scan per ingestion event. Fixed with
+   migration `0005_signals_dedup_index.sql` (`idx_signals_dedup` on
+   `signals(company_id, role_category, signal_type, status)`).
+2. `computeFreshness` returned unclamped `e^(-d/14)`, which exceeds 1.0
+   for negative `d` (clock skew) — inconsistent with every sibling
+   component (`computeVolume`/`computeAcceleration`/`computeBreadth`,
+   all `clamp()`-wrapped) and a violation of `ScoreComponents`'
+   documented `[0,1]` range. Fixed: now `clamp(..., 0, 1)`.
+3. `classificationConfidence` was passed straight through as `quality`
+   in both `computeNewJobScore` and `computeReconciliationScore` with no
+   clamp, persisting out-of-range values verbatim to
+   `signal_evidence.payload_json`. Fixed: both now clamp to `[0,1]`.
+4. `refreshSignal`'s `UPDATE` had no `status = 'active'` guard (unlike
+   sibling `updateSignalScore`/`markSignalStillActive`), so a signal
+   that flipped to `'expired'` between the caller's `findActiveSignal`
+   SELECT and this UPDATE could be resurrected until the expiration cron
+   swept it again. Fixed: added `AND status = 'active'`.
+5. `appendSignalEvidence` called `JSON.stringify(input.payload)`
+   unguarded on `payload: unknown`, which throws deterministically on
+   circular refs/BigInt. Fixed: wrapped in a `serializeEvidencePayload`
+   helper that rethrows a clear, `cause`-preserving error instead of an
+   opaque `TypeError` inside the INSERT.
+- Verify: 2 new regression tests added to
+  `packages/domain/test/signal-score.test.ts` (negative-day freshness
+  clamp, out-of-range quality clamp) — `pnpm --filter
+  @hiring-signals/domain test` 26/26 green (was 24). `pnpm --filter
+  @hiring-signals/db typecheck`/`lint` clean. Full live-D1
+  `packages/db/test/signals-write-repo.test.ts` re-run against the real
+  `hiring-signals` Cloudflare account: 21/21 green, including the
+  `refreshSignal` happy-path test with the new guard in place.
+
 - [x] `packages/db/src/signals-write-repo.ts` (separate file from the
       existing read-only `signals-repo.ts` — keeps the read/write split
       explicit and avoids one file mixing query-building styles):

@@ -525,11 +525,27 @@ async function generateCompanySignals(
       // signal's freshly computed score (H.3) as a stand-in, refreshed
       // alongside it. Revisit once a dedicated company-level scoring
       // pass exists.
-      await refreshSignal(client, signalId, source.company_id, {
+      const refreshResult = await refreshSignal(client, signalId, source.company_id, {
         score: primaryScore,
         scoreVersion: primaryScoreVersion,
         lastDetectedAt: observedAt,
       });
+      if (refreshResult.changes === 0) {
+        // Tenant mismatch (shouldn't happen -- source.company_id came
+        // from the same row findActiveSignal used) or a race with the
+        // expiration cron between findActiveSignal's SELECT and this
+        // UPDATE. Either way, last_detected_at was NOT actually bumped,
+        // so appending evidence for it would misrepresent a signal that
+        // wasn't really refreshed -- skip, same "changes === 0 -> skip"
+        // pattern reconciliation.ts uses for updateSignalScore/
+        // markSignalStillActive.
+        console.warn("company_signal_refresh_skipped", {
+          signal_id: signalId,
+          company_id: source.company_id,
+          signal_type: signalType,
+        });
+        continue;
+      }
     } else {
       signalId = await createSignal(client, {
         companyId: source.company_id,
@@ -754,11 +770,28 @@ async function processNormalizedJob(
   let createdNewSignal = 0;
   if (activeSignal) {
     signalId = activeSignal.id;
-    await refreshSignal(client, signalId, source.company_id, {
+    const refreshResult = await refreshSignal(client, signalId, source.company_id, {
       score: scoreResult.score,
       scoreVersion: scoreResult.formulaVersion,
       lastDetectedAt: observedAt,
     });
+    if (refreshResult.changes === 0) {
+      // Tenant mismatch (shouldn't happen -- source.company_id came from
+      // the same source row findActiveSignal used) or a race with the
+      // expiration cron between findActiveSignal's SELECT and this
+      // UPDATE. last_detected_at was NOT actually bumped, so appending
+      // evidence -- or generating company-level signals off
+      // primarySignalFirstDetectedAt below, which depends on this same
+      // row -- would misrepresent a signal that wasn't really refreshed.
+      // Skip the rest of this job's signal path entirely, same
+      // "changes === 0 -> skip" pattern reconciliation.ts uses.
+      console.warn("primary_signal_refresh_skipped", {
+        signal_id: signalId,
+        company_id: source.company_id,
+        signal_type: lifecycle.candidateSignal,
+      });
+      return 0;
+    }
   } else {
     signalId = await createSignal(client, {
       companyId: source.company_id,

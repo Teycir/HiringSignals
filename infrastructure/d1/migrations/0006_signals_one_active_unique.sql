@@ -1,0 +1,38 @@
+-- Migration 0006: partial UNIQUE index enforcing one active signal per
+-- (company, role, type)
+-- Applies to D1 database "hiring-signals".
+-- Run: pnpm --filter @hiring-signals/api run db:migrations:apply:local
+--      pnpm --filter @hiring-signals/api run db:migrations:apply:remote
+--
+-- findActiveSignal + createSignal is a check-then-act (TOCTOU) pattern
+-- with no DB-level enforcement: two concurrent Queue consumers (or one
+-- consumer plus a manual retry) can both call findActiveSignal at T0,
+-- both see no match, and both call createSignal at T1 -- inserting two
+-- status='active' rows for the same (company_id, role_category,
+-- signal_type) triple. Spec §7.3's hard-duplicate rule (extended to the
+-- signal level per ROADMAP.md Milestone C) had zero schema-level
+-- protection; a duplicate-active pair breaks the dedup invariant
+-- permanently, since findActiveSignal's first() call would thereafter
+-- see only one (arbitrary) row while the orphan silently accumulates
+-- its own evidence.
+--
+-- SQLite supports partial indexes, so uniqueness is scoped to
+-- status = 'active' only -- an expired signal for the same triple is a
+-- legitimate, separate historical row (findActiveSignal's own
+-- ACTIVE_SIGNAL_LOOKBACK_DAYS reasoning: hiring that resumes after a
+-- long lull is a new occurrence, not a duplicate), so this index must
+-- not block inserting a new active row once the prior one has expired.
+-- The 28-day lookback window itself stays an application-level concern
+-- (which active row counts as *this* dedup match) -- what the DB must
+-- guarantee unconditionally is "at most one active row per triple at
+-- any moment," which this index enforces regardless of lookback.
+--
+-- Any pre-existing duplicate-active rows would make this CREATE UNIQUE
+-- INDEX fail outright (SQLite refuses to build a unique index over data
+-- that violates it) -- that failure is the correct signal to go clean
+-- up real duplicate rows first, not a reason to weaken this migration
+-- (same precedent as migration 0004's job_observations idempotency
+-- index).
+CREATE UNIQUE INDEX idx_signals_one_active_per_role
+  ON signals(company_id, role_category, signal_type)
+  WHERE status = 'active';

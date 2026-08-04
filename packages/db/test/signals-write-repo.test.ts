@@ -273,11 +273,12 @@ describe("refreshSignal", () => {
       });
 
       const refreshedAt = "2026-07-28T00:00:00.000Z";
-      await refreshSignal(client, signalId, company.id, {
+      const result = await refreshSignal(client, signalId, company.id, {
         score: 80,
         scoreVersion: "v2",
         lastDetectedAt: refreshedAt,
       });
+      expect(result.changes).toBe(1);
 
       const persisted = await client.first<{
         score: number;
@@ -312,11 +313,12 @@ describe("refreshSignal", () => {
         summary: "Initial summary.",
       });
 
-      await refreshSignal(client, signalId, otherCompany.id, {
+      const result = await refreshSignal(client, signalId, otherCompany.id, {
         score: 80,
         scoreVersion: "v2",
         lastDetectedAt: "2026-07-28T00:00:00.000Z",
       });
+      expect(result.changes).toBe(0);
 
       const persisted = await client.first<{ score: number; score_version: string }>(
         `SELECT score, score_version FROM signals WHERE id = ?`,
@@ -328,6 +330,48 @@ describe("refreshSignal", () => {
     } finally {
       await cleanupCompany(company.id);
       await cleanupCompany(otherCompany.id);
+    }
+  });
+
+  it("does NOT update a signal whose status is not 'active' (the AND status = 'active' guard)", async () => {
+    const company = await seedCompany("rs-guard", "Refresh Signal Guard Co");
+    try {
+      const signalId = await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        score: 50,
+        scoreVersion: "v1",
+        detectedAt: "2026-07-20T00:00:00.000Z",
+        headline: "Headline",
+        summary: "Summary.",
+      });
+
+      // No repo-layer "expire a signal" write function exists yet -- this
+      // raw UPDATE is the only way to reach the DB state under test here,
+      // same precedent as updateSignalScore's/markSignalStillActive's own
+      // guard tests above/below.
+      await client.run(`UPDATE signals SET status = 'expired' WHERE id = ?`, [signalId]);
+
+      const result = await refreshSignal(client, signalId, company.id, {
+        score: 99,
+        scoreVersion: "v2",
+        lastDetectedAt: "2026-07-28T00:00:00.000Z",
+      });
+      expect(result.changes).toBe(0);
+
+      const persisted = await client.first<{ score: number; score_version: string; last_detected_at: string }>(
+        `SELECT score, score_version, last_detected_at FROM signals WHERE id = ?`,
+        [signalId],
+      );
+      // Unchanged -- the guard prevented the write. Without it, this
+      // expired signal would have been silently resurrected until the
+      // expiration cron swept it again.
+      expect(persisted?.score).toBe(50);
+      expect(persisted?.score_version).toBe("v1");
+      expect(persisted?.last_detected_at).toBe("2026-07-20T00:00:00.000Z");
+    } finally {
+      await cleanupCompany(company.id);
     }
   });
 });

@@ -23,6 +23,12 @@ describe("computeFreshness", () => {
   it("approaches 0 for observations far in the past", () => {
     expect(computeFreshness(90)).toBeLessThan(0.01);
   });
+
+  it("clamps to 1.0 for negative days (clock skew), never exceeding the documented [0,1] range", () => {
+    // e^(-(-5)/14) = e^(5/14) ~= 1.426, which would violate
+    // ScoreComponents' documented [0,1] range without clamping.
+    expect(computeFreshness(-5)).toBe(1);
+  });
 });
 
 describe("computeVolume", () => {
@@ -166,6 +172,32 @@ describe("computeNewJobScore", () => {
       distinctLocationCount: 0,
     });
     expect(result.score).toBeGreaterThanOrEqual(0);
+  });
+
+  it("clamps quality to [0,1] for an out-of-range classificationConfidence", () => {
+    // classificationConfidence is caller-supplied and untrusted; an
+    // out-of-range value (e.g. 1.5) must not bias the weighted sum past
+    // what a legitimate confidence of 1.0 could produce, and must not
+    // persist an out-of-range value to signal_evidence.payload_json.
+    const overOne = computeNewJobScore({
+      daysSinceObservation: 0,
+      classificationConfidence: 1.5,
+      activeMatchingCount: 0,
+      newInLast14Days: 0,
+      newInPrior56Days: 0,
+      distinctLocationCount: 0,
+    });
+    expect(overOne.components.quality).toBe(1);
+
+    const underZero = computeNewJobScore({
+      daysSinceObservation: 0,
+      classificationConfidence: -0.3,
+      activeMatchingCount: 0,
+      newInLast14Days: 0,
+      newInPrior56Days: 0,
+      distinctLocationCount: 0,
+    });
+    expect(underZero.components.quality).toBe(0);
   });
 
   it("v2: volume/acceleration/breadth are computed from real inputs, not a fixed constant", () => {
