@@ -971,14 +971,17 @@ caught before it's copy-pasted into the next nine.
       decision 2026-08-04).** See policy note + provider note below.
 - [x] `jazzhr` — **not building: gated, no public tier (standing
       decision 2026-08-04).** See policy note + provider note below.
-- [ ] `bamboohr` — unverified, not gated — see note below, stays open
+- [x] `bamboohr` — **not building: scope closed at 8 (standing decision
+      2026-08-04).** See coverage-scope note below.
 
-**Status (2026-08-04): 8 of 11 P0 adapters done** (greenhouse, lever,
-ashby, smartrecruiters, workable, recruitee, personio, breezy).
-`teamtailor`/`jazzhr` are resolved as standing won't-builds (gated, no
-public tier — see policy note below, not open tasks). `bamboohr` is
-the only genuinely open item in this milestone, pending live-board
-verification. Re-verified this session:
+**Status (2026-08-04): coverage scope closed at 8 P0 adapters**
+(greenhouse, lever, ashby, smartrecruiters, workable, recruitee,
+personio, breezy) — decided with the user, not a gap to fill later.
+`teamtailor`/`jazzhr` are gated won't-builds (see policy note below);
+`bamboohr` was assessed as *possibly* buildable but is deliberately
+not pursued further — 8 reliable, maintained sources beats a wider
+surface that costs more to keep current with every provider API
+change. This milestone is done, not paused. Re-verified this session:
 `pnpm -r typecheck`/`lint` clean across all 6 workspace projects, zero
 errors (only the same pre-existing warnings this file already
 documents elsewhere); `pnpm --filter @hiring-signals/domain test`
@@ -990,6 +993,18 @@ still live and documented *before* writing the schema (spec §21: "Never
 invent API endpoints ... Verify source contracts first") — don't assume
 last-known-good API shapes from training data are current; check the
 provider's own developer docs.
+
+**Coverage scope closed at 8, decided with the user 2026-08-04: no
+further P0 adapters.** Every additional adapter is permanent
+maintenance surface — a schema that can drift with the provider's own
+API changes, fixtures to keep current, a fetch path that can start
+failing silently. 8 reliable sources that reliably publish openly
+beats a wider count that costs more to keep correct. This is a
+standing decision, not a backlog item — a future session should not
+propose `teamtailor`, `jazzhr`, `bamboohr`, or any other new provider
+without the user raising it first. The verification discipline below
+(spec §21) still applies if that ever happens, but the default from
+here is: stay on the 8.
 
 **Policy on gated providers, decided with the user 2026-08-04: do not
 force it.** If a provider's data requires an account-scoped secret
@@ -1005,9 +1020,7 @@ strictly better than an unreliable or credential-dependent adapter
 that could break the "no secrets in source config" posture (spec
 §14.1) or silently stop working when a borrowed/scraped path changes.
 `teamtailor`/`jazzhr` below fall under this permanently — not
-"blocked for now," blocked as a standing decision. `bamboohr` is a
-different case (see its own note below): not gated, just unverified,
-so it stays open pending verification rather than closed by policy.
+"blocked for now," blocked as a standing decision.
 
 **`teamtailor` — blocked, not a gap in effort (checked 2026-08-04).**
 Confirmed against Teamtailor's own official API docs
@@ -1048,44 +1061,36 @@ without a real decision about per-company secret storage (spec §14.1).
 Revisit if this changes or if per-company token storage is decided in
 scope.
 
-**`bamboohr` — unresolved, needs a live customer board to verify before
-building (checked 2026-08-04, inconclusive).** Multiple independent
+**`bamboohr` — not building: closed by coverage-scope decision, not by
+lack of a viable path (checked 2026-08-04).** Unlike `teamtailor`/
+`jazzhr`, this one was NOT found to be gated — multiple independent
 non-vendor-neutral sources (an Apify scraper listing, a competing
-aggregator's own marketing page) both describe a public,
-unauthenticated `https://{company}.bamboohr.com/careers/list` JSON
-endpoint with no anti-bot, matching this repo's `board_token`-as-
-subdomain model exactly (same shape as `personio`/`breezy`) — this is a
-more promising signal than `teamtailor`/`jazzhr` got, not a dead end.
-**However**, this session could not find or fetch a real customer's
-live `{company}.bamboohr.com/careers/...` board to confirm the claim
-first-party (BambooHR's own careers page has migrated to Greenhouse —
-`job-boards.greenhouse.io/bamboohr17/...` — so it can't serve as the
-verification example), and this container's network proxy blocks
-direct `curl`/`web_fetch` probes to unlisted third-party hosts (same
-limitation the `ashby`/`smartrecruiters`/`workable` sessions hit,
-worked around there by relying on official docs alone — BambooHR has no
-equivalent official public-API doc page to fall back on, since
-`documentation.bamboohr.com` covers only the authenticated HRIS/ATS API
-that a per-customer key gates). **Next step, not yet done:** find one
-real company still on native BambooHR careers hosting (not migrated to
-Greenhouse/Lever/etc.) and fetch `https://{that-company}.bamboohr.com/careers/list`
-directly to confirm the shape before writing a schema — spec §21's bar
-requires this, a scraper vendor's product description is not sufficient
-verification on its own. Flagged as the most likely of the three
-remaining adapters to be buildable, but not started without that
-confirmation.
+aggregator's own marketing page) describe a public, unauthenticated
+`https://{company}.bamboohr.com/careers/list` JSON endpoint with no
+anti-bot, matching this repo's `board_token`-as-subdomain model
+exactly (same shape as `personio`/`breezy`). That endpoint was never
+confirmed first-party — this session could not find or fetch a real
+customer's live `{company}.bamboohr.com/careers/...` board (BambooHR's
+own careers page has migrated to Greenhouse, so it can't serve as the
+verification example) — but the *reason* this adapter isn't being
+built is the scope decision above, not that verification failed. If
+the user ever decides to reopen adapter coverage, this is the
+best-positioned candidate to pick up first, and the verification step
+above (find one real company still on native BambooHR hosting, fetch
+the endpoint directly, confirm the shape per spec §21) is exactly
+where to resume — but that is not scheduled and should not be started
+without the user reopening it.
 
-- [ ] Update the ops source-management script's provider-enum usage as
-      each adapter below lands. Milestone D's `add-source.mjs`
-      (`infrastructure/scripts/`) is a plain `.mjs` script (not
-      TypeScript, so it can't import `@hiring-signals/domain`'s
-      `ATS_PROVIDERS` directly — see Milestone D's status note) and
-      instead inlines its own copy of the 11-provider list with a
-      comment pointing back to `packages/domain/src/providers.ts` as the
-      source of truth. Update that inlined copy by hand each time an
-      adapter lands here — there's no automated sync between the two.
-- [ ] Update AGENTS.md's roadmap status and this file as each adapter
-      lands.
+- [x] Ops source-management script's provider-enum usage — no update
+      needed. `add-source.mjs`'s inlined `ATS_PROVIDERS` list already
+      includes all 11 canonical providers (matching
+      `packages/domain/src/providers.ts`); the 3 not built
+      (`teamtailor`/`jazzhr`/`bamboohr`) simply have no `registry.ts`
+      entry, so `getAdapterForProvider` throws its typed
+      `UnsupportedProviderError` if anyone ever configures a source for
+      one — correct behavior for a closed-scope provider, not a bug.
+- [x] AGENTS.md's roadmap status — reflects the closed-at-8 scope as of
+      this session (see AGENTS.md itself for its own status line).
 
 ---
 
