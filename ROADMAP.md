@@ -382,6 +382,80 @@ the current code and fixed:
   `hiring-signals` Cloudflare account: 21/21 green, including the
   `refreshSignal` happy-path test with the new guard in place.
 
+**Second-round code review fix (2026-08-04, same day):** a follow-up
+review against the same two files found 7 more defects, all confirmed
+against the current code and fixed:
+6. `findActiveSignal`'s lookback cutoff was interpolated into the SQL
+   text instead of bound as a `?` parameter — a direct violation of
+   AGENTS.md's "never interpolate values into SQL text" rule even
+   though the value was an internal constant today. Fixed: the cutoff
+   is now computed in JS and bound as a real parameter.
+7. `refreshSignal` returned `void`, discarding `client.run()`'s own
+   `{ changes }` result — callers had no way to detect a 0-row no-op
+   (e.g. the `status = 'active'` guard from finding #4 silently
+   swallowing a write) and would call `appendSignalEvidence` for a
+   signal that was never actually touched. Fixed: now returns
+   `{ changes: number }`, matching `updateSignalScore`/
+   `markSignalStillActive`. Both call sites in `ingest-consumer.ts`
+   updated to check `changes === 0` and skip the evidence append.
+8. No partial UNIQUE index enforced "one active signal per (company,
+   role, type)" at the DB level — `findActiveSignal` + `createSignal`
+   was a check-then-act race. Fixed: migration
+   `0006_signals_one_active_unique.sql` (partial `UNIQUE` index on
+   `signals(company_id, role_category, signal_type) WHERE status =
+   'active'`), plus a new `DuplicateActiveSignalError` thrown from
+   `createSignal` via a new shared `isUniqueConstraintError` helper
+   (`lib/d1/unique-constraint.ts`).
+9. `createSignal`/`refreshSignal`/`updateSignalScore` accepted `score`
+   with no validation, letting a non-integer or out-of-range value reach
+   the DB verbatim. Fixed: new `InvalidSignalScoreError` +
+   `assertValidScore()` using domain's existing `signalScoreSchema`,
+   wired into all three functions.
+10. `findActiveSignal`'s cutoff previously mixed `datetime('now', ...)`
+    (D1/SQLite runtime clock) with the Worker's own clock elsewhere in
+    the pipeline. Fixed as part of #6 above (cutoff now comes from an
+    optional `nowIso` param, defaulting to the Worker's own
+    `Date.now()`).
+11. No test exercised `refreshSignal`'s `status = 'active'` race guard
+    directly. Fixed: added a guard test mirroring
+    `updateSignalScore`/`markSignalStillActive`'s existing ones, and
+    updated the two existing `refreshSignal` tests to assert on the new
+    `{ changes }` return value.
+12. `listSignalsNeedingReconciliation` returned `role_category`/
+    `signal_type` as domain enums with no runtime validation, unlike
+    `signals-repo.ts`'s `toListItem`/`CorruptSignalRowError` pattern for
+    the same columns. Fixed: added `toReconciliationRow()` (reusing
+    `CorruptSignalRowError`) with the same per-row degrade discipline as
+    `signals-repo.ts`'s `listSignals` — a corrupt row is logged and
+    skipped, not thrown or allowed to fail the whole batch.
+- Verify: `pnpm --filter @hiring-signals/db typecheck`/`lint` clean;
+  `pnpm --filter @hiring-signals/api typecheck`/`lint` clean (the latter
+  confirms the `ingest-consumer.ts` call-site changes for finding #7 are
+  sound; 1 pre-existing unrelated lint warning only). `pnpm --filter
+  @hiring-signals/domain test` 72/72 green. All 12 findings (both
+  rounds) are committed in `8ffeb25 fix(signals): resolve defects in
+  signal scoring and persistence`, including both migrations,
+  `ROADMAP.md`, and both test files — confirmed via `git show --stat
+  8ffeb25`.
+  **Known gap, not a regression:** `apps/api/test/jobs/
+  ingest-consumer.test.ts` (live-D1/AI/Vectorize/KV per its own header
+  comment) could not be run to a clean pass in this sandbox. Root cause
+  identified, not a code defect: this environment's default Node
+  (v20.20.0) is below wrangler's required >=22, surfacing as a broken KV
+  write inside test setup. Even after switching to the correct `nvm use
+  24.18.0` (this repo's own `.nvmrc`), an isolated single-test run
+  showed the ingest pipeline itself succeeding
+  (`jobsReceived`/`jobsNormalized`/`signalsCreated` all correct) before
+  timing out during cleanup, and the full 21-test file run timed out
+  across the board on cumulative `wrangler` subprocess overhead (dozens
+  of cold-start CLI calls per test, ~50-60s/test). Reads as sandbox
+  subprocess-load/timeout tuning, not a defect in the
+  `refreshSignal`/`createSignal` changes above — domain's 72/72 and
+  `packages/db`'s unit + live-D1 suites (26/26 + 21/21) both pass clean
+  against the same code. Re-running this file with faster/less-contended
+  `wrangler` CLI round trips (or `testTimeout` raised well past 90s) is
+  the concrete next step before trusting it as a release gate.
+
 - [x] `packages/db/src/signals-write-repo.ts` (separate file from the
       existing read-only `signals-repo.ts` — keeps the read/write split
       explicit and avoids one file mixing query-building styles):
