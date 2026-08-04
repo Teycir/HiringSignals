@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
+import { afterAll, describe, expect, it, vi, beforeEach } from "vitest";
 import type { Message, VectorizeVector } from "@cloudflare/workers-types";
 import type { IngestMessage } from "@hiring-signals/domain";
 import {
@@ -62,14 +62,19 @@ import type { Bindings } from "../../src/bindings";
  * and source_runs(id), so it must be deleted before either of those two,
  * and signal_evidence references signals(id) and optionally jobs(id), so
  * it goes first of all). Every test cleans up in a `finally`, with an
- * `afterEach` sweep as a second pass -- same discipline as every other
- * migrated file in this directory. Any Vectorize vector written for a
- * cleaned-up job id is also deleted (best-effort) -- the fake this file
- * used to have never had a real vector to clean up before.
+ * `afterAll` sweep as a second pass (2026-08-04: moved off `afterEach`
+ * -- see that hook's own comment for why) -- same discipline as every
+ * other migrated file in this directory, minus the per-test cadence.
+ * Any Vectorize vector written for a cleaned-up job id is also deleted
+ * (best-effort) -- the fake this file used to have never had a real
+ * vector to clean up before.
  *
  * Wall-clock cost: each live D1 call shells out to a fresh `wrangler d1
- * execute --remote` process (~3.7s of cold-start overhead per call, see
- * `apps/api/vitest.config.ts`'s header comment), and `handleIngestMessage`
+ * execute --remote` process (~3.2s per call, mostly wrangler's own CLI
+ * startup plus a real Cloudflare network round trip -- confirmed
+ * directly 2026-08-04 that `npx`'s own resolution overhead is only
+ * ~0.6-0.7s of that, not "almost entirely" as this comment previously
+ * said), and `handleIngestMessage`
  * makes many D1 calls per job (upsert, observation, lifecycle read/write,
  * classification write, activity-stats read, signal find/create/refresh,
  * evidence insert) plus one real Workers AI embed + Vectorize upsert per
@@ -132,9 +137,25 @@ async function cleanupCompany(companyId: string): Promise<void> {
   await Promise.all(jobRows.map((j) => cleanupVector(j.id)));
 }
 
-/** Belt-and-suspenders sweep for anything left behind by a run that
- * didn't reach its own `finally` -- matches on the shared TEST_PREFIX. */
-afterEach(async () => {
+/**
+ * Belt-and-suspenders sweep for anything left behind by a run that
+ * didn't reach its own `finally` -- matches on the shared TEST_PREFIX.
+ *
+ * Runs in `afterAll`, not `afterEach` (2026-08-04, to unblock safe
+ * `it.concurrent`): this sweep is a *global* prefix match across every
+ * `test-ic-%` company, not scoped to the test that just finished. Under
+ * `it.concurrent`, an `afterEach` firing after test A finishes would
+ * delete rows belonging to test B/C/D while they're still mid-flight
+ * (concretely: `FOREIGN KEY constraint failed` on `job_observations`/
+ * `signal_evidence` when the sweep deletes a `signals`/`jobs` row a
+ * concurrently-running test hasn't finished writing evidence against
+ * yet -- reproduced directly before this fix). `afterAll` still catches
+ * anything an individual test's own `try/finally { cleanupCompany(...) }`
+ * missed (a thrown assertion before that block, a crash mid-test), just
+ * once at the very end of the file instead of racing other in-flight
+ * tests along the way.
+ */
+afterAll(async () => {
   const companyRows = await client
     .all<{ id: string }>(`SELECT id FROM companies WHERE slug LIKE ?`, [`${TEST_PREFIX}-%`])
     .catch(() => [] as { id: string }[]);
