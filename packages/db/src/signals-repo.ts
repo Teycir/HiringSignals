@@ -539,6 +539,21 @@ export interface SignalEvidenceRow {
   evidence_type: string;
   observed_at: string;
   payload_json: string;
+  // LEFT JOIN jobs columns, added for spec §10.5's evidence table (job
+  // title, location, status, public URL per evidence row) -- these were
+  // previously unavailable on SignalDetail.evidence[] even though the
+  // underlying job row (title_raw/canonical_url/location_mode/status)
+  // already existed; job_id was persisted but never joined back.
+  // title_raw, not title_normalized -- the latter is lowercased for
+  // role-classification matching, not meant for display.
+  // LEFT JOIN, not INNER: job_id is nullable on signal_evidence, and a
+  // referenced job row must never make its own evidence row disappear
+  // if the join target is ever missing.
+  job_title: string | null;
+  job_canonical_url: string | null;
+  job_location_mode: string | null;
+  job_country_code: string | null;
+  job_status: string | null;
 }
 
 export async function getSignalDetail(
@@ -549,8 +564,18 @@ export async function getSignalDetail(
   if (!row) return null;
 
   const evidenceRows = await client.all<SignalEvidenceRow>(
-    `SELECT id, signal_id, job_id, evidence_type, observed_at, payload_json
-     FROM signal_evidence WHERE signal_id = ? ORDER BY observed_at DESC`,
+    `SELECT
+       se.id, se.signal_id, se.job_id, se.evidence_type, se.observed_at,
+       se.payload_json,
+       j.title_raw AS job_title,
+       j.canonical_url AS job_canonical_url,
+       j.location_mode AS job_location_mode,
+       j.country_code AS job_country_code,
+       j.status AS job_status
+     FROM signal_evidence se
+     LEFT JOIN jobs j ON j.id = se.job_id
+     WHERE se.signal_id = ?
+     ORDER BY se.observed_at DESC`,
     [signalId],
   );
 
@@ -612,6 +637,14 @@ export async function getSignalDetail(
         evidenceType: e.evidence_type,
         observedAt: e.observed_at,
         payload,
+        // From the LEFT JOIN jobs above -- all null when job_id is null
+        // (company-level signal, no anchoring job) or when the joined
+        // job row genuinely has no match (job_id set but row missing).
+        jobTitle: e.job_title,
+        jobCanonicalUrl: e.job_canonical_url,
+        jobLocationMode: e.job_location_mode,
+        jobCountryCode: e.job_country_code,
+        jobStatus: e.job_status,
       };
     }),
   };

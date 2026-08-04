@@ -40,6 +40,16 @@ export interface SignalDetail extends SignalListItem {
     evidenceType: string;
     observedAt: string;
     payload: unknown;
+    // From signals-repo.ts's getSignalDetail LEFT JOIN jobs (added for
+    // spec §10.5's evidence table: job title, location, status, public
+    // URL per row). All null when jobId is null (company-level signal)
+    // or the joined job row is otherwise missing -- never assume
+    // non-null just because jobId is set.
+    jobTitle: string | null;
+    jobCanonicalUrl: string | null;
+    jobLocationMode: string | null;
+    jobCountryCode: string | null;
+    jobStatus: string | null;
   }>;
 }
 
