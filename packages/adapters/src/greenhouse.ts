@@ -30,7 +30,14 @@ const greenhouseJobSchema = z.object({
   offices: z.array(greenhouseOfficeSchema).optional(),
   updated_at: z.string().optional(),
   requisition_id: z.string().optional(),
-  metadata: z.array(z.unknown()).optional(),
+  // Real boards (e.g. Stripe's) send `metadata: null` rather than omitting
+  // the key entirely when a job has no custom fields -- `.optional()`
+  // alone only accepts a missing key, not an explicit null, so real
+  // production payloads failed schema validation here (found 2026-08-05
+  // via a real Greenhouse board, not a synthetic fixture). `metadata` is
+  // parsed but never read by normalize() below, so widening the type is
+  // safe with no behavior change downstream.
+  metadata: z.array(z.unknown()).nullable().optional(),
 });
 
 const greenhouseBoardSchema = z.object({

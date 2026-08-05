@@ -82,6 +82,22 @@ describe("greenhouseAdapter.normalize", () => {
     expect(at(result, 1).requisitionId).toBeUndefined();
   });
 
+  it("accepts metadata: null (real boards, e.g. Stripe's, send null rather than omitting the key)", () => {
+    const payloadWithNullMetadata = {
+      jobs: [
+        {
+          id: 999,
+          title: "Example Role",
+          absolute_url: "https://boards.greenhouse.io/examplecorp/jobs/999",
+          metadata: null,
+        },
+      ],
+    };
+    const result = greenhouseAdapter.normalize(payloadWithNullMetadata, source);
+    expect(result).toHaveLength(1);
+    expect(at(result, 0).externalJobId).toBe("999");
+  });
+
   it("throws GreenhouseSchemaError on a payload missing required fields", () => {
     expect(() => greenhouseAdapter.normalize(malformedFixture, source)).toThrow(
       GreenhouseSchemaError,
