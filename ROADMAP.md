@@ -311,8 +311,8 @@ since ArxivExplorer itself is still on React 18. `three` is not needed —
 
 All subtasks F.1 through F.7 are fully implemented and passing across `apps/web`:
 
-- [x] **F.1 — Layout & AppShell (`apps/web/app/layout.tsx`, `components/app-shell.tsx`)**: Minimal Brutalist container, header masthead, mobile navigation toggle, zero-auth public accessibility.
-- [x] **F.2 — Design System & Tokens (`apps/web/app/globals.css`)**: Minimal Brutalist design system implementation — black/white core palette, hard borders, scarce chartreuse accent, custom typography tokens.
+- [x] **F.1 — Layout & AppShell (`apps/web/src/app/layout.tsx`, `components/app-shell.tsx`)**: Minimal Brutalist container, header masthead, mobile navigation toggle, zero-auth public accessibility.
+- [x] **F.2 — Design System & Tokens (`apps/web/src/app/globals.css`)**: Minimal Brutalist design system implementation — black/white core palette, hard borders, scarce chartreuse accent, custom typography tokens.
 - [x] **F.3 — Primitives (`components/ui/*`)**: Brutalist buttons, tags, input controls, badges, and card wrappers without glassmorphism/gradients.
 - [x] **F.4 — Signal Feed & Filter Rail (`/signals`, `components/filter-rail.tsx`, `components/signal-feed.tsx`, `components/signal-card.tsx`)**:
   - Filter Rail: role multi-select, company autocomplete combobox with debounced search, score presets, source selector, signal-type toggles, work mode filter, recency filter.
