@@ -586,57 +586,97 @@ against Cloudflare's docs, not assumed) means a retried queue message
 never duplicates. Verify: happy-path + failure-path tests in
 `ingest-consumer.test.ts`; workspace-wide 140/140.
 
-**I.3 — Backfill script + query-side hybrid search.**
-`infrastructure/scripts/backfill-embeddings.mjs` (plain Node, direct
-Workers AI/Vectorize REST calls — deliberately not routed through any
-`/admin` surface, which spec §13.5/§14.1 already killed). Query-side:
-`apps/api/src/services/semantic-search.ts`'s
-`findSemanticSignalMatches` embeds the query, queries Vectorize,
-resolves hits to signals, caches query embeddings in KV for 24h, never
-throws (degrades to empty array on any live-dependency failure). Pure
-merge/ranking in `packages/domain/src/signal-search-merge.ts`
-(`mergeSignalMatches`: keyword weight 1.0 vs semantic weight 0.6,
-dedup by signal id). No dedicated `apps/api` route-level test yet (no
-`apps/api/test/routes/` convention exists in this repo) — the
-pure-logic core has full coverage and the service's own contract
-degrades safely, so this is a tracked follow-up, not a blocker. Verify:
-`signal-search-merge.test.ts` 7/7 (part of domain's 70/70), `pnpm -r
-typecheck`/`lint` clean.
+- [x] **I.3 — Backfill script + query-side hybrid search** ✅ verified
+      2026-08-01 (code already complete from a prior session; this
+      roadmap entry had lagged behind actual shipped state — corrected
+      here, no new code needed)
+      (`infrastructure/scripts`, `packages/db`, `apps/api/src/routes`)
+  - `backfill-embeddings.mjs` present (13KB,
+    `infrastructure/scripts/backfill-embeddings.mjs`) — `wrangler d1
+    execute --json` + direct Workers AI/Vectorize REST call pattern,
+    no authenticated admin route.
+  - Query-side hybrid search fully wired: `apps/api/src/services/
+    semantic-search.ts` (`findSemanticSignalMatches` — embeds query via
+    `env.AI`, queries `env.VECTORIZE`, resolves hits to signals via
+    `packages/db`'s `findSignalsByJobIds`, 24h KV-cached query
+    embeddings, never throws) called from `apps/api/src/routes/
+    signals.ts`; pure merge/ranking logic lives in `packages/domain/
+    src/signal-search-merge.ts` (`mergeSignalMatches`, keyword weight
+    1.0 vs semantic weight 0.6, dedup by signal id, `matchedVia`
+    keyword/semantic/both).
+  - Verified 2026-08-01: `packages/domain/test/signal-search-merge.test.ts`
+    (7/7 passing, part of 70/70 domain suite), `pnpm -r typecheck`
+    clean across all 6 workspace packages, `pnpm -r lint` clean (0
+    errors). No dedicated `apps/api` route-level test yet (no
+    `apps/api/test/routes/` directory exists) — live Vectorize/Workers
+    AI query smoke-test against a backfilled index still outstanding;
+    tracked as a follow-up, not blocking since the pure-logic core
+    (merge ranking) has full coverage and the service degrades to
+    empty-array-never-throws on any live-dependency failure per its
+    own header contract.
 
-**I.4 — Search UI.** Built on top of Milestone F's already-landed
-dashboard shell (F had landed by the time this started, so the "still
-near-scaffold" framing in this item's original text was already
-stale). `lib/searchHistory.ts` (SSR-safe localStorage recent-searches),
-`components/search-bar.tsx` (250ms debounce, reuses the existing filter
-state model, no new plumbing), `components/more-like-this-button.tsx`.
-**Deviation, re-verified against spec §9.4 rather than assumed:**
-"more like this" is `/signals?q=<headline>` (reusing the same semantic
-search path), not an id-based Vectorize lookup — spec §9.4 states no
-new query parameter is introduced for v1. `AbstractSearch`'s dedicated
-paste-text UI stays deferred, though the shipped search bar already
-accepts arbitrarily long pasted text through the same `q` field with
-no server-side max-length, so the capability exists without a separate
-UI. A per-item "matched via semantic" badge is scoped out per spec
-§9.4's "no explainability guarantee in v1." No dedicated component test
-convention exists yet in `apps/web` — a manual click-through is still
-worth doing before relying on this for real traffic. Verify: `pnpm
---filter @hiring-signals/web typecheck`/`lint` clean, production
-`build` exit 0 (confirms SSR guards work, not just typecheck).
+- [x] **I.4 — Search UI** (`apps/web`, spec §11) ✅ verified 2026-08-05
+  - **Correction to this item's original text:** "`apps/web` is still
+    near-scaffold" was stale by the time this was picked up — Milestone
+    F (dashboard: `app-shell.tsx`, `filter-rail.tsx` + all 6 individual
+    filters, `signal-feed.tsx`, `signal-card.tsx`, `signal-detail.tsx`)
+    and L.2 (export button) had already landed. `SearchFilters.tsx`'s
+    chip-toggle → existing filters was therefore already done coming
+    into this item, confirmed by reading `filter-rail.tsx` rather than
+    assumed; the only genuinely missing piece was the search box itself,
+    recent-searches, and more-like-this.
+  - Built: `lib/searchHistory.ts` (SSR-safe localStorage recent-search
+    list, capped/deduped), `components/search-bar.tsx` (debounced 250ms
+    per spec 12.2's convention, reuses `use-debounced-value.ts` exactly
+    as that file's own header comment anticipated), wired into
+    `signals-view.tsx` above `SignalFeed` — both read/write the *same*
+    `FilterState.q`/`toApiParams` plumbing I.3 already built, no new
+    state model. `components/more-like-this-button.tsx` wired into
+    `signal-detail.tsx`.
+  - **Deviation from this item's original plan, both re-verified against
+    spec 9.4 rather than assumed:** `MoreLikeThisButton` does NOT do
+    ArxivExplorer's `?like=:id` id-based Vectorize `getByIds` lookup —
+    spec 9.4 states plainly "no new query parameter is introduced for
+    v1 of this addendum" and any future one "must be added here first...
+    before being implemented." Implemented instead as
+    `/signals?q=<signal.headline>`, reusing the exact same
+    `findSemanticSignalMatches` embedding path the search bar already
+    exercises. `AbstractSearch.tsx`'s dedicated paste-text-mode UI
+    stays deferred exactly as this item's original text already flagged
+    it — not built, but noted that the shipped search bar already
+    accepts arbitrarily long pasted text through the same `q` field
+    (no server-side max-length), so the underlying capability exists
+    without a separate UI variant.
+  - **Scoped out, not silently skipped:** a per-item "matched via
+    semantic" badge (spec 9.4's own "no guarantee of semantic-match
+    explainability in v1" — `mergeSignalMatches`'s `matchedVia`/
+    `similarity` are computed server-side but deliberately not returned
+    to the client) and a separate aggregate "N filters active" badge
+    (the `SearchFilters.tsx` parenthetical in this item's original
+    text — judged already covered by each individual filter control's
+    own selected-state styling, not a named checklist item of its own).
+  - Verified 2026-08-05: `pnpm --filter @hiring-signals/web typecheck`
+    clean, `pnpm --filter @hiring-signals/web lint` clean (0 errors),
+    `pnpm --filter @hiring-signals/web build` exit 0 — real Next
+    production build, not just typecheck, so `/` and `/signals`'s
+    static prerender actually executed the new components server-side
+    (confirms `searchHistory.ts`'s `isBrowser()` SSR guards work, not
+    just that they typecheck). No dedicated component test exists yet
+    (no test file convention for `apps/web` established in this repo
+    so far) — a manual click-through in a running `next dev` session is
+    still worth doing before relying on this for real traffic, same
+    caveat I.3 already left for its own missing route-level test.
 
 - [ ] **I.5 — Classification assist (deferred until I.1–I.4 verified)**
-  - Not detailed task-by-task yet — deliberately, per this milestone's
-    scope decision. When started: semantic similarity between a job's
-    embedding and each role category's centroid/exemplar set becomes an
-    *additional* signal `classifyJob` can optionally consult only in the
-    already-existing "low title confidence, need department/description
-    disambiguation" path (spec §6.2 step 5) — never a gate on whether
-    classification runs at all, and never able to push a job to
-    `autoClassified: true` on its own if the deterministic channels
-    (title/department/description per H.1's structured-channel guard)
-    disagree. Expand this into real sub-tasks, spec-cited against the
-    new §9.5 addendum's classification-assist section, before writing
-    any `classification.ts` change — same "expand before starting"
-    discipline this file already applies to Milestones F and G.
+  - Not detailed — deliberately. Semantic similarity between job
+    embedding and role-category centroids becomes *additional* signal
+    `classifyJob` consults only in already-existing "low title
+    confidence, need department/description disambiguation" path (spec
+    §6.2 step 5) — NEVER a gate on whether classification runs, NEVER
+    can push to `autoClassified: true` on its own if deterministic
+    channels (per H.1's structured-channel guard) disagree. Expand
+    into real sub-tasks, spec-cited against §9.5 addendum, before
+    writing any `classification.ts` change.
 
 ---
 
@@ -998,127 +1038,6 @@ sign-off, not a G-only task.
       are entirely F; §19.1 is mixed.
 - [ ] Any failing item gets its own follow-up task here rather than
       being silently marked "close enough."
-
----
-
-## Milestone I — Semantic search (Workers AI + Vectorize): I.3–I.5 remaining
-
-Read spec §9.4 (Semantic search, added 2026-07-29) before starting.
-I.1 (Vectorize + AI binding) and I.2 (embedding write path) are done —
-see Completed milestones above.
-
-### Scope reminder (decided 2026-07-29)
-1. Free-text search over signals/jobs layered onto existing `q` param
-   (company-name search + semantic leg, merged by score). Ships first.
-2. Classification assist: semantic similarity as *additional* input,
-   NEVER replacement for deterministic rules. Out of scope until I.1–I.4
-   done. Pipeline must keep working identically with empty Vectorize
-   index (spec §6.2).
-
-### UI inspiration: ArxivExplorer (again, UX mechanics NOT styling)
-`SearchBoxHome.tsx` (hero search + filter chips + active-filter badge),
-`SearchFilters.tsx` (chip-toggle panel, `useSearchParams`-driven —
-shareable/bookmarkable URLs), `MoreLikeThisButton.tsx` (one-line
-`router.push(?like=:id)`), `RecentSearches.tsx` (localStorage-backed
-last-N-queries), `AbstractSearch.tsx` (paste-arbitrary-text mode,
-textarea + live char count + ⌘Enter submit). Port the shape, restyle
-from scratch against spec §11 tokens — do not copy Tailwind classes
-verbatim.
-
-Spec: §9.4, §6.2 (I.5 guardrail), §9.3 (existing `q` param), §11 (visual
-system), §13.1 (Workers AI/Vectorize bindings).
-
-- [x] **I.3 — Backfill script + query-side hybrid search** ✅ verified
-      2026-08-01 (code already complete from a prior session; this
-      roadmap entry had lagged behind actual shipped state — corrected
-      here, no new code needed)
-      (`infrastructure/scripts`, `packages/db`, `apps/api/src/routes`)
-  - `backfill-embeddings.mjs` present (13KB,
-    `infrastructure/scripts/backfill-embeddings.mjs`) — `wrangler d1
-    execute --json` + direct Workers AI/Vectorize REST call pattern,
-    no authenticated admin route.
-  - Query-side hybrid search fully wired: `apps/api/src/services/
-    semantic-search.ts` (`findSemanticSignalMatches` — embeds query via
-    `env.AI`, queries `env.VECTORIZE`, resolves hits to signals via
-    `packages/db`'s `findSignalsByJobIds`, 24h KV-cached query
-    embeddings, never throws) called from `apps/api/src/routes/
-    signals.ts`; pure merge/ranking logic lives in `packages/domain/
-    src/signal-search-merge.ts` (`mergeSignalMatches`, keyword weight
-    1.0 vs semantic weight 0.6, dedup by signal id, `matchedVia`
-    keyword/semantic/both).
-  - Verified 2026-08-01: `packages/domain/test/signal-search-merge.test.ts`
-    (7/7 passing, part of 70/70 domain suite), `pnpm -r typecheck`
-    clean across all 6 workspace packages, `pnpm -r lint` clean (0
-    errors). No dedicated `apps/api` route-level test yet (no
-    `apps/api/test/routes/` directory exists) — live Vectorize/Workers
-    AI query smoke-test against a backfilled index still outstanding;
-    tracked as a follow-up, not blocking since the pure-logic core
-    (merge ranking) has full coverage and the service degrades to
-    empty-array-never-throws on any live-dependency failure per its
-    own header contract.
-
-- [x] **I.4 — Search UI** (`apps/web`, spec §11) ✅ verified 2026-08-05
-  - **Correction to this item's original text:** "`apps/web` is still
-    near-scaffold" was stale by the time this was picked up — Milestone
-    F (dashboard: `app-shell.tsx`, `filter-rail.tsx` + all 6 individual
-    filters, `signal-feed.tsx`, `signal-card.tsx`, `signal-detail.tsx`)
-    and L.2 (export button) had already landed. `SearchFilters.tsx`'s
-    chip-toggle → existing filters was therefore already done coming
-    into this item, confirmed by reading `filter-rail.tsx` rather than
-    assumed; the only genuinely missing piece was the search box itself,
-    recent-searches, and more-like-this.
-  - Built: `lib/searchHistory.ts` (SSR-safe localStorage recent-search
-    list, capped/deduped), `components/search-bar.tsx` (debounced 250ms
-    per spec 12.2's convention, reuses `use-debounced-value.ts` exactly
-    as that file's own header comment anticipated), wired into
-    `signals-view.tsx` above `SignalFeed` — both read/write the *same*
-    `FilterState.q`/`toApiParams` plumbing I.3 already built, no new
-    state model. `components/more-like-this-button.tsx` wired into
-    `signal-detail.tsx`.
-  - **Deviation from this item's original plan, both re-verified against
-    spec 9.4 rather than assumed:** `MoreLikeThisButton` does NOT do
-    ArxivExplorer's `?like=:id` id-based Vectorize `getByIds` lookup —
-    spec 9.4 states plainly "no new query parameter is introduced for
-    v1 of this addendum" and any future one "must be added here first...
-    before being implemented." Implemented instead as
-    `/signals?q=<signal.headline>`, reusing the exact same
-    `findSemanticSignalMatches` embedding path the search bar already
-    exercises. `AbstractSearch.tsx`'s dedicated paste-text-mode UI
-    stays deferred exactly as this item's original text already flagged
-    it — not built, but noted that the shipped search bar already
-    accepts arbitrarily long pasted text through the same `q` field
-    (no server-side max-length), so the underlying capability exists
-    without a separate UI variant.
-  - **Scoped out, not silently skipped:** a per-item "matched via
-    semantic" badge (spec 9.4's own "no guarantee of semantic-match
-    explainability in v1" — `mergeSignalMatches`'s `matchedVia`/
-    `similarity` are computed server-side but deliberately not returned
-    to the client) and a separate aggregate "N filters active" badge
-    (the `SearchFilters.tsx` parenthetical in this item's original
-    text — judged already covered by each individual filter control's
-    own selected-state styling, not a named checklist item of its own).
-  - Verified 2026-08-05: `pnpm --filter @hiring-signals/web typecheck`
-    clean, `pnpm --filter @hiring-signals/web lint` clean (0 errors),
-    `pnpm --filter @hiring-signals/web build` exit 0 — real Next
-    production build, not just typecheck, so `/` and `/signals`'s
-    static prerender actually executed the new components server-side
-    (confirms `searchHistory.ts`'s `isBrowser()` SSR guards work, not
-    just that they typecheck). No dedicated component test exists yet
-    (no test file convention for `apps/web` established in this repo
-    so far) — a manual click-through in a running `next dev` session is
-    still worth doing before relying on this for real traffic, same
-    caveat I.3 already left for its own missing route-level test.
-
-- [ ] **I.5 — Classification assist (deferred until I.1–I.4 verified)**
-  - Not detailed — deliberately. Semantic similarity between job
-    embedding and role-category centroids becomes *additional* signal
-    `classifyJob` consults only in already-existing "low title
-    confidence, need department/description disambiguation" path (spec
-    §6.2 step 5) — NEVER a gate on whether classification runs, NEVER
-    can push to `autoClassified: true` on its own if deterministic
-    channels (per H.1's structured-channel guard) disagree. Expand
-    into real sub-tasks, spec-cited against §9.5 addendum, before
-    writing any `classification.ts` change.
 
 ---
 
