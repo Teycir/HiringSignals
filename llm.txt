@@ -25,30 +25,30 @@ infrastructure/  D1 migrations (0001-0004) + ops scripts (add-source, update-sou
                   add-company, source-health, backfill-embeddings)
 ```
 
-## Current Status (2026-07-30)
-**Phases 0-1 complete. Milestones A-E, H, and I.1-I.2 complete. Dashboard UI (Milestone F) and query-side semantic search (I.3-I.5) not started.**
+## Current Status (2026-08-05)
+**Phases 0-1 complete. Milestones A-F, H, L, M, and I.1-I.2 complete. 8 active ATS adapters live. Dashboard UI complete at `/signals` and `/signals/[signalId]`.**
 Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in sync with it.
 
 **Done:**
 - pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base
-- Next.js 16 + Tailwind + TS scaffold with API client wired to Worker API (UI itself not built)
+- Next.js 16 Minimal Brutalist dashboard UI (`apps/web`): `/signals` feed route with responsive `FilterRail` (roles, company combobox with debounced autocomplete, preset score thresholds, sources, signal types, work modes, recency), `SignalCard` list with cursor pagination, loading/error/empty states, and bi-directional URL state sync
+- Signal Detail view (`/signals/[signalId]`) displaying evidence table, score breakdown (V/A/B), and 7/30/90-day trend blocks
 - Hono Worker with full middleware chain, real cron scheduler, real queue consumer, daily reconciliation cron
-- Role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas
-- Full D1 schema (companies, sources, source_runs, jobs, job_observations, signals, signal_evidence + indexes), migrations 0001-0004
-- Parameterized D1 client wrapper with read (signals/companies/facets) and write (sources/jobs/signals/companies) repositories
-- API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources
-- Full ingestion pipeline: fetch -> validate -> normalize -> upsert -> observe -> lifecycle -> classify -> score -> signal, idempotent per (sourceId, runId)
-- Real Volume/Acceleration/Breadth signal scoring (score_version v2) and all four company-level signal types (hiring_burst, role_acceleration, multi_location, persistent_demand)
-- Jobs embedded into a Vectorize index at ingest time (semantic search write path); query-side hybrid search is implemented as a service but not yet called from the live route
-- `/api/v1/admin/*`: three secret-bearer-token-gated idempotent pipeline triggers (source-run, scheduler-flush, reconcile) -- not a login a user sees, never called from apps/web
-- 163 tests passing workspace-wide (`pnpm -r test`); `pnpm -r typecheck`/`pnpm -r lint` clean
+- 8 P0 ATS adapters implemented with fixture-driven tests & location inference: Greenhouse, Lever, Ashby, Recruitee, Breezy, Personio, SmartRecruiters, Workable (Teamtailor, JazzHR, BambooHR marked as standing wont-builds due to unauthenticated API constraints)
+- Full D1 schema with indexes, migrations 0001-0004
+- Parameterized D1 client wrapper with read (signals/companies/facets/export) and write (sources/jobs/signals/companies) repositories
+- API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources, /export/signals.csv
+- CSV Export endpoint (`GET /api/v1/export/signals.csv`): RFC-4180 stream with 2,000-row cap and `X-Export-Truncated` header
+- Bulk source onboarding ops script (`infrastructure/scripts/import-sources.mjs`)
+- Security hardening: `safeRateLimitIdentifier()` SHA-256 base64url hashing in `rate-limit.ts` (prevents IPv6 colon injection and scrubs IP PII) and trusted-first IP extraction in `client-ip.ts`
+- Domain lifecycle refinement: 3-day absence threshold (`daysSinceLastSeen >= 3`) before flagging reopened roles
+- Jobs embedded into a Vectorize index at ingest time (semantic search write path); query-side hybrid search service & merge logic implemented
+- Zero-mocks live test infrastructure (`packages/test-support`) against real Cloudflare D1/KV resources
+- All workspace tests passing workspace-wide (`pnpm -r test`); `pnpm -r typecheck`/`pnpm -r lint` clean
 
 **Not yet done:**
-- 9 remaining P0 ATS adapters (Ashby, SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR)
-- Brutalist design tokens / dashboard UI (Phase 2 / Milestone F) -- apps/web has no real routes yet
-- Query-side semantic search wiring, embedding backfill script, search UI (Milestone I.3/I.4)
+- Query-side hybrid search wiring into live GET /api/v1/signals route, embedding backfill run, search UI (Milestone I.3/I.4)
 - Classification assist from embeddings (I.5, deferred until I.3/I.4 ship)
-- CSV export endpoint (spec §10.6)
 - Production deployment (Cloudflare Pages + Workers)
 - No authentication anywhere in this app, by permanent design decision (spec §3/§13.5/§14.1) -- not a gap to fill
 

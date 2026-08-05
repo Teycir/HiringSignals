@@ -75,9 +75,19 @@ export function computeLifecycleTransition(
   }
 
   if (wasPresentThisRun) {
-    // Reappearance after closure -> active + reopened_job candidate.
+    // Reappearance after closure -> active + reopened_job candidate
+    // ONLY if the absence was a meaningful (>= 3 days) — otherwise the
+    // disappearance was a scrape artifact (ATS pagination glitch, 4xx blip,
+    // job temporarily fell off page 2 for one run then came back) not a real
+    // hiring signal. The 3-day threshold is intentionally larger than a
+    // weekend + a 1-run outage so real-world outages don't spam reopened_job.
     if (currentState === "closed") {
-      return { nextState: "active", nextConsecutiveMissingRuns: 0, candidateSignal: "reopened_job" };
+      const wasMeaningfullyAbsent = daysSinceLastSeen >= 3;
+      return {
+        nextState: "active",
+        nextConsecutiveMissingRuns: 0,
+        candidateSignal: wasMeaningfullyAbsent ? "reopened_job" : undefined,
+      };
     }
     // Present while already active/possibly_closed: counter resets, no new signal.
     return { nextState: "active", nextConsecutiveMissingRuns: 0, candidateSignal: undefined };

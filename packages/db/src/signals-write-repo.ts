@@ -187,16 +187,12 @@ export async function findActiveSignal(
     nowIso?: string;
   },
 ): Promise<SignalRowMinimal | null> {
-  const now = params.nowIso ? new Date(params.nowIso) : new Date();
-  const cutoff = new Date(
-    now.getTime() - ACTIVE_SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString();
   return client.first<SignalRowMinimal>(
     `SELECT id, status, score, first_detected_at, last_detected_at
      FROM signals
      WHERE company_id = ? AND role_category = ? AND signal_type = ? AND status = 'active'
-       AND last_detected_at >= ?`,
-    [params.companyId, params.roleCategory, params.signalType, cutoff],
+       AND last_detected_at >= datetime('now', ?)`,
+    [params.companyId, params.roleCategory, params.signalType, `-${ACTIVE_SIGNAL_LOOKBACK_DAYS} days`],
   );
 }
 
@@ -263,17 +259,13 @@ export async function findActiveSignalsBatch(
     // guard in jobs-repo.ts).
     return result;
   }
-  const now = params.nowIso ? new Date(params.nowIso) : new Date();
-  const cutoff = new Date(
-    now.getTime() - ACTIVE_SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString();
   const placeholders = params.signalTypes.map(() => "?").join(",");
   const rows = await client.all<SignalRowMinimal & { signal_type: string }>(
     `SELECT id, signal_type, status, score, first_detected_at, last_detected_at
      FROM signals
      WHERE company_id = ? AND role_category = ? AND signal_type IN (${placeholders}) AND status = 'active'
-       AND last_detected_at >= ?`,
-    [params.companyId, params.roleCategory, ...params.signalTypes, cutoff],
+       AND last_detected_at >= datetime('now', ?)`,
+    [params.companyId, params.roleCategory, ...params.signalTypes, `-${ACTIVE_SIGNAL_LOOKBACK_DAYS} days`],
   );
   for (const row of rows) {
     // signal_type here came from params.signalTypes (already-validated

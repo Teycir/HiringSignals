@@ -565,7 +565,10 @@ export async function getSignalDetail(
   client: D1Client,
   signalId: string,
 ): Promise<SignalDetail | null> {
-  const row = await client.first<SignalRow>(`${BASE_SELECT} WHERE s.id = ?`, [signalId]);
+  const row = await client.first<SignalRow>(
+    `${BASE_SELECT} WHERE s.id = ? AND s.status = 'active'`,
+    [signalId],
+  );
   if (!row) return null;
 
   const evidenceRows = await client.all<SignalEvidenceRow>(

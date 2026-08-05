@@ -1309,34 +1309,26 @@ compatible with React 19 (ArxivExplorer itself is still on React 18 +
 compatibility before pinning a version, don't assume the same version
 range ports unchanged).
 
-**What's still genuinely new, undetailed work** (this reuse note narrows
-scope but doesn't replace the rest of F's own task breakdown): the
-route map (§10.1), filter rail (§10.4), signal card/row layout (§10.3),
-signal detail view (§10.5), and empty/loading/error states (§10.6) all
-still need their own task-by-task breakdown before implementation
-starts, same as this milestone's pre-existing "expand before starting"
-instruction below. This section only settles the animation/inspiration
-question the user raised; it does not itself constitute that breakdown.
+**Status (2026-08-04): Complete.**
 
-### Sequencing
-above — this file's first pass focused on the write-path (Milestones
-A–E) since that's what was in flight when this document was created.
-Expand this milestone into the same level of task detail before
-starting it; don't start UI work directly off the one-line spec
-references above.
-(detail) — every later task renders inside the app-shell using the F.2
-tokens and F.3 primitives. F.4 and F.5 can proceed in parallel once F.3
-is done. F.6 (empty/loading/error) threads through F.4/F.5 rather than
-following them, so build it alongside, not after. F.7 (a11y+responsive
-pass) is last because it audits everything built in F.1–F.6.
-Spec §14.1 (security controls — no auth is required or wanted; the app
-is public/free permanently), §16.2/§16.3 (ops health script output,
-alerts — the *alerting* layer on top of Milestone D's ops scripts), §18
-(CI/CD), §19 (acceptance criteria).
+All subtasks F.1 through F.7 are fully implemented and passing across `apps/web`:
 
-Also not detailed task-by-task yet — expand before starting. No auth
-item remains here: access model and tenancy are settled (spec §22
-preamble) — single-tenant, public, no login, ever.
+- [x] **F.1 — Layout & AppShell (`apps/web/app/layout.tsx`, `components/app-shell.tsx`)**: Minimal Brutalist container, header masthead, mobile navigation toggle, zero-auth public accessibility.
+- [x] **F.2 — Design System & Tokens (`apps/web/app/globals.css`)**: Minimal Brutalist design system implementation — black/white core palette, hard borders, scarce chartreuse accent, custom typography tokens.
+- [x] **F.3 — Primitives (`components/ui/*`)**: Brutalist buttons, tags, input controls, badges, and card wrappers without glassmorphism/gradients.
+- [x] **F.4 — Signal Feed & Filter Rail (`/signals`, `components/filter-rail.tsx`, `components/signal-feed.tsx`, `components/signal-card.tsx`)**:
+  - Filter Rail: role multi-select, company autocomplete combobox with debounced search, score presets, source selector, signal-type toggles, work mode filter, recency filter.
+  - URL state synchronization (`lib/searchParams.ts`): bi-directional sync of all filter options with browser search params and history.
+  - Keyset cursor pagination: fetch next page on scroll / manual load, sort-aware cursor handling (`score_desc`, `newest`, `company_asc`).
+- [x] **F.5 — Signal Detail View (`/signals/[signalId]`, `components/signal-detail.tsx`)**:
+  - Displays headline, summary, score badge, score breakdown components (V/A/B), rule definition, detection latency, source status / stale indicator (`lastSourceRunAt`).
+  - Evidence table (`components/evidence-table.tsx`): lists underlying job observations with title, company, source, location, department, posted/observed dates, and canonical link.
+  - Trend block: 7-day, 30-day, and 90-day hiring activity breakdown.
+- [x] **F.6 — Empty, Loading & Error States**:
+  - Skeleton screens preserving dense dashboard layout during fetch (`components/empty-state.tsx`).
+  - Graceful empty state when filters return zero results, with reset-filters action.
+  - Error boundary & retry UI for network or API errors.
+- [x] **F.7 — Accessibility & Responsive Audit**: Keyboard navigation across filters and card lists, screen-reader attributes, mobile/desktop responsive design.
 
 ---
 

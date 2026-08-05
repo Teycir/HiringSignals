@@ -43,6 +43,47 @@ export interface RateLimitDecision {
 const WINDOW_SHARDS = 60;
 
 /**
+ * Safe identifier for rate-limit keys. Identifiers that are allowed to
+ * contain the key-part separator (":") — most notably IPv6 addresses like
+ * `2001:db8::1` — break the shard-key structure
+ * `${prefix}${identifier}:${shardIndex}` because we cannot tell where the
+ * identifier ends and the shard index begins. Two identifiers that share a
+ * prefix-up-to-a-colon then bleed counters into each other's shards,
+ * defeating the rate limit (security review 2026-07-30 HIGH 1 finding).
+ *
+ * To avoid this, hash the raw identifier with SHA-256 and base64url-encode
+ * the digest: 32 bytes → 43 base64url chars, all URL-safe (no colons, no
+ * slashes), no internal separator. Hashing also prevents KV keys from
+ * containing PII (client IPs) in plaintext — useful if a third-party ever
+ * needs to list namespace contents for debugging.
+ *
+ * Uses the WebCrypto API only (Cloudflare Workers and Node 18+ both have
+ * it), with a graceful fallback to the raw identifier on the astronomically
+ * unlikely path that crypto.subtle.digest itself throws. On that fallback
+ * path we still don't crash the hot path: we just lose the separator
+ * safety net, same behavior as before this fix.
+ */
+export async function safeRateLimitIdentifier(raw: string): Promise<string> {
+  try {
+    const bytes = new TextEncoder().encode(raw);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    // base64url encode without padding (same algorithm as lib/text/base64url.ts
+    // bufferToBase64Url; reproduced here to avoid a cross-module import so
+    // this file remains zero-dependency and copy-pasteable into any project).
+    const u8 = new Uint8Array(digest);
+    let binary = "";
+    for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]!);
+    const b64 = btoa(binary);
+    return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  } catch {
+    // Degrade to raw on digest-throw; never let crypto failures take down
+    // the request path. Still better than crashing, per project preference
+    // for graceful degradation of security primitives.
+    return raw;
+  }
+}
+
+/**
  * Increment the active shard atomically. Workers KV exposes `increment`
  * which does a get+add+put server-side (no client race); older Workers
  * types expose it via the runtime but the type package may omit it, so
@@ -87,6 +128,13 @@ export async function checkRateLimit(
   identifier: string,
   params: RateLimitParams,
 ): Promise<RateLimitDecision> {
+  // Hash identifier before constructing shard keys (see safeRateLimitIdentifier
+  // docstring for why: IPv6 colons + separator injection would defeat the
+  // rate limit otherwise). Do this once at the top of checkRateLimit so
+  // the 61 shard reads/writes (1 active + 60 window) all use the same
+  // safe key. Also PII-scrubs the IP out of the KV key itself.
+  const safeId = await safeRateLimitIdentifier(identifier);
+
   const nowSec = Math.floor(Date.now() / 1000);
   const shardSizeSec = Math.max(1, Math.floor(params.windowSeconds / WINDOW_SHARDS));
   const activeShard = Math.floor(nowSec / shardSizeSec) % WINDOW_SHARDS;
@@ -107,7 +155,7 @@ export async function checkRateLimit(
 
   // First read the active shard alone so we can atomically bump it and
   // avoid re-fetching it in the multi-shard loop below.
-  const activeKey = `${params.keyPrefix}${identifier}:${activeShard}`;
+  const activeKey = `${params.keyPrefix}${safeId}:${activeShard}`;
   const activePrior = await readShard(activeKey);
 
   // Atomically add 1 to the active shard. activeShardNew = value after the increment.
@@ -120,7 +168,7 @@ export async function checkRateLimit(
     const shardIndex = (activeShard - i + WINDOW_SHARDS) % WINDOW_SHARDS;
     const shardBase = shardStartSec - i * shardSizeSec;
     if (shardBase + shardSizeSec < windowStartSec) break;
-    const key = `${params.keyPrefix}${identifier}:${shardIndex}`;
+    const key = `${params.keyPrefix}${safeId}:${shardIndex}`;
     shardPromises.push(readShard(key));
   }
   const otherShards = await Promise.all(shardPromises);
