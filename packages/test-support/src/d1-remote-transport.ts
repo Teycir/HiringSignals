@@ -17,7 +17,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -93,6 +93,24 @@ export interface WranglerStatementResult {
   meta?: { changes?: number };
 }
 
+function getCloudflareApiToken(): string | undefined {
+  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
+  if (process.env.CF_TOKEN) return process.env.CF_TOKEN;
+  const envLocalPath = path.join(REPO_ROOT, ".env.local");
+  if (existsSync(envLocalPath)) {
+    try {
+      const content = readFileSync(envLocalPath, "utf-8");
+      const cfMatch = content.match(/^(?:CF_TOKEN|CLOUDFLARE_API_TOKEN)=(.+)$/m);
+      if (cfMatch?.[1]) {
+        return cfMatch[1].trim();
+      }
+    } catch (err) {
+      console.warn(`[d1-remote-transport] Failed to read .env.local: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return undefined;
+}
+
 /** One raw `wrangler d1 execute --remote --json` invocation, no retry.
  * Rejects with the real wrangler stderr/stdout on failure -- no
  * swallowed errors, since a live-network test needs the real error text
@@ -101,10 +119,16 @@ export interface WranglerStatementResult {
  * single-attempt logic without duplicating the process-wiring. */
 function execRemoteOnce(sql: string): Promise<WranglerStatementResult[]> {
   return new Promise((resolve, reject) => {
+    const token = getCloudflareApiToken();
+    const env = {
+      ...process.env,
+      PATH: resolveWranglerCompatiblePath(),
+      ...(token ? { CLOUDFLARE_API_TOKEN: token } : {}),
+    };
     const child = spawn(
       "npx",
       ["wrangler", "d1", "execute", "hiring-signals", "--remote", "--json", "--command", sql],
-      { cwd: API_DIR, shell: false, env: { ...process.env, PATH: resolveWranglerCompatiblePath() } },
+      { cwd: API_DIR, shell: false, env },
     );
     let stdout = "";
     let stderr = "";
@@ -113,7 +137,8 @@ function execRemoteOnce(sql: string): Promise<WranglerStatementResult[]> {
     child.on("error", (err) => reject(new Error(`Failed to spawn wrangler: ${err.message}`)));
     child.on("close", (code) => {
       if (code !== 0) {
-        reject(new Error(`wrangler d1 execute --remote failed (exit ${code}):\n${stderr || stdout}\nSQL: ${sql}`));
+        const output = [stderr, stdout].filter(Boolean).join("\n");
+        reject(new Error(`wrangler d1 execute --remote failed (exit ${code}):\n${output}\nSQL: ${sql}`));
         return;
       }
       try {

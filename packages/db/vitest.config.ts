@@ -64,10 +64,11 @@ export default defineConfig({
     // wrangler subprocess spawned at all) before reaching its first
     // test -- 4 is a deliberate, moderate step down from 15, not a
     // fully serialized run.
+    fileParallelism: false,
     poolOptions: {
       forks: {
-        minForks: 4,
-        maxForks: 4,
+        minForks: 1,
+        maxForks: 1,
       },
     },
   },

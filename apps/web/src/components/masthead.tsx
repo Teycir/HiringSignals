@@ -1,11 +1,8 @@
 import { AnimatedTagline } from "@/components/animated-tagline";
-import { Button } from "@/components/ui/button";
 import { DataLabel } from "@/components/ui/data-label";
+import { ExportButton } from "@/components/export-button";
 
-// spec 10.2: wordmark, last-sync timestamp, [EXPORT CSV] button. Export
-// is disabled here -- Milestone L.1's export route params aren't
-// threaded through yet (F landed before L.1), so this stubs the
-// affordance rather than wiring a broken link. Re-enable once L.1 ships.
+// spec 10.2: wordmark, last-sync timestamp, [EXPORT CSV] button (Milestone L.2).
 //
 // Wraps to two rows under ~400px (spec 11.5's 320px-width check found
 // the single-row layout squeezing the wordmark into a mid-word line
@@ -19,10 +16,9 @@ export function Masthead() {
       <AnimatedTagline text="HIRING//SIGNALS" className="whitespace-nowrap" />
       <div className="flex items-center gap-4">
         <DataLabel className="text-soft-ink whitespace-nowrap">last sync: pending</DataLabel>
-        <Button variant="secondary" disabled title="Export ships in Milestone L.1">
-          Export CSV
-        </Button>
+        <ExportButton />
       </div>
     </header>
   );
 }
+

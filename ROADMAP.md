@@ -3572,14 +3572,10 @@ dashboard is read-only.
     and the route itself is a thin query-parse + call + CSV-serialize
     layer with no independent logic to test beyond what's covered.
 
-- [ ] **L.2 — Export button in dashboard UI** (`apps/web`, spec §10.2)
-  - Spec §10.2 masthead mockup has `[EXPORT CSV]` top-right. Wire to
-    `GET /api/v1/export/signals.csv` with current URL's filter params
-    forwarded. Plain anchor `href` from `useSearchParams()` — no
-    fetch/blob dance needed. Disable (grey, not hidden) when empty
-    state.
-  - **Sequence after Milestone F** — can't build until F's filter
-    rail + URL-param state exist.
+- [x] **L.2 — Export button in dashboard UI** (`apps/web`, spec §10.2) ✅ verified 2026-08-05
+  - Built `ExportButton` (`apps/web/src/components/export-button.tsx`) and `buildExportUrl` (`apps/web/src/lib/searchParams.ts`).
+  - Wired `ExportButton` into `Masthead` (`apps/web/src/components/masthead.tsx`). Reads current search params via `useSearchParams()`, converts `since` to absolute `observedSince` ISO datetime, and generates a direct download `href` for `GET /api/v1/export/signals.csv`.
+
 
 ---
 

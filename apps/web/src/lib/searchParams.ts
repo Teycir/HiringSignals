@@ -214,4 +214,22 @@ export function toApiParams(state: FilterState, now = new Date()): SignalListPar
   };
 }
 
+/**
+ * Builds the download URL for GET /api/v1/export/signals.csv (Milestone L.2, spec §10.2).
+ * Serializes the current FilterState as URL query params, resolving relative `since`
+ * (e.g. 7d) to the absolute `observedSince` ISO datetime expected by the export API.
+ */
+export function buildExportUrl(state: FilterState, now = new Date()): string {
+  const params = serializeFilterState(state);
+  const observedSince = resolveObservedSince(state.since, now);
+  if (observedSince) {
+    params.delete("since");
+    params.set("observedSince", observedSince);
+  }
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8787";
+  const query = params.toString();
+  return `${apiBase}/api/v1/export/signals.csv${query ? `?${query}` : ""}`;
+}
+
+
 
