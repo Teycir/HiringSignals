@@ -648,10 +648,14 @@ state; this milestone was the task breakdown for getting there.
 Transport layer lives in `packages/test-support`: `live-d1-client.ts`/
 `live-d1-database.ts` (`wrangler d1 execute --remote`),
 `live-cf-bindings.ts` (direct REST for AI/VECTORIZE/KV, 90s vitest
-timeouts). All 4 `packages/db/test/*.test.ts` plus all 3
-`apps/api/test/jobs/*.test.ts` files (`reconciliation.test.ts`,
-`scheduler.test.ts`, `ingest-consumer.test.ts`) are migrated off
-in-memory fakes onto live Cloudflare resources. Two permanent,
+timeouts). All 7 `packages/db/test/*.test.ts` files (the original 4
+plus `jobs-repo.test.ts`, `sources-repo.test.ts`, and
+`signals-export-repo.test.ts` — added afterward by Milestones K.2, H,
+and L respectively, each migrated onto live D1 from the start) plus
+all 3 `apps/api/test/jobs/*.test.ts` files
+(`reconciliation.test.ts`, `scheduler.test.ts`,
+`ingest-consumer.test.ts`) are migrated off in-memory fakes onto live
+Cloudflare resources. Two permanent,
 documented policy exceptions remain (see `AGENTS.md`): ATS adapter
 mocking (`vi.mock("@hiring-signals/adapters")` — no live equivalent
 exists for a real third-party ATS board) and in-memory `INGEST_QUEUE`
@@ -660,12 +664,14 @@ deployed consumer is subscribed to).
 
 ### Inventory (2026-07-30) — every test file's original fake/mock usage
 
-Corrected the milestone intro's own file list: `sources-repo.test.ts`
-was named (in this section and `AGENTS.md`) as needing migration, but
-no such file ever existed on disk — a pre-existing gap, not something
-this migration created, left out of scope.
+At the time this section was written, `sources-repo.test.ts` did not
+exist on disk (added later by Milestone H, and `jobs-repo.test.ts`
+later still by K.2 — both landed already using live D1, so neither
+ever carried the fake shape below). `AGENTS.md`'s file list has since
+been corrected to match.
 
-**`packages/db/test/*.test.ts` (4 files):** each defined its own local
+**`packages/db/test/*.test.ts` (the original 4 files):** each defined
+its own local
 `createFakeClient()` — a plain `D1Client` object literal recording
 calls and returning canned values. Most assertions checked the fake's
 captured SQL text/params, not real behavior — migrated to seed real
@@ -1146,19 +1152,23 @@ spec §1.1 — without measuring it, cadence tuning is guesswork.
     call site never passed a real `now`. Both fixed. All 6
     `reconciliation.test.ts` tests pass against live D1.
 
-- [ ] **K.2 — Detection-latency tracking**
-      (`packages/db/src/jobs-repo.ts`, `apps/api/src/jobs/ingest-consumer.ts`,
+- [x] **K.2 — Detection-latency tracking** — ✅ done 2026-08-01
+      (`packages/db/src/jobs-repo.ts`,
       `infrastructure/scripts/source-health.mjs`)
-  - Already computable from existing columns (no schema change):
-    `first_seen_at` − `source_runs.started_at` via
-    `job_observations` → `source_runs` JOIN filtered to the run that
-    first observed each job.
-  - New repo function `getDetectionLatencyStats(client, { sourceId?, since })`
-    → `p50LatencyMinutes`, `p95LatencyMinutes`, `sampleCount`.
-  - Surface in `source-health.mjs` table: add `p50 latency` column.
-    This is spec §20 Phase 3 step 6's concrete output.
-  - Verify: repo test asserting correct p50/p95 on seeded known-timing
-    rows; manual `source-health.mjs` run confirming column appears.
+  - `getDetectionLatencyStats(client, { sourceId?, companyId?, since? })`
+    in `packages/db/src/jobs-repo.ts` — `first_seen_at` −
+    `source_runs.started_at` via `job_observations` → `source_runs`,
+    MIN(observed_at) grouping so a later re-poll of the same job
+    doesn't skew the sample. Returns `p50LatencyMinutes`,
+    `p95LatencyMinutes`, `sampleCount`.
+  - `source-health.mjs` gained a `p50 latency` column, computed via a
+    correlated scalar subquery duplicating the repo function's query
+    shape by hand (ops scripts shell out through `wrangler d1 execute`
+    and can't import `@hiring-signals/db` directly). Spec §20 Phase 3
+    step 6's concrete output.
+  - Verified: `jobs-repo.test.ts` (12 tests, live D1) covers null/zero
+    baseline, MIN-observation grouping, and source/company filtering;
+    manual `source-health.mjs` run confirmed the column renders.
 
 ---
 
