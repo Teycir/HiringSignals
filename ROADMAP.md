@@ -3276,23 +3276,57 @@ system), §13.1 (Workers AI/Vectorize bindings).
     empty-array-never-throws on any live-dependency failure per its
     own header contract.
 
-- [ ] **I.4 — Search UI** (`apps/web`, spec §11)
-  - `apps/web` is still near-scaffold, so this is genuinely new UI.
-    This item is ONLY the search surface; the rest of F's dashboard
-    stays scoped to Milestone F — don't let I.4 silently become all
-    of F.
-  - Port (not copy) from ArxivExplorer, restyled against spec §11:
-    `SearchBoxHome.tsx` → signals-feed search bar (placeholder:
-    "Try: remote rust backend, hybrid platform engineer…"),
-    `SearchFilters.tsx` chip-toggle → existing filters
-    (`roles`/`locationMode`/`country`/`source`/`signalType`/`minScore`),
-    `MoreLikeThisButton.tsx` → "similar roles" on signal detail via
-    Vectorize getByIds+query, `RecentSearches.tsx` +
-    `lib/searchHistory.ts` localStorage pattern — reuse logic near
-    verbatim, restyle list only. `AbstractSearch.tsx` paste-text
-    mode is optional/lower-priority — flag as follow-on.
-  - Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint` clean;
-    smoke-test search-with-filters round-trips through URL correctly.
+- [x] **I.4 — Search UI** (`apps/web`, spec §11) ✅ verified 2026-08-05
+  - **Correction to this item's original text:** "`apps/web` is still
+    near-scaffold" was stale by the time this was picked up — Milestone
+    F (dashboard: `app-shell.tsx`, `filter-rail.tsx` + all 6 individual
+    filters, `signal-feed.tsx`, `signal-card.tsx`, `signal-detail.tsx`)
+    and L.2 (export button) had already landed. `SearchFilters.tsx`'s
+    chip-toggle → existing filters was therefore already done coming
+    into this item, confirmed by reading `filter-rail.tsx` rather than
+    assumed; the only genuinely missing piece was the search box itself,
+    recent-searches, and more-like-this.
+  - Built: `lib/searchHistory.ts` (SSR-safe localStorage recent-search
+    list, capped/deduped), `components/search-bar.tsx` (debounced 250ms
+    per spec 12.2's convention, reuses `use-debounced-value.ts` exactly
+    as that file's own header comment anticipated), wired into
+    `signals-view.tsx` above `SignalFeed` — both read/write the *same*
+    `FilterState.q`/`toApiParams` plumbing I.3 already built, no new
+    state model. `components/more-like-this-button.tsx` wired into
+    `signal-detail.tsx`.
+  - **Deviation from this item's original plan, both re-verified against
+    spec 9.4 rather than assumed:** `MoreLikeThisButton` does NOT do
+    ArxivExplorer's `?like=:id` id-based Vectorize `getByIds` lookup —
+    spec 9.4 states plainly "no new query parameter is introduced for
+    v1 of this addendum" and any future one "must be added here first...
+    before being implemented." Implemented instead as
+    `/signals?q=<signal.headline>`, reusing the exact same
+    `findSemanticSignalMatches` embedding path the search bar already
+    exercises. `AbstractSearch.tsx`'s dedicated paste-text-mode UI
+    stays deferred exactly as this item's original text already flagged
+    it — not built, but noted that the shipped search bar already
+    accepts arbitrarily long pasted text through the same `q` field
+    (no server-side max-length), so the underlying capability exists
+    without a separate UI variant.
+  - **Scoped out, not silently skipped:** a per-item "matched via
+    semantic" badge (spec 9.4's own "no guarantee of semantic-match
+    explainability in v1" — `mergeSignalMatches`'s `matchedVia`/
+    `similarity` are computed server-side but deliberately not returned
+    to the client) and a separate aggregate "N filters active" badge
+    (the `SearchFilters.tsx` parenthetical in this item's original
+    text — judged already covered by each individual filter control's
+    own selected-state styling, not a named checklist item of its own).
+  - Verified 2026-08-05: `pnpm --filter @hiring-signals/web typecheck`
+    clean, `pnpm --filter @hiring-signals/web lint` clean (0 errors),
+    `pnpm --filter @hiring-signals/web build` exit 0 — real Next
+    production build, not just typecheck, so `/` and `/signals`'s
+    static prerender actually executed the new components server-side
+    (confirms `searchHistory.ts`'s `isBrowser()` SSR guards work, not
+    just that they typecheck). No dedicated component test exists yet
+    (no test file convention for `apps/web` established in this repo
+    so far) — a manual click-through in a running `next dev` session is
+    still worth doing before relying on this for real traffic, same
+    caveat I.3 already left for its own missing route-level test.
 
 - [ ] **I.5 — Classification assist (deferred until I.1–I.4 verified)**
   - Not detailed — deliberately. Semantic similarity between job

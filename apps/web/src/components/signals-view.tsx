@@ -27,6 +27,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { Facets } from "@hiring-signals/db/src/types";
 import { AppShell } from "@/components/app-shell";
 import { FilterRail } from "@/components/filter-rail";
+import { SearchBar } from "@/components/search-bar";
 import { SignalFeed } from "@/components/signal-feed";
 import { fetchFacets } from "@/lib/api-client";
 import { parseFilterState, serializeFilterState, type FilterState } from "@/lib/searchParams";
@@ -87,7 +88,14 @@ export function SignalsView() {
     <AppShell
       filters={<FilterRail filters={filters} onChange={handleFiltersChange} facets={facets} />}
     >
-      <div className="p-4 md:p-6">
+      <div className="p-4 md:p-6 flex flex-col gap-4">
+        {/* Milestone I.4, spec 9.4: free-text hybrid search bar. Wired to
+            the same filters/handleFiltersChange the filter rail already
+            uses -- SearchBar only ever touches FilterState.q, so a
+            search and a filter change compose naturally (both funnel
+            through this one onChange -> URL -> SignalFeed refetch
+            pipeline). */}
+        <SearchBar filters={filters} onChange={handleFiltersChange} />
         <SignalFeed filters={filters} onResetFilters={handleResetFilters} />
       </div>
     </AppShell>

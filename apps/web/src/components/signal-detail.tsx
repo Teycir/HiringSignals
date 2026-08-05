@@ -21,6 +21,7 @@ import { ScoreBreakdown } from "./score-breakdown";
 import { EvidenceTable } from "./evidence-table";
 import { TrendBlock } from "./trend-block";
 import { OutreachPrompt } from "./outreach-prompt";
+import { MoreLikeThisButton } from "./more-like-this-button";
 
 interface SignalDetailProps {
   signal: SignalDetailType;
@@ -85,6 +86,12 @@ export function SignalDetail({ signal }: SignalDetailProps) {
           Open public job post &#8599;
         </a>
       )}
+
+      {/* Milestone I.4, spec 9.4: "similar roles" via the same free-text
+          semantic search the search bar uses (see
+          more-like-this-button.tsx's header for why this isn't an
+          id-based Vectorize lookup). */}
+      <MoreLikeThisButton headline={signal.headline} />
 
       <OutreachPrompt signal={signal} />
     </div>
