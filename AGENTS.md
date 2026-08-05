@@ -148,26 +148,13 @@ oversight to "fix" later:
     inconsistency for another. Capturing sends in-memory is therefore
     the accepted trade-off, not a gap to close later.
 
-**Follow-up items (core migration complete 2026-08-01):** all 7 test
-files that previously used in-memory Cloudflare stand-ins (4
-`packages/db/test/*.test.ts` + `reconciliation.test.ts` /
-`scheduler.test.ts` / `ingest-consumer.test.ts` in `apps/api/test/jobs/`)
-now run against live `hiring-signals` Cloudflare resources, with exit
-code 0 and the two documented permanent exceptions above (ATS adapter
-mock + INGEST_QUEUE in-memory capture). Two tracked items remain open,
-neither blocking use of the migrated suite:
-
-- CI workflow (`.github/workflows/` directory exists but contains no
-  `*.yml`/`*.yaml` files as of 2026-08-01): add `CF_TOKEN` as a
-  GitHub Actions secret and confirm `pnpm -r test` passes with
-  live network access.
-- `packages/test-support` follow-ups: dotenv parsing in
-  `live-cf-bindings.ts` `loadCfToken()`, factoring duplicated
-  `execRemote`/`runWrangler` spawn plumbing, credential preflight
-  alignment, SQL redaction in thrown errors, and a short README /
-  package doc comment explaining each live client's requirements.
-
-See ROADMAP.md Milestone J for the full list with per-item detail.
+**Core migration complete 2026-08-01:** all 7 test files that
+previously used in-memory Cloudflare stand-ins (4 `packages/db/test/
+*.test.ts` + `reconciliation.test.ts` / `scheduler.test.ts` /
+`ingest-consumer.test.ts` in `apps/api/test/jobs/`) now run against
+live `hiring-signals` Cloudflare resources, with exit code 0 and the
+two documented permanent exceptions above (ATS adapter mock +
+INGEST_QUEUE in-memory capture).
 
 **Observed (2026-08-03): the "concurrency risk accepted, not
 mitigated" clause above materialized for real, not just hypothetically
