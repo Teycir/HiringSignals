@@ -842,9 +842,8 @@ the `CACHE` namespace).
 
 ## Milestone G — Hardening, deploy (Phase 3 remainder / Phase 4)
 
-Spec §14 (security controls, privacy posture, legal copy), §15
-(performance/reliability targets), §16 (observability/ops), §18
-(CI/CD), §19 (acceptance criteria).
+Spec §14.1 (security controls), §15 (performance/reliability targets),
+§18 (CI/CD), §19 (acceptance criteria).
 
 Not a blank slate: `apps/api` already has a real middleware chain
 (request-id, client-ip, security-headers, `freeReadTier` rate limiting,
@@ -852,13 +851,13 @@ Not a blank slate: `apps/api` already has a real middleware chain
 namespace with 30-day auto-expiry, and adapter fetch targets hard-coded
 per provider in `registry.ts` (not DB-driven) — SSRF surface is small
 by construction already. G is mostly a **verification and gap-closing
-pass**: confirm what's built meets each spec §14/§15/§16 bullet, then
+pass**: confirm what's built meets each spec §14.1/§15 bullet, then
 build only what's actually missing. No auth item: single-tenant,
 public, no login, ever (spec §22 preamble).
 
-G.1 (security audit) runs first — it determines which of G.2–G.5's
-items are real gaps vs. already-satisfied. G.6/G.7 close the milestone
-once G.1–G.5 land.
+G.1 (security audit) runs first — it determines which of G.2's items
+are real gaps vs. already-satisfied. G.4/G.5 close the milestone once
+G.1–G.3 land.
 
 ### G.1 — Security control audit against spec §14.1 (do this first) — ✅ done 2026-08-03
 
@@ -916,32 +915,7 @@ G.2, not duplicated in F.
       clean; G.1's SQL/log sweeps didn't need re-running since neither
       was touched by these changes.
 
-### G.3 — Privacy posture (spec §14.2) + legal copy (spec §14.3)
-
-- [ ] Confirm no candidate-personal-data fields (names, emails, resumes)
-      are captured anywhere in the ingestion pipeline — spot-checked
-      `greenhouseJobSchema` (job/org fields only), extend the check to
-      every adapter's Zod schema.
-- [ ] Operator-accessible source removal workflow (§14.2: disable a
-      source + remove retained raw payloads on request, after legal
-      review) — check whether `update-source.mjs` already covers
-      "disable"; raw payloads already auto-expire after 30 days
-      (`raw-payload-store.ts`) — confirm whether an immediate-delete
-      path is needed beyond that passive expiry.
-- [ ] Footer/legal copy — spec §14.3 requires this **verbatim** string
-      somewhere in the app: "Signals are derived from publicly
-      accessible job listings and may be incomplete or outdated. Verify
-      current information at the linked source before contacting an
-      organization." Belongs in Milestone F's `app-shell.tsx` footer;
-      tracked here since it's a spec §14 requirement.
-- [ ] Audit signal/summary copy for the forbidden phrasing spec §14.3
-      calls out ("actively buying," "in market," "budget approved") —
-      check `buildHeadline`/`buildSummary` (Milestones C/H/K) use only
-      the sanctioned phrasing.
-- [ ] Verify: grep for the three forbidden phrases across
-      `packages/domain/src` and `apps/api/src`.
-
-### G.4 — Performance targets verification (spec §15)
+### G.3 — Performance targets verification (spec §15)
 
 Mostly verification against already-built infrastructure (facet KV
 cache, cursor pagination, indexed queries) rather than new work.
@@ -965,36 +939,7 @@ cache, cursor pagination, indexed queries) rather than new work.
 - [ ] Verify: record actual measured numbers against each spec §15
       target, dated, so drift is detectable later.
 
-### G.5 — Observability: structured events + alerting (spec §16)
-
-- [ ] Audit `ingest-consumer.ts`'s structured log events against spec
-      §16.1's required field list (`request_id`, `source_id`, `provider`,
-      `run_id`, `adapter_version`, `http_status`, `duration_ms`,
-      `jobs_received`, `jobs_normalized`, `signals_created`,
-      `error_code`) — confirm every field is actually emitted, not just
-      some; note any gap.
-- [ ] `source-health.mjs` ops script — confirm it already implements
-      spec §16.2's compact table (Source/Company/Provider/Last
-      success/Next poll/Jobs/Failures/Status) and the four status
-      definitions (Healthy/Delayed/Degraded/Disabled) — this predates
-      this roadmap expansion (Milestone D), verify it matches the
-      spec table exactly rather than assuming.
-- [ ] Alerting (spec §16.3: provider-wide failure > 20%/1h, source
-      missing 24h+ beyond cadence, schema mismatch, queue retries
-      exhausted, API 5xx threshold, D1 query duration regression) — spec
-      explicitly frames this as "alert *the operator*, not user-facing
-      push" (§20 Phase 3 step 4). Given no dashboard/paging
-      infrastructure exists yet, decide the actual delivery mechanism
-      for a solo-maintainer project (e.g. a periodic ops-script run
-      that prints an alert-worthy table, vs. real push/email) before
-      building — don't assume a notification service is in scope
-      without deciding this first.
-- [ ] Verify: confirm each alert condition above is at least
-      *computable* from existing structured logs/D1 tables today, even
-      if delivery isn't automated yet — flag any condition that needs a
-      new logged field to even be computable.
-
-### G.6 — CI/CD hardening (spec §18)
+### G.4 — CI/CD hardening (spec §18)
 
 Spec §18 describes a 4-environment model (Local/Preview/Staging/
 Production) and a 7-step deployment sequence. Current CI
@@ -1024,9 +969,9 @@ file.
       already sufficient given versioned fields exist — confirm rather
       than build something new.
 
-### G.7 — Acceptance criteria sign-off (spec §19)
+### G.5 — Acceptance criteria sign-off (spec §19)
 
-Run this last, after G.1–G.6 and Milestone F are both complete — several
+Run this last, after G.1–G.4 and Milestone F are both complete — several
 §19 items are UI-dependent (F) and several are backend-dependent (G).
 Don't attempt this checklist until both are done; it's a joint
 sign-off, not a G-only task.
