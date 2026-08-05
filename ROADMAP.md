@@ -919,25 +919,52 @@ G.2, not duplicated in F.
 
 Mostly verification against already-built infrastructure (facet KV
 cache, cursor pagination, indexed queries) rather than new work.
+Attempted 2026-08-05: production D1 currently has only 6 `jobs` rows
+and 7 `source_runs` (both from 2 test-fixture sources, `acme-corp`/
+`globo-labs`, now `enabled=0`) — too little real traffic for a
+meaningful p95/quota measurement, so items below split into what's
+verifiable now vs. blocked on real source volume.
 
 - [ ] Measure actual p95 latency for cached facet response and
       uncached `/api/v1/signals` (targets: facet < 250ms, uncached
-      signals query < 800ms for 50 results) — needs a realistic seeded
-      row count, not just the 20-company fixture; decide seed-data vs.
-      synthetic-dataset tradeoff before treating a pass/fail as
-      meaningful.
-- [ ] Confirm first dashboard payload stays ≤ 50 signal rows — cross-
-      check once Milestone F.4 ships that its default `limit` matches.
+      signals query < 800ms for 50 results) — still blocked on a
+      realistic row count; the 6-row production table and 20-company
+      local fixture are both too small to produce a meaningful number.
+      Decide seed-data vs. synthetic-dataset tradeoff before attempting.
+- [x] **Confirm first dashboard payload stays ≤ 50 signal rows** —
+      ✅ done 2026-08-05. `apps/web/src/lib/searchParams.ts`'s
+      `DEFAULT_LIMIT = 50` and `apps/api/src/routes/signals.ts`'s
+      `limit: z.coerce.number().int().min(1).max(100).default(50)`
+      agree — dashboard default and API default both 50, hard cap 100.
 - [ ] Confirm Queues/D1 daily usage stays ≤ 85% of free-tier allowance —
-      needs real production traffic or a synthetic load estimate;
-      likely not answerable until Milestone E's adapters have run
-      against a real source cohort for a while.
-- [ ] Confirm source ingestion success rate ≥ 98% and duplicate job
-      rate < 1% — both measurable now from `source_runs`/`jobs`;
-      write a repeatable ops-script query (extend `source-health.mjs`?)
-      rather than a one-off check.
+      still blocked: no enabled production source exists today (both
+      registered sources are disabled test fixtures), so there's no
+      real polling cadence to measure against the free-tier ceiling.
+- [x] **Confirm source ingestion success rate ≥ 98% and duplicate job
+      rate < 1%** — partially done 2026-08-05, tooling built, numbers
+      not yet meaningful. New `infrastructure/scripts/
+      ingestion-metrics.mjs` computes both from `source_runs`/`jobs`
+      directly (`--remote`/`--local`, `--since` window, defaults to
+      30 days). Run against production: 0% success (0/7) — both runs
+      are the same 2 disabled test-fixture sources hitting real 404s,
+      not a live-cohort failure rate; not comparable to the ≥98% target
+      until a real source is enabled. Duplicate rate: hard duplicates
+      are structurally 0% (`jobs.UNIQUE(source_id, external_job_id)`
+      + `upsertJob`'s update-on-resight behavior); "likely duplicate"
+      (title+location+company, spec §7) is 0% on the 6 rows that exist,
+      but **found a real gap along the way**: spec §7's third
+      likely-duplicate field, `requisitionId`, is parsed from adapter
+      payloads into the domain model
+      (`packages/domain/src/job.ts`) but never persisted — no `jobs`
+      column, no migration, confirmed by reading the schema and every
+      call site, not assumed. The script's duplicate check is title+
+      location+company only and says so in its own output; closing the
+      `requisitionId` gap is new scope, not part of this verification
+      item, and isn't tracked as a separate task here since it's a
+      minor, spec-flagged approximation rather than a functional bug.
 - [ ] Verify: record actual measured numbers against each spec §15
-      target, dated, so drift is detectable later.
+      target, dated, so drift is detectable later — done for the
+      "≤ 50 rows" target above; the rest wait on real source traffic.
 
 ### G.4 — CI/CD hardening (spec §18)
 
