@@ -1346,3 +1346,122 @@ data already collected; no new ingestion beyond one migration.
     breadth, and persistence of public hiring activity. Not a
     prediction of intent or budget." (spec §14.3).
   - Verify: route tests asserting fields present in both endpoints.
+
+---
+
+## Milestone R — RSS feed (`GET /api/v1/feed.rss`)
+
+Closes the notification gap identified in the usefulness analysis
+(2026-08-06): passive job seekers who must actively check the dashboard
+will default to LinkedIn instead. RSS delivers push-style alerts via
+any feed reader (Feedly, NetNewsWire, etc.) with no accounts, no
+personal data, and no new infrastructure. Per-saved-search filtering
+via URL params means one feed URL per role/location combination —
+better UX than a single email digest for the target IT-specialist
+audience.
+
+**Dependencies:** Milestone F complete (dashboard + filter URL params
+established). No new schema or migrations — pure read path over
+existing `signals-repo.ts`. Sequence after Milestone L (CSV export)
+since the route pattern is identical.
+
+### R.1 — RSS serializer (`lib/text/rss.ts`)
+
+Pure function `buildRssFeed(signals: SignalListItem[], meta: { selfUrl:
+string, title: string, description: string, lastBuildDate: string }):
+string` — returns a valid RSS 2.0 XML string. No external dependency,
+same pattern as the sibling `lib/text/csv.ts`/`lib/text/content-hash.ts`
+(repo-root `lib/text/`, not under `packages/` — confirmed against both
+existing files; route imports it the same relative way `export.ts`
+imports `toCsvDocument`: `../../../../lib/text/rss`).
+
+Field mapping:
+
+| RSS 2.0 field | Signal field |
+|---|---|
+| `<title>` | `headline` |
+| `<link>` | canonical evidence URL (first evidence row's `canonical_url`) |
+| `<pubDate>` | `first_seen_at` (RFC 822 format) |
+| `<description>` | `summary` + score + signal type, HTML-escaped |
+| `<guid isPermaLink="false">` | `signal_id` |
+
+Channel `<title>` built from active filter params (e.g. "Hiring Signals
+— backend · london"). `<lastBuildDate>` = most recent `first_seen_at`
+in the result set, or current time if feed is empty.
+
+Verify: unit tests covering HTML escaping, RFC 822 date formatting,
+empty feed (valid XML, zero `<item>` elements), and `<guid>` uniqueness
+across items. Note: `lib/text/csv.ts` and `lib/text/content-hash.ts`
+(the two existing siblings this pattern is modeled on) have no test
+files anywhere in the repo and there's no root-level vitest config for
+`lib/` — confirmed by search, not assumed. `rss.ts`'s tests need a new
+`vitest.config.ts` for `lib/` (or import into an existing package's
+test suite, e.g. `apps/api/test/`, if that's simpler) — call this out
+explicitly during implementation rather than copy a "same as csv.ts"
+pattern that doesn't actually exist yet.
+
+### R.2 — RSS route (`apps/api/src/routes/feed.ts`)
+
+`GET /api/v1/feed.rss` — same query params as `GET /api/v1/signals`
+(`role`, `company`, `source`, `signalType`, `workMode`, `minScore`,
+`since`, `q`). Hard cap: 50 items (RSS readers poll frequently;
+pagination not applicable to feed format). Returns
+`Content-Type: application/rss+xml; charset=utf-8`.
+
+Query schema: duplicate it inline (own `z.object({...})`, same fields
+minus `sort`/`cursor`/`limit`), matching `export.ts`'s own choice and
+stated reasoning (own header comment: a route's contract should be
+legible on its own without needing to open `signals.ts` to see what's
+accepted) — not `signalsQuerySchema.omit(...)`. Same convention both
+places, not a new decision to make here.
+
+Reuses `listSignalsForExport` from `signals-repo.ts` as the read path
+(same function the CSV export route calls), different serializer on
+top — but note its real signature is `(client, params: Omit<
+ListSignalsParams, "sort" | "cursor" | "limit">)`: no caller-supplied
+`limit`, capping happens internally via `EXPORT_ROW_CAP` (currently
+2000, export.ts's constant). The feed's 50-item cap is a *different*
+number for a *different* reason (poll frequency, not one-time-dump
+size), so it needs its own constant — add `FEED_ROW_CAP = 50` next to
+`EXPORT_ROW_CAP` in `signals-repo.ts`, following the same truncate-
+and-report shape (`{ items, truncated }`) rather than passing 50 into
+the existing function as if it took a limit argument. Same
+`freeReadTier()` rate-limit middleware as every other public route
+(no-arg factory, `apps/api/src/middleware/anti-abuse.ts`).
+
+No KV caching in v1 — respond with `Last-Modified` (most recent
+`first_seen_at`) and `ETag` (content hash via
+`lib/text/content-hash.ts`). A conditional `304 Not Modified` on
+matching `If-None-Match` is cheaper than a KV write on every RSS
+reader poll.
+
+Verify: `pnpm --filter @hiring-signals/api typecheck`/`lint` clean;
+manual `curl` confirming valid XML, correct `Content-Type`, and `304`
+on repeat request with matching `If-None-Match`.
+
+### R.3 — Feed URL builder + link in dashboard (`apps/web`)
+
+`buildFeedUrl(state: FilterState, now = new Date()): string` — add it
+to `apps/web/src/lib/searchParams.ts`, next to the real
+`buildExportUrl` (confirmed at `searchParams.ts:222`, not a standalone
+`lib/exportUrl.ts` — there's no such file, so `feedUrl.ts` as a
+separate module would be inventing a split that doesn't exist
+anywhere else in `apps/web/src/lib/`). Same signature shape as
+`buildExportUrl` for consistency. Produces
+`/api/v1/feed.rss?role=backend&location=london&...` from current
+filter state.
+
+Add a `[RSS ↗]` link in the filter rail (spec §10.2 layout), alongside
+the existing `components/export-button.tsx`. Mirror that component's
+actual pattern exactly: `href={buildFeedUrl(filterState)}` computed
+directly on render, no memoization — `export-button.tsx` doesn't use
+`useMemo` (checked; it calls `buildExportUrl(filterState)` plain), so
+don't introduce one here either.
+
+Add `<link rel="alternate" type="application/rss+xml" href="/api/v1/feed.rss">`
+in `apps/web/src/app/layout.tsx`'s `<head>` (confirmed exact path)
+pointing at the unfiltered feed URL so browsers and feed readers
+auto-discover it.
+
+Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`/`build`
+clean; confirm `<link>` tag present in page source.
