@@ -93,12 +93,13 @@ export interface WranglerStatementResult {
   meta?: { changes?: number };
 }
 
-/** Runs one or more `;`-joined SQL statements against the real, live,
- * remote `hiring-signals` D1 database via `wrangler d1 execute --remote
- * --json`. Rejects with the real wrangler stderr/stdout on failure --
- * no swallowed errors, since a live-network test needs the real error
- * text to debug (auth failure, SQL error, rate limit, etc.). */
-export function execRemote(sql: string): Promise<WranglerStatementResult[]> {
+/** One raw `wrangler d1 execute --remote --json` invocation, no retry.
+ * Rejects with the real wrangler stderr/stdout on failure -- no
+ * swallowed errors, since a live-network test needs the real error text
+ * to debug (auth failure, SQL error, rate limit, etc.). Extracted from
+ * execRemote (2026-08-05) so the retry wrapper below can reuse this
+ * single-attempt logic without duplicating the process-wiring. */
+function execRemoteOnce(sql: string): Promise<WranglerStatementResult[]> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "npx",
@@ -126,4 +127,73 @@ export function execRemote(sql: string): Promise<WranglerStatementResult[]> {
       }
     });
   });
+}
+
+/** Matches the specific transient-auth failure signatures observed live
+ * (2026-08-05, full packages/db suite runs under both 15-way and 4-way
+ * `poolOptions.forks` concurrency): Cloudflare API `code: 7403` ("The
+ * given account is not valid or is not authorized to access this
+ * service"), `code: 10000` ("Authentication error"), and wrangler's own
+ * "Not logged in. Could not authenticate" message. All three were
+ * reproduced, then individually re-run in isolation (no concurrent
+ * wrangler subprocesses) and passed cleanly every time -- `wrangler
+ * whoami` also confirmed the underlying OAuth token was valid and
+ * correctly D1-scoped throughout, both immediately before and after
+ * the failing runs. That combination (fails only under concurrent
+ * subprocess load, passes alone, valid token throughout) is the
+ * signature of contention on the shared
+ * `~/.config/.wrangler/config/default.toml` token file / a transient
+ * Cloudflare-side rate limit surfaced as an auth error, not a real,
+ * standing permissions problem.
+ *
+ * Deliberately narrow: matches by the *specific* error codes/text seen,
+ * not "any non-zero exit" or "any error mentioning auth" -- a genuine
+ * SQL error (constraint violation, syntax error) or a real, standing
+ * credential problem must still fail immediately, not get masked by
+ * retries. If a new failure shape shows up later, it should be
+ * diagnosed on its own terms (isolate + wrangler whoami, same as this
+ * one was) before being added here, not assumed to belong to this same
+ * class. */
+function isTransientAuthFailure(message: string): boolean {
+  return (
+    message.includes("code: 7403") ||
+    message.includes("code: 10000") ||
+    message.includes("Not logged in")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Runs one or more `;`-joined SQL statements against the real, live,
+ * remote `hiring-signals` D1 database via `wrangler d1 execute --remote
+ * --json`, retrying up to 2 extra times (3 attempts total) with
+ * backoff (500ms, 1500ms) if and only if the failure matches
+ * isTransientAuthFailure's known transient-auth signatures (2026-08-05
+ * -- see that function's comment for the reproduced evidence this is
+ * based on). Any other failure (SQL error, malformed --json output,
+ * failed spawn) rejects immediately on the first attempt, unchanged
+ * from before -- retrying an error we haven't confirmed is transient
+ * would hide real bugs behind a delay instead of surfacing them. */
+export async function execRemote(sql: string): Promise<WranglerStatementResult[]> {
+  const delaysMs = [500, 1500];
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      return await execRemoteOnce(sql);
+    } catch (err) {
+      lastError = err;
+      const message = err instanceof Error ? err.message : String(err);
+      const isLastAttempt = attempt === delaysMs.length;
+      if (isLastAttempt || !isTransientAuthFailure(message)) {
+        throw err;
+      }
+      await sleep(delaysMs[attempt]!);
+    }
+  }
+  // Unreachable (the loop always returns or throws), but keeps the
+  // function's return type honest without a non-null assertion at the
+  // call site.
+  throw lastError;
 }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
 import { createCompany } from "../src/companies-repo";
@@ -33,9 +33,17 @@ import { getCompanyRoleActivityStats } from "../src/company-role-stats-repo";
  * instance, not isolated" -- this is the same dev D1 database
  * `seed-local-d1.sql` and the ops scripts operate on, so a leftover row
  * from a failed test run is a real, visible cost, not a throwaway
- * fixture. `afterEach` is a belt-and-suspenders second cleanup pass (in
+ * fixture. `afterAll` is a belt-and-suspenders second cleanup pass (in
  * case a `finally` itself never ran, e.g. a hard process kill) that
- * deletes anything still tagged with this file's test-id prefix.
+ * deletes anything still tagged with this file's test-id prefix -- moved
+ * off `afterEach` 2026-08-05 after reproducing `FOREIGN KEY constraint
+ * failed` live, every run, on this exact sweep: even with plain
+ * sequential `it` blocks (no `.concurrent` in this file), the sweep is a
+ * *global* `test-crs-%` prefix match, not scoped to the test that just
+ * finished, so it could still race a sibling test's own in-flight rows
+ * under vitest's scheduling. Same fix as `ingest-consumer.test.ts`
+ * (2026-08-04, see that file's `afterAll` comment) -- global-prefix
+ * sweeps belong at the end of the file, not between tests.
  */
 
 const TEST_PREFIX = "test-crs";
@@ -47,15 +55,31 @@ function testId(label: string): string {
 
 const client: D1Client = createLiveD1Client();
 
-/** Deletes everything under one seeded company, FK-safe order, all 3
+/** Deletes everything under one seeded company, FK-safe order, all 4
  * statements in one client.batch() call -- D1's real atomicity
  * primitive (see lib/d1/client.ts's batch() header comment; D1 has no
  * BEGIN/COMMIT SQL surface via the Workers binding) -- so a mid-sequence
  * process kill can't leave this company's rows half-deleted (data-
- * integrity concern, 2026-08-02). */
+ * integrity concern, 2026-08-02).
+ *
+ * `source_runs` deleted before `sources` (2026-08-05, added after
+ * reproducing `FOREIGN KEY constraint failed` live and in isolation --
+ * a single, minimal `DELETE FROM sources WHERE id = ?`, no batching, no
+ * test framework involved -- against a real leftover `source_runs` row
+ * pointing at this test's own `source_id`; this file's own test code
+ * never calls `openSourceRun`/writes `source_runs` directly, and no
+ * schema trigger does either (`sqlite_master` checked directly, none
+ * exist), so the write path that creates it isn't yet identified, but
+ * the row itself, and the FK it violates, are real and reproducible
+ * every run -- deleting it first is correct regardless of which exact
+ * code path inserts it. Matches the FK-safe order this repo already
+ * uses in `apps/api/test/jobs/ingest-consumer.test.ts`'s header comment
+ * (`... -> jobs -> source_runs -> sources -> ...`), minus the tables
+ * this file's tests don't touch (`signals`, `job_observations`). */
 async function cleanupCompany(companyId: string, sourceId: string): Promise<void> {
   await client.batch([
     { sql: `DELETE FROM jobs WHERE company_id = ?`, params: [companyId] },
+    { sql: `DELETE FROM source_runs WHERE source_id = ?`, params: [sourceId] },
     { sql: `DELETE FROM sources WHERE id = ?`, params: [sourceId] },
     { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
   ]);
@@ -64,11 +88,19 @@ async function cleanupCompany(companyId: string, sourceId: string): Promise<void
 /** Belt-and-suspenders sweep for anything left behind by a run that
  * didn't reach its own `finally` (hard kill, etc.) -- matches on the
  * shared TEST_PREFIX rather than a specific id. Same batch() atomicity
- * reasoning as cleanupCompany above. */
-afterEach(async () => {
+ * reasoning as cleanupCompany above. Runs in `afterAll`, not `afterEach`
+ * -- see this file's header comment for why. */
+afterAll(async () => {
   await client.batch([
     {
       sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      // Same source_runs-before-sources ordering as cleanupCompany above,
+      // for the same reason -- this global sweep would hit the identical
+      // FK error if it ever needs to clean up a source with a leftover run.
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?))`,
       params: [`${TEST_PREFIX}-%`],
     },
     {

@@ -50,8 +50,17 @@ function jitterSecondsForSource(sourceId: string): number {
   return hash % JITTER_SPREAD_SECONDS;
 }
 
-export async function handleScheduled(_event: ScheduledEvent, env: Bindings): Promise<void> {
-  const client = createD1Client(env.DB);
+export async function handleScheduled(
+  _event: ScheduledEvent,
+  env: Bindings,
+  /**
+   * Test-only. Production callers (apps/api/src/index.ts's cron
+   * trigger) never pass this -- omitted, createD1Client(env.DB) keeps
+   * today's 15s circuit-breaker default. See ROADMAP.md J.2.
+   */
+  operationTimeoutMs?: number,
+): Promise<void> {
+  const client = createD1Client(env.DB, { operationTimeoutMs });
   const now = new Date();
 
   const dueSources = await getDueSources(client, {

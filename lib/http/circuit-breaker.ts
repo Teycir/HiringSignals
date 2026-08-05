@@ -45,7 +45,24 @@ interface ResourceState {
 }
 
 export interface CircuitBreakerApi {
-  withCircuit<T>(resource: string, op: () => Promise<T>): Promise<T>;
+  /**
+   * `operationTimeoutMsOverride`, when passed, replaces this call's
+   * timeout only -- the breaker's own failure/reset/concurrency state
+   * is untouched and still shared across every caller of this
+   * resource (see this file's header comment on why state lives in
+   * one module-level map). Use this to let a specific caller (e.g. a
+   * live-D1 test client hitting real per-call latency) wait longer
+   * without instantiating a second, independent breaker via a second
+   * createCircuitBreaker(...) call -- a second instance would give
+   * that caller its own fresh failure count/circuit state instead of
+   * sharing the resource's real one, which is a bigger, unintended
+   * behavior change (see lib/d1/client.ts's ROADMAP.md entry, J.2).
+   */
+  withCircuit<T>(
+    resource: string,
+    op: () => Promise<T>,
+    operationTimeoutMsOverride?: number,
+  ): Promise<T>;
   getState(resource: string): CircuitState;
 }
 
@@ -57,13 +74,25 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
 
   const states = new Map<string, ResourceState>();
   for (const r of config.resources) {
-    states.set(r, { state: CircuitState.CLOSED, failures: 0, lastFailureAt: 0, inFlight: 0, probeInFlight: false });
+    states.set(r, {
+      state: CircuitState.CLOSED,
+      failures: 0,
+      lastFailureAt: 0,
+      inFlight: 0,
+      probeInFlight: false,
+    });
   }
 
   function getOrCreate(resource: string): ResourceState {
     const existing = states.get(resource);
     if (existing) return existing;
-    const s: ResourceState = { state: CircuitState.CLOSED, failures: 0, lastFailureAt: 0, inFlight: 0, probeInFlight: false };
+    const s: ResourceState = {
+      state: CircuitState.CLOSED,
+      failures: 0,
+      lastFailureAt: 0,
+      inFlight: 0,
+      probeInFlight: false,
+    };
     states.set(resource, s);
     return s;
   }
@@ -71,7 +100,10 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
   async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     let cancelId: number | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      cancelId = setTimeout(() => reject(new CircuitBreakerError("TIMEOUT", `Operation timed out after ${ms}ms`)), ms) as unknown as number;
+      cancelId = setTimeout(
+        () => reject(new CircuitBreakerError("TIMEOUT", `Operation timed out after ${ms}ms`)),
+        ms,
+      ) as unknown as number;
     });
     try {
       return await Promise.race([p, timeout]);
@@ -80,8 +112,13 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
     }
   }
 
-  async function withCircuit<T>(resource: string, op: () => Promise<T>): Promise<T> {
+  async function withCircuit<T>(
+    resource: string,
+    op: () => Promise<T>,
+    operationTimeoutMsOverride?: number,
+  ): Promise<T> {
     const s = getOrCreate(resource);
+    const effectiveTimeoutMs = operationTimeoutMsOverride ?? operationTimeoutMs;
     const now = Date.now();
     let isProbe = false;
 
@@ -89,7 +126,10 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
       if (now - s.lastFailureAt >= resetTimeoutMs) {
         s.state = CircuitState.HALF_OPEN;
       } else {
-        throw new CircuitBreakerError("OPEN", `Circuit open for ${resource}; retry in ${resetTimeoutMs - (now - s.lastFailureAt)}ms`);
+        throw new CircuitBreakerError(
+          "OPEN",
+          `Circuit open for ${resource}; retry in ${resetTimeoutMs - (now - s.lastFailureAt)}ms`,
+        );
       }
     }
 
@@ -100,7 +140,10 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
     // resource and could re-trip the failure threshold instantly.
     if (s.state === CircuitState.HALF_OPEN) {
       if (s.probeInFlight) {
-        throw new CircuitBreakerError("OPEN", `Circuit probe in flight for ${resource}; retry shortly.`);
+        throw new CircuitBreakerError(
+          "OPEN",
+          `Circuit probe in flight for ${resource}; retry shortly.`,
+        );
       }
       s.probeInFlight = true;
       isProbe = true;
@@ -111,12 +154,15 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
       // needs the chance to become the probe instead of the circuit staying
       // HALF_OPEN forever with probeInFlight=true.
       if (isProbe) s.probeInFlight = false;
-      throw new CircuitBreakerError("BULKHEAD", `Bulkhead limit ${maxConcurrency} exceeded for ${resource}`);
+      throw new CircuitBreakerError(
+        "BULKHEAD",
+        `Bulkhead limit ${maxConcurrency} exceeded for ${resource}`,
+      );
     }
 
     s.inFlight++;
     try {
-      const result = await withTimeout(op(), operationTimeoutMs);
+      const result = await withTimeout(op(), effectiveTimeoutMs);
       s.state = CircuitState.CLOSED;
       s.failures = 0;
       return result;
@@ -131,7 +177,9 @@ export function createCircuitBreaker(config: CircuitBreakerConfig): CircuitBreak
       }
       if (err instanceof CircuitBreakerError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
-      throw new CircuitBreakerError("OPERATION", `Operation failed on ${resource}: ${msg}`, { cause: err });
+      throw new CircuitBreakerError("OPERATION", `Operation failed on ${resource}: ${msg}`, {
+        cause: err,
+      });
     } finally {
       s.inFlight = Math.max(0, s.inFlight - 1);
       if (isProbe) s.probeInFlight = false;

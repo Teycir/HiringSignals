@@ -18,6 +18,26 @@ export const normalizedJobSchema = z.object({
   employmentType: z.string().optional(),
   locationRaw: z.string().optional(),
   locationMode: locationModeSchema.optional(),
+  /**
+   * Structured location fields, alongside locationRaw/locationMode above.
+   * Optional because not every provider's API exposes structured
+   * geography -- some (Ashby, Greenhouse, Lever, Personio) only ever
+   * supply a free-text location string, so their adapters' normalize()
+   * leave these undefined; others (Breezy, Recruitee, SmartRecruiters,
+   * Workable) already receive real structured fields in their raw API
+   * responses and map them here. Feeds getCompanyRoleActivityStats's
+   * distinctLocationCount (packages/db/src/company-role-stats-repo.ts),
+   * which is what multi_location's trigger (H.4) actually checks --
+   * before these fields existed, that count silently collapsed to 0 for
+   * every job (country_code/region_code/city were always NULL, and
+   * SQLite's `||` returns NULL if any operand is NULL, so the composite
+   * DISTINCT key was NULL for every row and COUNT(DISTINCT ...) ignores
+   * NULLs entirely -- confirmed against the real D1 instance directly,
+   * ROADMAP.md's multi_location investigation entry).
+   */
+  countryCode: z.string().optional(),
+  regionCode: z.string().optional(),
+  city: z.string().optional(),
   postedAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional(),
   requisitionId: z.string().optional(),

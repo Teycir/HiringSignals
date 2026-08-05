@@ -53,7 +53,10 @@ export async function getJobByExternalId(
   client: D1Client,
   sourceId: string,
   externalJobId: string,
-): Promise<Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at" | "role_primary"> | null> {
+): Promise<Pick<
+  JobRow,
+  "id" | "status" | "missing_run_count" | "first_seen_at" | "role_primary"
+> | null> {
   return client.first<
     Pick<JobRow, "id" | "status" | "missing_run_count" | "first_seen_at" | "role_primary">
   >(
@@ -93,7 +96,13 @@ export async function updateJobClassification(
 ): Promise<void> {
   await client.run(
     `UPDATE jobs SET role_primary = ?, classification_confidence = ?, classification_version = ? WHERE id = ? AND company_id = ?`,
-    [patch.rolePrimary, patch.classificationConfidence, patch.classificationVersion, jobId, companyId],
+    [
+      patch.rolePrimary,
+      patch.classificationConfidence,
+      patch.classificationVersion,
+      jobId,
+      companyId,
+    ],
   );
 }
 
@@ -142,6 +151,20 @@ export interface UpsertJobResult {
    * itself evidence worth surfacing, distinct from new_job/reopened_job).
    */
   contentChanged: boolean;
+  /**
+   * The pre-upsert row (lifecycle-relevant fields only), or `null` for a
+   * brand-new job -- same shape getJobByExternalId used to return.
+   * ROADMAP.md J.1 (2026-08-04): folded getJobByExternalId's separate
+   * SELECT into this function's own internal existing-row lookup (same
+   * WHERE, same table, same round trip) so callers that need both the
+   * upsert AND the prior state (the ingest consumer's lifecycle-
+   * transition input) don't pay for two SELECTs where one already
+   * covers both column sets. `null` here means the same thing
+   * `!existing` meant at the old getJobByExternalId call site: this
+   * job_id is brand-new, so there is no "prior state" to transition
+   * from.
+   */
+  existing: Pick<JobRow, "status" | "missing_run_count" | "first_seen_at" | "role_primary"> | null;
 }
 
 /**
@@ -174,8 +197,19 @@ export interface UpsertJobResult {
  * produced sourceId) into a 0-row no-op instead of a cross-tenant write.
  */
 export async function upsertJob(client: D1Client, input: UpsertJobInput): Promise<UpsertJobResult> {
-  const existing = await client.first<Pick<JobRow, "id" | "content_hash">>(
-    `SELECT id, content_hash FROM jobs WHERE source_id = ? AND external_job_id = ?`,
+  // ROADMAP.md J.1 (2026-08-04): SELECT widened from `id, content_hash`
+  // to also include status/missing_run_count/first_seen_at/role_primary
+  // -- the exact column set the ingest consumer's now-removed separate
+  // getJobByExternalId call used to fetch in its own round trip. Same
+  // WHERE, same table, same row -- one SELECT now serves both purposes.
+  const existing = await client.first<
+    Pick<
+      JobRow,
+      "id" | "content_hash" | "status" | "missing_run_count" | "first_seen_at" | "role_primary"
+    >
+  >(
+    `SELECT id, content_hash, status, missing_run_count, first_seen_at, role_primary
+     FROM jobs WHERE source_id = ? AND external_job_id = ?`,
     [input.sourceId, input.externalJobId],
   );
 
@@ -208,7 +242,16 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
         input.companyId,
       ],
     );
-    return { id: existing.id, contentChanged: existing.content_hash !== input.contentHash };
+    return {
+      id: existing.id,
+      contentChanged: existing.content_hash !== input.contentHash,
+      existing: {
+        status: existing.status,
+        missing_run_count: existing.missing_run_count,
+        first_seen_at: existing.first_seen_at,
+        role_primary: existing.role_primary,
+      },
+    };
   }
 
   const id = crypto.randomUUID();
@@ -245,7 +288,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
       input.contentHash,
     ],
   );
-  return { id, contentChanged: false };
+  return { id, contentChanged: false, existing: null };
 }
 
 export interface InsertJobObservationInput {
@@ -278,7 +321,14 @@ export async function insertJobObservation(
   await client.run(
     `INSERT INTO job_observations (id, job_id, source_run_id, observed_at, content_hash, is_present)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, input.jobId, input.sourceRunId, input.observedAt, input.contentHash, input.isPresent ? 1 : 0],
+    [
+      id,
+      input.jobId,
+      input.sourceRunId,
+      input.observedAt,
+      input.contentHash,
+      input.isPresent ? 1 : 0,
+    ],
   );
   return id;
 }
@@ -481,11 +531,9 @@ export async function applyLifecycleTransition(
       [patch.status, patch.missingRunCount, patch.lastSeenAt, jobId, companyId],
     );
   } else {
-    await client.run(`UPDATE jobs SET status = ?, missing_run_count = ? WHERE id = ? AND company_id = ?`, [
-      patch.status,
-      patch.missingRunCount,
-      jobId,
-      companyId,
-    ]);
+    await client.run(
+      `UPDATE jobs SET status = ?, missing_run_count = ? WHERE id = ? AND company_id = ?`,
+      [patch.status, patch.missingRunCount, jobId, companyId],
+    );
   }
 }

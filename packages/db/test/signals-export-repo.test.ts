@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
 import { createCompany } from "../src/companies-repo";
@@ -22,9 +22,24 @@ import { listSignalsForExport } from "../src/signals-repo";
  *
  * Every test uses a `test-ser-`-prefixed company slug (`ser` =
  * signals-export-repo, this file) and cleans up in a `finally`
- * (FK-safe order: signal_evidence -> signals -> jobs -> sources ->
- * companies), with an `afterEach` sweep as a second pass, matching
- * signals-repo.test.ts's discipline.
+ * (FK-safe order: signal_evidence -> signals -> jobs -> source_runs ->
+ * sources -> companies), with an `afterAll` sweep as a second pass,
+ * matching signals-repo.test.ts's discipline.
+ *
+ * `source_runs` added before `sources` (2026-08-05) -- this file's
+ * `createSource` calls don't write `source_runs` directly (confirmed:
+ * only `openSourceRun`-style functions in sources-repo.ts do, never
+ * called here), and this file's own tests all passed individually
+ * before this fix -- the failure was every run's cleanup, not the
+ * assertions -- but the identical `FOREIGN KEY constraint failed` this
+ * repo already reproduced and fixed in company-role-stats-repo.test.ts
+ * (see that file's cleanupCompany comment for the full isolation
+ * trace) applies here too: whatever writes a leftover `source_runs`
+ * row isn't yet pinned down, but the row and the FK it violates are
+ * real, so deleting it first is correct regardless. `afterEach` moved
+ * to `afterAll` for the same reason as that file and
+ * ingest-consumer.test.ts (2026-08-04) -- a global-prefix sweep
+ * belongs at the end of the file, not racing sibling tests mid-suite.
  */
 
 const TEST_PREFIX = "test-ser";
@@ -36,7 +51,7 @@ function testSlug(label: string): string {
 
 const client: D1Client = createLiveD1Client();
 
-/** All 5 statements run in one client.batch() call -- D1's real
+/** All 6 statements run in one client.batch() call -- D1's real
  * atomicity primitive (see lib/d1/client.ts's batch() header comment;
  * D1 has no BEGIN/COMMIT SQL surface via the Workers binding) -- so a
  * mid-sequence process kill can't leave this company's rows
@@ -49,13 +64,19 @@ async function cleanupCompany(companyId: string): Promise<void> {
     },
     { sql: `DELETE FROM signals WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM jobs WHERE company_id = ?`, params: [companyId] },
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
+      params: [companyId],
+    },
     { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
   ]);
 }
 
-/** Same batch() atomicity reasoning as cleanupCompany above. */
-afterEach(async () => {
+/** Same batch() atomicity reasoning as cleanupCompany above. Runs in
+ * `afterAll`, not `afterEach` -- see this file's header comment for
+ * why. */
+afterAll(async () => {
   await client.batch([
     {
       sql: `DELETE FROM signal_evidence WHERE signal_id IN (
@@ -69,6 +90,12 @@ afterEach(async () => {
     },
     {
       sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+      params: [`${TEST_PREFIX}-%`],
+    },
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (
+         SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+       )`,
       params: [`${TEST_PREFIX}-%`],
     },
     {

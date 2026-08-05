@@ -45,17 +45,30 @@ const STILL_ACTIVE_LOOKBACK_MULTIPLIER = 1.5;
 const MAX_STILL_ACTIVE_PER_RUN = 200;
 
 function startOfUtcDay(now: Date): string {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  ).toISOString();
 }
 
 function daysBetween(laterIso: string, earlierIso: string): number {
   return Math.max(0, (Date.parse(laterIso) - Date.parse(earlierIso)) / (24 * 60 * 60 * 1000));
 }
 
-export async function handleReconciliation(env: Bindings, now = new Date()): Promise<void> {
-  const client = createD1Client(env.DB);
+export async function handleReconciliation(
+  env: Bindings,
+  now = new Date(),
+  /**
+   * Test-only. Production callers (apps/api/src/index.ts's cron
+   * trigger) never pass this -- omitted, createD1Client(env.DB) keeps
+   * today's 15s circuit-breaker default. See ROADMAP.md J.2.
+   */
+  operationTimeoutMs?: number,
+): Promise<void> {
+  const client = createD1Client(env.DB, { operationTimeoutMs });
   const observedAt = now.toISOString();
-  const staleBefore = new Date(now.getTime() - STALE_SIGNAL_AFTER_HOURS * 60 * 60 * 1000).toISOString();
+  const staleBefore = new Date(
+    now.getTime() - STALE_SIGNAL_AFTER_HOURS * 60 * 60 * 1000,
+  ).toISOString();
 
   const signals = await listSignalsNeedingReconciliation(client, {
     staleBefore,
@@ -141,9 +154,14 @@ export async function handleReconciliation(env: Bindings, now = new Date()): Pro
  * end of every reconciliation run, same "keep going on a per-row
  * failure" discipline as the score-reconciliation loop.
  */
-async function handleStillActive(client: ReturnType<typeof createD1Client>, now: Date): Promise<void> {
+async function handleStillActive(
+  client: ReturnType<typeof createD1Client>,
+  now: Date,
+): Promise<void> {
   const observedAt = now.toISOString();
-  const staleBefore = new Date(now.getTime() - STALE_SIGNAL_AFTER_HOURS * 60 * 60 * 1000).toISOString();
+  const staleBefore = new Date(
+    now.getTime() - STALE_SIGNAL_AFTER_HOURS * 60 * 60 * 1000,
+  ).toISOString();
   const todayStart = startOfUtcDay(now);
 
   const candidates = await listStillActiveCandidates(client, {
@@ -156,9 +174,14 @@ async function handleStillActive(client: ReturnType<typeof createD1Client>, now:
 
   for (const candidate of candidates) {
     try {
-      const updateResult = await markSignalStillActive(client, candidate.signal_id, candidate.company_id, {
-        lastDetectedAt: observedAt,
-      });
+      const updateResult = await markSignalStillActive(
+        client,
+        candidate.signal_id,
+        candidate.company_id,
+        {
+          lastDetectedAt: observedAt,
+        },
+      );
 
       if (updateResult.changes === 0) {
         console.warn("still_active_skipped_inactive", {

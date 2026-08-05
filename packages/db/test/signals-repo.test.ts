@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
 import { createCompany } from "../src/companies-repo";
@@ -47,7 +47,7 @@ import {
  * Every test uses a `test-sr-`-prefixed company slug (`sr` =
  * signals-repo, this file) and deletes everything it created in a
  * `finally` (FK-safe order: signal_evidence -> signals -> jobs ->
- * sources -> companies), with an `afterEach` sweep as a
+ * source_runs -> sources -> companies), with an `afterAll` sweep as a
  * belt-and-suspenders second pass, same discipline as the other
  * migrated files in this package.
  */
@@ -88,8 +88,15 @@ async function cleanupCompany(companyId: string): Promise<void> {
 /** Belt-and-suspenders sweep for anything left behind by a run that
  * didn't reach its own `finally` (hard kill, etc.) -- matches on the
  * shared TEST_PREFIX rather than a specific id. Same batch() atomicity
- * reasoning as cleanupCompany above. */
-afterEach(async () => {
+ * reasoning as cleanupCompany above. Runs in `afterAll`, not `afterEach`
+ * (2026-08-05, same fix as ingest-consumer.test.ts/
+ * company-role-stats-repo.test.ts/signals-export-repo.test.ts) -- a
+ * global `test-sr-%` prefix sweep firing between every test can race a
+ * sibling test's still-in-flight rows under vitest's scheduling, not
+ * just under explicit `.concurrent` blocks; see those files' header
+ * comments for the reproduced `FOREIGN KEY constraint failed` this
+ * caused. */
+afterAll(async () => {
   await client.batch([
     {
       sql: `DELETE FROM signal_evidence WHERE signal_id IN (

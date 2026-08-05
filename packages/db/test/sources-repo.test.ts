@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
 import { createCompany } from "../src/companies-repo";
@@ -14,7 +14,7 @@ import {
  * First test file for sources-repo.ts (debug-codebase-audit.md H1 gap:
  * this file previously had zero test coverage at all). Same live-D1
  * conventions as the rest of packages/db/test/ (createLiveD1Client,
- * test-src slug prefix, FK-safe finally cleanup + afterEach sweep).
+ * test-src slug prefix, FK-safe finally cleanup + afterAll sweep).
  *
  * Primary focus is the H1 tenant-isolation defense-in-depth added to
  * updateSource/markSourceSuccess/markSourceFailure: a wrong companyId
@@ -34,18 +34,46 @@ function testSlug(label: string): string {
 const client: D1Client = createLiveD1Client();
 
 /** FK-safe delete, one client.batch() call (D1's real atomicity
- * primitive -- see lib/d1/client.ts's batch() header comment). */
+ * primitive -- see lib/d1/client.ts's batch() header comment).
+ *
+ * `source_runs` deleted before `sources` (2026-08-05, added
+ * defensively for consistency with every other file in this package --
+ * see company-role-stats-repo.test.ts's header comment for the
+ * reproduced `FOREIGN KEY constraint failed` this ordering avoids).
+ * This file's own tests never call recordSourceRunStart/resolveSourceRun
+ * themselves, so under normal execution there is no source_runs row for
+ * this file's own sources to violate; this guards against a source_runs
+ * row attaching to one of this file's sources via any other path
+ * (future code change, cross-test contamination) without this file's
+ * cleanup starting to fail with an FK error that looks unrelated to
+ * source_runs entirely. */
 async function cleanupCompany(companyId: string): Promise<void> {
   await client.batch([
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
+      params: [companyId],
+    },
     { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
   ]);
 }
 
 /** Belt-and-suspenders sweep, same TEST_PREFIX-matching pattern as the
- * rest of this directory. */
-afterEach(async () => {
+ * rest of this directory. Runs in `afterAll`, not `afterEach`
+ * (2026-08-05, same fix as ingest-consumer.test.ts/
+ * company-role-stats-repo.test.ts/signals-export-repo.test.ts/
+ * signals-repo.test.ts) -- a global `test-src-%` prefix sweep firing
+ * between every test can race a sibling test's still-in-flight rows
+ * under vitest's scheduling; see those files' header comments for the
+ * reproduced `FOREIGN KEY constraint failed` this caused. */
+afterAll(async () => {
   await client.batch([
+    {
+      // Same source_runs-before-sources ordering as cleanupCompany
+      // above, for the same defensive reasoning.
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?))`,
+      params: [`${TEST_PREFIX}-%`],
+    },
     {
       sql: `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
       params: [`${TEST_PREFIX}-%`],

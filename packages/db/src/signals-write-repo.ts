@@ -114,11 +114,15 @@ interface RawSignalReconciliationRow {
 function toReconciliationRow(row: RawSignalReconciliationRow): SignalReconciliationRow {
   const roleCategory = roleCategorySchema.safeParse(row.role_category);
   if (!roleCategory.success) {
-    throw new CorruptSignalRowError(`Signal ${row.id} has invalid role_category="${row.role_category}".`);
+    throw new CorruptSignalRowError(
+      `Signal ${row.id} has invalid role_category="${row.role_category}".`,
+    );
   }
   const signalType = signalTypeSchema.safeParse(row.signal_type);
   if (!signalType.success) {
-    throw new CorruptSignalRowError(`Signal ${row.id} has invalid signal_type="${row.signal_type}".`);
+    throw new CorruptSignalRowError(
+      `Signal ${row.id} has invalid signal_type="${row.signal_type}".`,
+    );
   }
   return { ...row, role_category: roleCategory.data, signal_type: signalType.data };
 }
@@ -130,8 +134,24 @@ function toReconciliationRow(row: RawSignalReconciliationRow): SignalReconciliat
  * from spec §7.2 hasn't swept it yet). Hiring that resumes after a
  * multi-month lull is a new occurrence a user should be told about, not
  * silently folded into a stale row nobody's looked at since.
+ *
+ * ROADMAP.md J.5 (2026-08-05): must stay >= ingest-consumer.ts's
+ * PERSISTENT_DEMAND_MIN_DAYS_ACTIVE (30). A signal can only ever cross
+ * that threshold by first surviving >=30 days without a status change
+ * -- if this lookback window were shorter than that, findActiveSignal
+ * would stop finding the row (treating it as "dormant, start fresh")
+ * before it could ever reach the refresh path that carries
+ * first_detected_at forward and lets persistent_demand's day-count
+ * evaluate correctly. Set to 35, not the bare minimum of 30 or 31, to
+ * leave headroom for the reconciliation cron's own polling cadence
+ * (spec §7.2) landing a few days later than the exact 30-day mark
+ * without the same problem resurfacing at the boundary. If
+ * PERSISTENT_DEMAND_MIN_DAYS_ACTIVE ever changes, this must be
+ * re-checked against it -- not otherwise coupled in code, since the two
+ * constants live in different packages (db vs. the api app) and no
+ * shared import connects them today.
  */
-const ACTIVE_SIGNAL_LOOKBACK_DAYS = 28;
+const ACTIVE_SIGNAL_LOOKBACK_DAYS = 35;
 
 /**
  * Dedup check per spec §7.3's hard-duplicate rule applied at the signal
@@ -160,10 +180,17 @@ const ACTIVE_SIGNAL_LOOKBACK_DAYS = 28;
  */
 export async function findActiveSignal(
   client: D1Client,
-  params: { companyId: string; roleCategory: RoleCategory; signalType: SignalType; nowIso?: string },
+  params: {
+    companyId: string;
+    roleCategory: RoleCategory;
+    signalType: SignalType;
+    nowIso?: string;
+  },
 ): Promise<SignalRowMinimal | null> {
   const now = params.nowIso ? new Date(params.nowIso) : new Date();
-  const cutoff = new Date(now.getTime() - ACTIVE_SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(
+    now.getTime() - ACTIVE_SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
   return client.first<SignalRowMinimal>(
     `SELECT id, status, score, first_detected_at, last_detected_at
      FROM signals
@@ -171,6 +198,98 @@ export async function findActiveSignal(
        AND last_detected_at >= ?`,
     [params.companyId, params.roleCategory, params.signalType, cutoff],
   );
+}
+
+/**
+ * ROADMAP.md J.5 (2026-08-05): recovery lookup for createSignal's
+ * DuplicateActiveSignalError catch. Deliberately NOT findActiveSignal
+ * with a longer/no cutoff passed in -- this is a distinct, narrower
+ * query used only after the UNIQUE index has already told the caller a
+ * matching active row genuinely exists right now (the INSERT failed
+ * because of it), so there's no dormancy judgment left to make here:
+ * unlike findActiveSignal's real dedup decision (is this active row
+ * recent enough to represent the same ongoing signal, or should a new
+ * one start), by the time this runs that question is already settled
+ * by the constraint violation itself. Kept as its own function rather
+ * than an optional-cutoff parameter on findActiveSignal so a future
+ * reader can't accidentally pass a permissive cutoff into the real dedup
+ * check and quietly reintroduce the resurrection behavior
+ * ACTIVE_SIGNAL_LOOKBACK_DAYS exists to prevent.
+ */
+export async function findActiveSignalIgnoringLookback(
+  client: D1Client,
+  params: { companyId: string; roleCategory: RoleCategory; signalType: SignalType },
+): Promise<SignalRowMinimal | null> {
+  return client.first<SignalRowMinimal>(
+    `SELECT id, status, score, first_detected_at, last_detected_at
+     FROM signals
+     WHERE company_id = ? AND role_category = ? AND signal_type = ? AND status = 'active'`,
+    [params.companyId, params.roleCategory, params.signalType],
+  );
+}
+
+/**
+ * Batch variant of findActiveSignal: same dedup lookup (same
+ * ACTIVE_SIGNAL_LOOKBACK_DAYS cutoff, same status='active' filter), but
+ * for several signal_type values for one (company, role) pair in ONE
+ * round trip via `signal_type IN (...)`, instead of N separate
+ * findActiveSignal calls. ROADMAP.md J.1 (2026-08-04): built for
+ * generateCompanySignals's H.4 loop (apps/api/src/jobs/
+ * ingest-consumer.ts), which previously called findActiveSignal once
+ * per triggered company-level signal type (up to 4 sequential D1 round
+ * trips just for this one read) -- this collapses that to 1.
+ *
+ * Returns a Map keyed by signal_type so the caller can look up
+ * "does an active signal already exist for this type" in O(1) per type
+ * without re-scanning an array -- a signal_type with no active match
+ * simply has no key in the returned map (not an explicit `null` entry),
+ * mirroring how a missing key in a plain object/Map already means
+ * "absent" without needing a sentinel value.
+ */
+export async function findActiveSignalsBatch(
+  client: D1Client,
+  params: {
+    companyId: string;
+    roleCategory: RoleCategory;
+    signalTypes: SignalType[];
+    nowIso?: string;
+  },
+): Promise<Map<SignalType, SignalRowMinimal>> {
+  const result = new Map<SignalType, SignalRowMinimal>();
+  if (params.signalTypes.length === 0) {
+    // No types to look up -- skip the round trip entirely rather than
+    // building a SQL `IN ()` with zero placeholders (invalid syntax in
+    // some dialects, same reasoning as getJobsMissingFromRun's empty-list
+    // guard in jobs-repo.ts).
+    return result;
+  }
+  const now = params.nowIso ? new Date(params.nowIso) : new Date();
+  const cutoff = new Date(
+    now.getTime() - ACTIVE_SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const placeholders = params.signalTypes.map(() => "?").join(",");
+  const rows = await client.all<SignalRowMinimal & { signal_type: string }>(
+    `SELECT id, signal_type, status, score, first_detected_at, last_detected_at
+     FROM signals
+     WHERE company_id = ? AND role_category = ? AND signal_type IN (${placeholders}) AND status = 'active'
+       AND last_detected_at >= ?`,
+    [params.companyId, params.roleCategory, ...params.signalTypes, cutoff],
+  );
+  for (const row of rows) {
+    // signal_type here came from params.signalTypes (already-validated
+    // SignalType values this same call passed in as bind params), so a
+    // plain cast is safe -- no untrusted/external value flows through
+    // this column the way signals-repo.ts's toListItem/CorruptSignalRowError
+    // guards against for rows read without a type filter.
+    result.set(row.signal_type as SignalType, {
+      id: row.id,
+      status: row.status,
+      score: row.score,
+      first_detected_at: row.first_detected_at,
+      last_detected_at: row.last_detected_at,
+    });
+  }
+  return result;
 }
 
 export interface CreateSignalInput {
@@ -445,7 +564,13 @@ export interface StillActiveCandidateRow {
  */
 export async function listStillActiveCandidates(
   client: D1Client,
-  params: { now: string; staleBefore: string; todayStart: string; lookbackMultiplier: number; limit: number },
+  params: {
+    now: string;
+    staleBefore: string;
+    todayStart: string;
+    lookbackMultiplier: number;
+    limit: number;
+  },
 ): Promise<StillActiveCandidateRow[]> {
   // The `datetime(?, ...)` cutoff below is compared against `j.last_seen_at`
   // using plain string `>=` (D1/SQLite has no real datetime type). SQLite's
@@ -554,7 +679,9 @@ function serializeEvidencePayload(payload: unknown): string {
     return JSON.stringify(payload);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`appendSignalEvidence: payload is not JSON-serializable (${reason})`, { cause: error });
+    throw new Error(`appendSignalEvidence: payload is not JSON-serializable (${reason})`, {
+      cause: error,
+    });
   }
 }
 
@@ -574,7 +701,14 @@ export async function appendSignalEvidence(
   await client.run(
     `INSERT INTO signal_evidence (id, signal_id, job_id, evidence_type, observed_at, payload_json)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, input.signalId, input.jobId, input.evidenceType, input.observedAt, serializeEvidencePayload(input.payload)],
+    [
+      id,
+      input.signalId,
+      input.jobId,
+      input.evidenceType,
+      input.observedAt,
+      serializeEvidencePayload(input.payload),
+    ],
   );
   return id;
 }

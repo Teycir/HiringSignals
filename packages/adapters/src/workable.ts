@@ -111,11 +111,25 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
       externalJobId: String(job.shortcode ?? job.id),
       canonicalUrl: resolveCanonicalUrl(job),
       title: job.title,
-      descriptionText: joinText(job.full_description, job.description, job.requirements, job.benefits),
+      descriptionText: joinText(
+        job.full_description,
+        job.description,
+        job.requirements,
+        job.benefits,
+      ),
       department: job.department ?? undefined,
       employmentType: job.employment_type ?? undefined,
       locationRaw,
       locationMode: resolveLocationMode(job, locationRaw),
+      // job.location's country_code/region_code/city are already
+      // structured (unlike job.locations[]'s alternate shape, which is
+      // only used above for locationRaw text on multi-location postings)
+      // -- pass through as-is, undefined when the primary location
+      // object or field itself is absent, same optionality every other
+      // field on this object already uses.
+      countryCode: job.location?.country_code ?? undefined,
+      regionCode: job.location?.region_code ?? undefined,
+      city: job.location?.city ?? undefined,
       postedAt: normalizeTimestamp(job.created_at),
       updatedAt: normalizeTimestamp(job.updated_at ?? job.created_at),
       requisitionId: job.code ?? undefined,
@@ -143,12 +157,17 @@ function resolveLocationRaw(job: WorkableJob): string | undefined {
   if (job.location?.location_str) return job.location.location_str;
   const firstVisible = job.locations?.find((location) => location.hidden !== true);
   if (!firstVisible) return undefined;
-  return [firstVisible.city, firstVisible.subregion, firstVisible.state_code, firstVisible.country_name]
-    .filter((part): part is string => Boolean(part))
-    .join(", ") || undefined;
+  return (
+    [firstVisible.city, firstVisible.subregion, firstVisible.state_code, firstVisible.country_name]
+      .filter((part): part is string => Boolean(part))
+      .join(", ") || undefined
+  );
 }
 
-function resolveLocationMode(job: WorkableJob, locationRaw: string | undefined): NormalizedJob["locationMode"] {
+function resolveLocationMode(
+  job: WorkableJob,
+  locationRaw: string | undefined,
+): NormalizedJob["locationMode"] {
   const workplaceType = job.location?.workplace_type ?? job.workplace_type;
   if (workplaceType === "remote") return "remote";
   if (workplaceType === "hybrid") return "hybrid";

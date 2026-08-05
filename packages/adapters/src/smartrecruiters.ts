@@ -115,7 +115,8 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
           {
             code: "custom",
             path: ["posting", "actions"],
-            message: "SmartRecruiters posting has no details or apply action URL for public evidence",
+            message:
+              "SmartRecruiters posting has no details or apply action URL for public evidence",
           },
         ]),
       );
@@ -131,6 +132,12 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
       employmentType: posting.typeOfEmployment?.label,
       locationRaw: formatLocation(posting.location),
       locationMode: resolveLocationMode(posting.location),
+      // smartRecruitersLocationSchema only has city/region/country as
+      // free-text names -- no *_code field of any kind (unlike Recruitee/
+      // Workable's raw responses) -- so countryCode/regionCode stay
+      // undefined here rather than mismapping a name into a code field.
+      // city has no such ambiguity: a city name is a city name either way.
+      city: posting.location?.city,
       postedAt: normalizeTimestamp(posting.releasedDate),
       updatedAt: normalizeTimestamp(posting.updatedOn ?? posting.releasedDate),
     };
@@ -143,14 +150,18 @@ function formatLocation(location: SmartRecruitersPosting["location"]): string | 
   return parts.length > 0 ? parts.join(", ") : location.address;
 }
 
-function resolveLocationMode(location: SmartRecruitersPosting["location"]): NormalizedJob["locationMode"] {
+function resolveLocationMode(
+  location: SmartRecruitersPosting["location"],
+): NormalizedJob["locationMode"] {
   if (location?.remote === true) return "remote";
   return inferLocationMode(formatLocation(location));
 }
 
 function joinDescription(posting: SmartRecruitersPosting): string | undefined {
   const sections = posting.jobAd?.sections;
-  const text = [sections?.jobDescription?.text, sections?.qualifications?.text].filter(Boolean).join("\n\n");
+  const text = [sections?.jobDescription?.text, sections?.qualifications?.text]
+    .filter(Boolean)
+    .join("\n\n");
   return text || undefined;
 }
 

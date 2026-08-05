@@ -92,6 +92,7 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
   return parsed.data.offers.map((offer): NormalizedJob => {
     const locationRaw = resolveLocationRaw(offer);
     const postedAt = normalizeTimestamp(offer.published_at ?? offer.created_at);
+    const structuredLocation = resolveStructuredLocation(offer);
     return {
       externalJobId: String(offer.slug ?? offer.id),
       canonicalUrl: resolveCanonicalUrl(offer),
@@ -101,10 +102,27 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
       employmentType: offer.employment_type ?? undefined,
       locationRaw,
       locationMode: offer.remote === true ? "remote" : inferLocationMode(locationRaw),
+      // recruiteeLocationSchema has country_code (a real code) and city,
+      // but only region/state as free-text names, no *_code equivalent
+      // -- regionCode stays undefined rather than mismapping a name into
+      // a field named as a code. Only extracted from the object form of
+      // `location`/`locations[0]` -- when Recruitee sends location as a
+      // bare string (the union's other branch), there's no structure to
+      // pull codes from at all, same case resolveLocationRaw's own
+      // `typeof === "string"` branch already handles for the raw text.
+      countryCode: structuredLocation?.country_code ?? undefined,
+      city: structuredLocation?.city ?? undefined,
       postedAt,
       updatedAt: normalizeTimestamp(offer.updated_at) ?? postedAt,
     };
   });
+}
+
+function resolveStructuredLocation(
+  offer: RecruiteeOffer,
+): { country_code?: string | null; city?: string | null } | undefined {
+  if (typeof offer.location === "string") return undefined;
+  return offer.location ?? offer.locations?.[0];
 }
 
 function resolveCanonicalUrl(offer: RecruiteeOffer): string {
@@ -127,9 +145,11 @@ function resolveLocationRaw(offer: RecruiteeOffer): string | undefined {
   if (typeof offer.location === "string") return offer.location || undefined;
   const location = offer.location ?? offer.locations?.[0];
   if (!location) return undefined;
-  return [location.name, location.city, location.region ?? location.state, location.country]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join(", ") || undefined;
+  return (
+    [location.name, location.city, location.region ?? location.state, location.country]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join(", ") || undefined
+  );
 }
 
 function normalizeTimestamp(value: string | null | undefined): string | undefined {

@@ -9,6 +9,7 @@ import {
 } from "@hiring-signals/test-support";
 import { createD1Client, createCompany, createSource } from "@hiring-signals/db";
 import type { D1Client } from "@hiring-signals/db";
+import type * as AdaptersModule from "@hiring-signals/adapters";
 import type { Bindings } from "../../src/bindings";
 
 /**
@@ -91,7 +92,21 @@ function testSlug(label: string): string {
   return `${TEST_PREFIX}-${label}-${seq}-${Date.now()}`;
 }
 
-const client: D1Client = createD1Client(createLiveD1Database());
+// 30s per-call override (default 15s) for first()/all()/run(), 90s for
+// batch() specifically -- J.2: this file's own seed/cleanup/assertion
+// client (used by seedCompany, cleanupCompany, getSignalsForCompany,
+// etc.) is separate from handleIngestMessage's internal
+// createD1Client(env.DB) call -- both need the override, or the
+// pipeline itself can succeed while cleanup/setup still hits the
+// circuit breaker's default. batch() gets its own, larger value:
+// cleanupCompany's 7-statement client.batch([...]) measured 31.7s in
+// isolation (no prior calls in the same test), already past the 30s
+// value that covers every other call here -- see ROADMAP.md J.2 for
+// the isolated-batch measurement that settled this.
+const client: D1Client = createD1Client(createLiveD1Database(), {
+  operationTimeoutMs: 30_000,
+  batchOperationTimeoutMs: 90_000,
+});
 
 /** Best-effort delete of a job's Vectorize vector -- a missing vector
  * (embedding failed mid-test, or was never written) must not fail the
@@ -161,7 +176,9 @@ afterAll(async () => {
     .catch(() => [] as { id: string }[]);
   const jobRowsByCompany = await Promise.all(
     companyRows.map((c) =>
-      client.all<{ id: string }>(`SELECT id FROM jobs WHERE company_id = ?`, [c.id]).catch(() => [] as { id: string }[]),
+      client
+        .all<{ id: string }>(`SELECT id FROM jobs WHERE company_id = ?`, [c.id])
+        .catch(() => [] as { id: string }[]),
     ),
   );
 
@@ -239,7 +256,7 @@ let fetchBoardImpl: ReturnType<typeof vi.fn>;
 let normalizeImpl: ReturnType<typeof vi.fn>;
 
 vi.mock("@hiring-signals/adapters", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@hiring-signals/adapters")>();
+  const actual = await importOriginal<typeof AdaptersModule>();
   return {
     ...actual,
     getAdapterForProvider: (provider: string) => {
@@ -260,7 +277,11 @@ async function seedCompany(label: string, displayName: string) {
   return createCompany(client, { slug, displayName });
 }
 
-async function seedSource(companyId: string, boardToken: string, provider: "greenhouse" | "lever" = "greenhouse") {
+async function seedSource(
+  companyId: string,
+  boardToken: string,
+  provider: "greenhouse" | "lever" = "greenhouse",
+) {
   return createSource(client, {
     companyId,
     provider,
@@ -300,7 +321,10 @@ let vectorizeUpsertCalls: Array<VectorizeVector[]> = [];
  * outage" for a binding with no test-double surface). */
 let aiRunOverride: (() => Promise<unknown>) | null = null;
 
-function makeLiveEnv(db: Bindings["DB"]): { env: Bindings; sent: Array<{ message: IngestMessage; delaySeconds?: number }> } {
+function makeLiveEnv(db: Bindings["DB"]): {
+  env: Bindings;
+  sent: Array<{ message: IngestMessage; delaySeconds?: number }>;
+} {
   const sent: Array<{ message: IngestMessage; delaySeconds?: number }> = [];
   aiRunCalls = [];
   vectorizeUpsertCalls = [];
@@ -321,7 +345,10 @@ function makeLiveEnv(db: Bindings["DB"]): { env: Bindings; sent: Array<{ message
       run: async (model: string, inputs: unknown) => {
         aiRunCalls.push({ model, inputs });
         if (aiRunOverride) return aiRunOverride();
-        return (realAi as unknown as { run: (m: string, i: unknown) => Promise<unknown> }).run(model, inputs);
+        return (realAi as unknown as { run: (m: string, i: unknown) => Promise<unknown> }).run(
+          model,
+          inputs,
+        );
       },
     } as unknown as Bindings["AI"],
     VECTORIZE: {
@@ -336,7 +363,11 @@ function makeLiveEnv(db: Bindings["DB"]): { env: Bindings; sent: Array<{ message
   return { env, sent };
 }
 
-function makeMessage(body: IngestMessage): { message: Message<IngestMessage>; acked: boolean[]; retried: boolean[] } {
+function makeMessage(body: IngestMessage): {
+  message: Message<IngestMessage>;
+  acked: boolean[];
+  retried: boolean[];
+} {
   const acked: boolean[] = [];
   const retried: boolean[] = [];
   const message = {
@@ -398,7 +429,12 @@ async function getSignalsForCompany(companyId: string) {
 async function getEvidenceForSignals(signalIds: string[]) {
   if (signalIds.length === 0) return [];
   const placeholders = signalIds.map(() => "?").join(",");
-  return client.all<{ id: string; signal_id: string; job_id: string | null; evidence_type: string }>(
+  return client.all<{
+    id: string;
+    signal_id: string;
+    job_id: string | null;
+    evidence_type: string;
+  }>(
     `SELECT id, signal_id, job_id, evidence_type FROM signal_evidence WHERE signal_id IN (${placeholders}) ORDER BY id ASC`,
     signalIds,
   );
@@ -475,7 +511,9 @@ describe("handleIngestMessage - happy path", () => {
       expect(aiRunCalls).toHaveLength(1);
       expect(aiRunCalls[0]!.model).toBe("@cf/baai/bge-base-en-v1.5");
       expect(aiRunCalls[0]!.inputs).toEqual({
-        text: ["Site Reliability Engineer\nSite Reliability Engineer\nRemote - US\nJoin our infra team."],
+        text: [
+          "Site Reliability Engineer\nSite Reliability Engineer\nRemote - US\nJoin our infra team.",
+        ],
       });
 
       expect(vectorizeUpsertCalls).toHaveLength(1);
@@ -605,7 +643,10 @@ describe("handleIngestMessage - happy path", () => {
       // is undefined and the pipeline would otherwise return early with
       // no evidence at all.
       normalizeImpl = vi.fn(() => [
-        { ...makeNormalizedJob(externalId), descriptionText: "Now fully remote, 0-2 years experience." },
+        {
+          ...makeNormalizedJob(externalId),
+          descriptionText: "Now fully remote, 0-2 years experience.",
+        },
       ]);
       await handleIngestMessage(
         makeMessage({
@@ -659,7 +700,12 @@ describe("handleIngestMessage - happy path", () => {
       // Run 2: content changes, but there's still no active signal to
       // attach evidence to -- the F4 path must be a no-op here.
       normalizeImpl = vi.fn(() => [
-        { ...makeNormalizedJob(externalId), title: "Mystery Role", department: undefined, descriptionText: "Updated." },
+        {
+          ...makeNormalizedJob(externalId),
+          title: "Mystery Role",
+          department: undefined,
+          descriptionText: "Updated.",
+        },
       ]);
       await handleIngestMessage(
         makeMessage({
@@ -952,7 +998,10 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
       // reach this DB state via a raw UPDATE -- same "DB-level state not
       // reachable through valid repo functions" precedent
       // signals-write-repo.test.ts already established.
-      await client.run(`UPDATE sources SET provider = ? WHERE id = ?`, ["not-a-real-provider", source.id]);
+      await client.run(`UPDATE sources SET provider = ? WHERE id = ?`, [
+        "not-a-real-provider",
+        source.id,
+      ]);
       const runId = testSlug("finvprovider-run");
       const { message, acked, retried } = makeMessage({
         version: 1,
@@ -976,6 +1025,22 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
 });
 
 describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)", () => {
+  // ROADMAP.md J.1 (2026-08-04): 240s per-test override, not a global
+  // vitest.config.ts bump -- this file's H.4 tests seed 2-3 jobs each,
+  // and each job pays roughly 14-26 sequential live-D1 round trips
+  // (~3s/call process-spawn overhead each, measured directly against
+  // real D1 -- see J.1's investigation earlier in this file), so a
+  // 3-job test's worst-case cost is well past the workspace's default
+  // 90s testTimeout even after J.1 steps 1/4/6 (read-batching +
+  // read-concurrency) landed -- those measurably did NOT close the gap
+  // (role_acceleration's 2-job case took 115.8s in one observed run,
+  // scoped tests still timed out at 90s in another). Root cause
+  // (sequential per-job writes) not yet fixed -- this override is the
+  // "cheapest" option from AGENTS.md's original cost-ordering note,
+  // applied deliberately per-test rather than globally so a genuine
+  // hang in an unrelated apps/api test file (e.g. scheduler.test.ts)
+  // still fails fast at the workspace default instead of being masked
+  // by a blanket timeout increase.
   it("hiring_burst: 3 new jobs for the same (company, role) in one run triggers a hiring_burst signal", async () => {
     const company = await seedCompany("burst", "Burst Co");
     try {
@@ -995,7 +1060,10 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
-      await handleIngestMessage(message, env);
+      // 30s per-call override (default 15s) -- J.2: this session's live D1
+      // per-call latency exceeded the circuit breaker's default before
+      // testTimeout was even reached. See ROADMAP.md J.2.
+      await handleIngestMessage(message, env, 30_000);
 
       expect(acked).toEqual([true]);
       const signalTypes = (await getSignalsForCompany(company.id)).map((s) => s.signal_type);
@@ -1005,7 +1073,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+  }, 240_000);
 
   it("multi_location: 3 distinct location_modes for the same (company, role) triggers a multi_location signal", async () => {
     const company = await seedCompany("multiloc", "MultiLoc Co");
@@ -1026,7 +1094,8 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
-      await handleIngestMessage(message, env);
+      // 30s per-call override (default 15s) -- J.2. See ROADMAP.md J.2.
+      await handleIngestMessage(message, env, 30_000);
 
       expect(acked).toEqual([true]);
       const signalTypes = (await getSignalsForCompany(company.id)).map((s) => s.signal_type);
@@ -1035,7 +1104,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+  }, 240_000);
 
   it("role_acceleration: does NOT trigger on a single job's cold-start acceleration value (regression: false-positive fix)", async () => {
     // computeAcceleration(1, 0) = (1-0)/max(2,0) = 0.5 exactly -- below
@@ -1055,7 +1124,8 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
-      await handleIngestMessage(message, env);
+      // 30s per-call override (default 15s) -- J.2. See ROADMAP.md J.2.
+      await handleIngestMessage(message, env, 30_000);
 
       const signals = await getSignalsForCompany(company.id);
       const signalTypes = signals.map((s) => s.signal_type);
@@ -1064,7 +1134,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+  }, 240_000);
 
   it("role_acceleration: 2 new jobs for the same (company, role) in one run saturates acceleration to 1.0 and triggers", async () => {
     // computeAcceleration(2, 0) = (2-0)/max(2,0) = 1.0 -- clears the 0.75
@@ -1084,14 +1154,15 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
-      await handleIngestMessage(message, env);
+      // 30s per-call override (default 15s) -- J.2. See ROADMAP.md J.2.
+      await handleIngestMessage(message, env, 30_000);
 
       const signalTypes = (await getSignalsForCompany(company.id)).map((s) => s.signal_type);
       expect(signalTypes).toContain("role_acceleration");
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+  }, 240_000);
 
   it("persistent_demand: an active new_job signal continuously active >=30 days triggers persistent_demand on the next detection", async () => {
     const company = await seedCompany("persist", "Persist Co");
@@ -1101,6 +1172,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
       normalizeImpl = vi.fn(() => [makeNormalizedJob(`${p}-1`)]);
 
       // Run 1: creates the primary new_job signal, first_detected_at = now.
+      // 30s per-call override (default 15s) -- J.2. See ROADMAP.md J.2.
       await handleIngestMessage(
         makeMessage({
           version: 1,
@@ -1110,6 +1182,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
           attempt: 1,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
+        30_000,
       );
 
       const signalsAfterRun1 = await getSignalsForCompany(company.id);
@@ -1137,6 +1210,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
       // the persistent_demand threshold rather than lifecycle edge cases
       // already covered elsewhere.
       normalizeImpl = vi.fn(() => [makeNormalizedJob(`${p}-2`)]);
+      // 30s per-call override (default 15s) -- J.2. See ROADMAP.md J.2.
       await handleIngestMessage(
         makeMessage({
           version: 1,
@@ -1146,6 +1220,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
           attempt: 1,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
+        30_000,
       );
 
       const signalTypes = (await getSignalsForCompany(company.id)).map((s) => s.signal_type);
@@ -1153,5 +1228,5 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+  }, 300_000); // two full handleIngestMessage passes (run 1 + run 2) -- more headroom than the single-run H.4 tests above.
 });

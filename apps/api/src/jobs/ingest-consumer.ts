@@ -14,7 +14,11 @@ import {
   computeNewJobScore,
   buildJobEmbeddingText,
 } from "@hiring-signals/domain";
-import { getAdapterForProvider, UnsupportedProviderError, GreenhouseSchemaError } from "@hiring-signals/adapters";
+import {
+  getAdapterForProvider,
+  UnsupportedProviderError,
+  GreenhouseSchemaError,
+} from "@hiring-signals/adapters";
 import {
   createD1Client,
   getSourceById,
@@ -24,14 +28,16 @@ import {
   updateSource,
   upsertJob,
   insertJobObservation,
-  getJobByExternalId,
   getJobsMissingFromRun,
   applyLifecycleTransition,
   updateJobClassification,
   resolveSourceRun,
   findActiveSignal,
+  findActiveSignalsBatch,
+  findActiveSignalIgnoringLookback,
   createSignal,
   refreshSignal,
+  DuplicateActiveSignalError,
   appendSignalEvidence,
   getCompanyRoleActivityStats,
   type SourceRow,
@@ -167,9 +173,22 @@ function isProgrammerError(err: unknown): boolean {
   );
 }
 
-export async function handleIngestMessage(message: Message<IngestMessage>, env: Bindings): Promise<void> {
+export async function handleIngestMessage(
+  message: Message<IngestMessage>,
+  env: Bindings,
+  /**
+   * Test-only. Production callers (apps/api/src/index.ts's queue
+   * consumer) never pass this -- omitted, every createD1Client(env.DB)
+   * call in this function keeps today's 15s circuit-breaker default.
+   * Live-D1 tests hitting real per-call latency pass a longer value
+   * here instead of touching packages/test-support/src/
+   * live-d1-database.ts, which deliberately does not wrap
+   * createD1Client (see ROADMAP.md J.2).
+   */
+  operationTimeoutMs?: number,
+): Promise<void> {
   const { sourceId, runId, attempt } = message.body;
-  const client = createD1Client(env.DB);
+  const client = createD1Client(env.DB, { operationTimeoutMs });
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
 
@@ -227,7 +246,14 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         // 4xx-style configuration issue (spec §13.4 row 3): mark source
         // degraded, no automatic hammering. Not retryable -- the adapter
         // simply doesn't exist yet.
-        await finalizeConfigError(client, source.id, source.company_id, sourceRunId, startTime, err.message);
+        await finalizeConfigError(
+          client,
+          source.id,
+          source.company_id,
+          sourceRunId,
+          startTime,
+          err.message,
+        );
         message.ack();
         return;
       }
@@ -254,7 +280,16 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         errorCode: "rate_limited",
         errorMessageSafe: `429 Retry-After=${fetchResult.retryAfterSeconds ?? "none"}`,
       });
-      await requeueOrGiveUp(message, env, sourceId, runId, attempt, retrySeconds, client, sourceRunId);
+      await requeueOrGiveUp(
+        message,
+        env,
+        sourceId,
+        runId,
+        attempt,
+        retrySeconds,
+        client,
+        sourceRunId,
+      );
       return;
     }
 
@@ -336,10 +371,23 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
     let signalsCreated = 0;
 
     for (const job of normalizedJobs) {
-      signalsCreated += await processNormalizedJob(client, env, source, sourceRunId, job, observedAt);
+      signalsCreated += await processNormalizedJob(
+        client,
+        env,
+        source,
+        sourceRunId,
+        job,
+        observedAt,
+      );
     }
 
-    signalsCreated += await processMissingJobs(client, source, sourceRunId, seenExternalIds, observedAt);
+    signalsCreated += await processMissingJobs(
+      client,
+      source,
+      sourceRunId,
+      seenExternalIds,
+      observedAt,
+    );
 
     const nextPollAt = computeNextPollAt(source.poll_interval_minutes, source.id);
     await markSourceSuccess(client, source.id, source.company_id, nextPollAt);
@@ -398,7 +446,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         message: message_,
       });
       try {
-        const client2 = createD1Client(env.DB);
+        const client2 = createD1Client(env.DB, { operationTimeoutMs });
         const sourceRunId2 = await resolveSourceRun(client2, sourceId, runId, startedAt);
         await recordSourceRunComplete(client2, sourceRunId2, {
           completedAt: new Date().toISOString(),
@@ -409,7 +457,11 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         });
         await markSourceFailure(client2, sourceId);
       } catch (finalizeErr) {
-        console.error("ingest_finalize_failed", { sourceId, runId, message: errorMessage(finalizeErr) });
+        console.error("ingest_finalize_failed", {
+          sourceId,
+          runId,
+          message: errorMessage(finalizeErr),
+        });
       }
       message.ack(); // not retryable -- retrying won't fix a code bug
       return;
@@ -429,7 +481,7 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
       // workflow" -- a source_runs row with status='failed_final' is
       // sufficient for v1, per ROADMAP.md Milestone D).
       try {
-        const client2 = createD1Client(env.DB);
+        const client2 = createD1Client(env.DB, { operationTimeoutMs });
         const sourceRunId2 = await resolveSourceRun(client2, sourceId, runId, startedAt);
         await recordSourceRunComplete(client2, sourceRunId2, {
           completedAt: new Date().toISOString(),
@@ -440,7 +492,11 @@ export async function handleIngestMessage(message: Message<IngestMessage>, env: 
         });
         await markSourceFailure(client2, sourceId);
       } catch (finalizeErr) {
-        console.error("ingest_finalize_failed", { sourceId, runId, message: errorMessage(finalizeErr) });
+        console.error("ingest_finalize_failed", {
+          sourceId,
+          runId,
+          message: errorMessage(finalizeErr),
+        });
       }
       message.ack(); // stop retrying; failure is recorded for review
       return;
@@ -508,13 +564,27 @@ async function generateCompanySignals(
     triggered.push("persistent_demand");
   }
 
+  // ROADMAP.md J.1 (2026-08-04): one findActiveSignalsBatch round trip
+  // for all `triggered` types instead of a separate findActiveSignal
+  // call per type inside the loop below (up to 4 sequential D1 round
+  // trips just for this read, each paying full wrangler-CLI spawn cost
+  // in tests / connection overhead in production). Writes below are
+  // deliberately left as individual create/refresh/appendEvidence calls
+  // per type, NOT batched into one D1Client.batch() -- a single
+  // signal_type hitting the DuplicateActiveSignalError race (migration
+  // 0006's partial UNIQUE index) would abort the entire batch and lose
+  // every other signal type's write for this job too, trading a rare
+  // race for a strictly worse failure mode. Only the read is safe to
+  // collapse here.
+  const activeSignalsByType = await findActiveSignalsBatch(client, {
+    companyId: source.company_id,
+    roleCategory,
+    signalTypes: triggered,
+  });
+
   let signalsCreated = 0;
   for (const signalType of triggered) {
-    const activeSignal = await findActiveSignal(client, {
-      companyId: source.company_id,
-      roleCategory,
-      signalType,
-    });
+    const activeSignal = activeSignalsByType.get(signalType) ?? null;
 
     let signalId: string;
     if (activeSignal) {
@@ -547,17 +617,60 @@ async function generateCompanySignals(
         continue;
       }
     } else {
-      signalId = await createSignal(client, {
-        companyId: source.company_id,
-        roleCategory,
-        signalType,
-        score: primaryScore,
-        scoreVersion: primaryScoreVersion,
-        detectedAt: observedAt,
-        headline: buildHeadline(signalType, jobTitle),
-        summary: buildSummary(signalType, jobTitle),
-      });
-      signalsCreated += 1;
+      // ROADMAP.md J.5 (2026-08-05): the activeSignalsByType read above
+      // uses ACTIVE_SIGNAL_LOOKBACK_DAYS, so a signal older than that
+      // cutoff (but still status='active' and still within migration
+      // 0006's UNIQUE index) reaches this branch even though a row
+      // genuinely already exists -- createSignal's INSERT then hits the
+      // index and throws DuplicateActiveSignalError. Recover by
+      // re-fetching that exact row ignoring the lookback (the index
+      // violation already proved it exists) and refreshing it instead
+      // of letting this bubble up as ingest_failed, per createSignal's
+      // own doc comment ("re-run findActiveSignal and refresh that row
+      // instead, not an unrecoverable failure").
+      try {
+        signalId = await createSignal(client, {
+          companyId: source.company_id,
+          roleCategory,
+          signalType,
+          score: primaryScore,
+          scoreVersion: primaryScoreVersion,
+          detectedAt: observedAt,
+          headline: buildHeadline(signalType, jobTitle),
+          summary: buildSummary(signalType, jobTitle),
+        });
+        signalsCreated += 1;
+      } catch (err) {
+        if (!(err instanceof DuplicateActiveSignalError)) {
+          throw err;
+        }
+        const staleActiveSignal = await findActiveSignalIgnoringLookback(client, {
+          companyId: source.company_id,
+          roleCategory,
+          signalType,
+        });
+        if (!staleActiveSignal) {
+          // The index said a row exists but it's gone by the time we
+          // re-queried (e.g. the expiration cron swept it in between) --
+          // genuinely shouldn't happen, but re-throwing the original
+          // error is safer than silently treating this job as skipped.
+          throw err;
+        }
+        signalId = staleActiveSignal.id;
+        const refreshResult = await refreshSignal(client, signalId, source.company_id, {
+          score: primaryScore,
+          scoreVersion: primaryScoreVersion,
+          lastDetectedAt: observedAt,
+        });
+        if (refreshResult.changes === 0) {
+          console.warn("company_signal_refresh_skipped", {
+            signal_id: signalId,
+            company_id: source.company_id,
+            signal_type: signalType,
+          });
+          continue;
+        }
+      }
     }
 
     await appendSignalEvidence(client, {
@@ -606,8 +719,17 @@ async function processNormalizedJob(
     locationRaw: job.locationRaw ?? null,
   });
 
-  const existing = await getJobByExternalId(client, source.id, job.externalJobId);
-
+  // ROADMAP.md J.1 (2026-08-04): the separate getJobByExternalId call
+  // that used to live here is gone -- upsertJob's own internal
+  // existing-row lookup now returns the same lifecycle-relevant columns
+  // (status/missing_run_count/first_seen_at/role_primary) as part of
+  // its result (`upsertResult.existing`), so this function no longer
+  // pays for two SELECTs against the same row in the same call. Every
+  // downstream use of the old `existing` binding below now reads
+  // `upsertResult.existing` instead -- same shape, same semantics
+  // (`null` for a brand-new job), one fewer D1 round trip per job in
+  // the pipeline's single largest per-job cost driver (see J.1's plan
+  // for the full call-count accounting).
   const upsertResult = await upsertJob(client, {
     sourceId: source.id,
     companyId: source.company_id,
@@ -620,12 +742,16 @@ async function processNormalizedJob(
     employmentType: job.employmentType,
     locationRaw: job.locationRaw,
     locationMode: job.locationMode,
+    countryCode: job.countryCode,
+    regionCode: job.regionCode,
+    city: job.city,
     postedAt: job.postedAt,
     sourceUpdatedAt: job.updatedAt,
     contentHash,
     observedAt,
   });
   const jobId = upsertResult.id;
+  const existing = upsertResult.existing;
 
   await insertObservationIdempotent(client, {
     jobId,
@@ -692,7 +818,9 @@ async function processNormalizedJob(
         // role_primary is stored as TEXT in D1 (JobRow's `string | null`)
         // but is always written from RoleCategory by updateJobClassification
         // -- same cast pattern this file already uses for existing?.status.
-        roleCategory: existing.role_primary as Parameters<typeof findActiveSignal>[1]["roleCategory"],
+        roleCategory: existing.role_primary as Parameters<
+          typeof findActiveSignal
+        >[1]["roleCategory"],
         signalType: "new_job",
       });
       if (activeSignalForEdit) {
@@ -745,11 +873,30 @@ async function processNormalizedJob(
   // query (company_id + the just-classified role_primary), replacing the
   // v1 fixed-0.5 neutral constant. Also reused by H.4's company-level
   // signal triggers below -- one D1 round trip serves both.
-  const activityStats = await getCompanyRoleActivityStats(client, {
-    companyId: source.company_id,
-    roleCategory: classification.rolePrimary,
-    now: observedAt,
-  });
+  //
+  // ROADMAP.md J.1 step 6 (2026-08-04): fired concurrently with the
+  // primary findActiveSignal lookup below via Promise.all, since
+  // neither read depends on the other's *result* -- getCompanyRoleActivityStats
+  // only needs companyId/roleCategory/observedAt, and findActiveSignal
+  // only needs companyId/roleCategory/lifecycle.candidateSignal, both
+  // already known at this point. Does NOT merge into one D1/wrangler
+  // round trip (that would need transport-level read-coalescing, not
+  // built -- see J.1 step 6's "(b) not (a)" framing): this only overlaps
+  // two round trips' wall-clock cost instead of summing them. scoreResult
+  // still has a real dependency on activityStats's output values, so it
+  // stays sequential after this Promise.all resolves.
+  const [activityStats, activeSignal] = await Promise.all([
+    getCompanyRoleActivityStats(client, {
+      companyId: source.company_id,
+      roleCategory: classification.rolePrimary,
+      now: observedAt,
+    }),
+    findActiveSignal(client, {
+      companyId: source.company_id,
+      roleCategory: classification.rolePrimary,
+      signalType: lifecycle.candidateSignal,
+    }),
+  ]);
 
   const scoreResult = computeNewJobScore({
     daysSinceObservation,
@@ -758,12 +905,6 @@ async function processNormalizedJob(
     newInLast14Days: activityStats.newInLast14Days,
     newInPrior56Days: activityStats.newInPrior56Days,
     distinctLocationCount: activityStats.distinctLocationCount,
-  });
-
-  const activeSignal = await findActiveSignal(client, {
-    companyId: source.company_id,
-    roleCategory: classification.rolePrimary,
-    signalType: lifecycle.candidateSignal,
   });
 
   let signalId: string;
@@ -793,17 +934,63 @@ async function processNormalizedJob(
       return 0;
     }
   } else {
-    signalId = await createSignal(client, {
-      companyId: source.company_id,
-      roleCategory: classification.rolePrimary,
-      signalType: lifecycle.candidateSignal,
-      score: scoreResult.score,
-      scoreVersion: scoreResult.formulaVersion,
-      detectedAt: observedAt,
-      headline: buildHeadline(lifecycle.candidateSignal, job.title),
-      summary: buildSummary(lifecycle.candidateSignal, job.title),
-    });
-    createdNewSignal = 1;
+    // ROADMAP.md J.5 (2026-08-05): findActiveSignal above uses
+    // ACTIVE_SIGNAL_LOOKBACK_DAYS, so a signal older than that cutoff
+    // (but still status='active' and still within migration 0006's
+    // UNIQUE index) reaches this branch even though a row genuinely
+    // already exists -- createSignal's INSERT then hits the index and
+    // throws DuplicateActiveSignalError. Recover by re-fetching that
+    // exact row ignoring the lookback (the index violation already
+    // proved it exists) and refreshing it instead of letting this
+    // bubble up as ingest_failed, per createSignal's own doc comment
+    // ("re-run findActiveSignal and refresh that row instead, not an
+    // unrecoverable failure"). This is also what makes persistent_demand
+    // reachable at all: without this, a signal stale enough to need
+    // recovery here never reaches the refresh path below that carries
+    // primarySignalFirstDetectedAt forward for H.4's day-count check.
+    try {
+      signalId = await createSignal(client, {
+        companyId: source.company_id,
+        roleCategory: classification.rolePrimary,
+        signalType: lifecycle.candidateSignal,
+        score: scoreResult.score,
+        scoreVersion: scoreResult.formulaVersion,
+        detectedAt: observedAt,
+        headline: buildHeadline(lifecycle.candidateSignal, job.title),
+        summary: buildSummary(lifecycle.candidateSignal, job.title),
+      });
+      createdNewSignal = 1;
+    } catch (err) {
+      if (!(err instanceof DuplicateActiveSignalError)) {
+        throw err;
+      }
+      const staleActiveSignal = await findActiveSignalIgnoringLookback(client, {
+        companyId: source.company_id,
+        roleCategory: classification.rolePrimary,
+        signalType: lifecycle.candidateSignal,
+      });
+      if (!staleActiveSignal) {
+        // The index said a row exists but it's gone by the time we
+        // re-queried (e.g. the expiration cron swept it in between) --
+        // genuinely shouldn't happen, but re-throwing the original
+        // error is safer than silently treating this job as a no-op.
+        throw err;
+      }
+      signalId = staleActiveSignal.id;
+      const refreshResult = await refreshSignal(client, signalId, source.company_id, {
+        score: scoreResult.score,
+        scoreVersion: scoreResult.formulaVersion,
+        lastDetectedAt: observedAt,
+      });
+      if (refreshResult.changes === 0) {
+        console.warn("primary_signal_refresh_skipped", {
+          signal_id: signalId,
+          company_id: source.company_id,
+          signal_type: lifecycle.candidateSignal,
+        });
+        return 0;
+      }
+    }
   }
 
   await appendSignalEvidence(client, {
@@ -890,10 +1077,9 @@ async function embedAndUpsertJob(
       descriptionText: params.descriptionText,
     });
 
-    const embeddingResult = await ai.AI.run(
-      ai.EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5",
-      { text: [text] },
-    );
+    const embeddingResult = await ai.AI.run(ai.EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5", {
+      text: [text],
+    });
 
     if (!("data" in embeddingResult) || !embeddingResult.data?.[0]) {
       // Async-batch response shape (request_id, no data yet) -- shouldn't

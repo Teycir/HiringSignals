@@ -57,40 +57,93 @@ export interface D1Client {
   batch<T>(statements: Array<{ sql: string; params?: unknown[] }>): Promise<T[][]>;
 }
 
-export function createD1Client(db: D1Database): D1Client {
+export interface CreateD1ClientOptions {
+  /**
+   * Per-call circuit-breaker timeout override for first()/all()/run().
+   * Omit in production (falls through to the shared module-level
+   * breaker's own 15s default) -- only test callers hitting real
+   * per-call latency against a live remote D1 need this. Deliberately
+   * NOT a second createCircuitBreaker(...) instantiation: that would
+   * give the caller its own independent failure/circuit state instead
+   * of sharing the resource's real one. See ../http/circuit-
+   * breaker.ts's withCircuit doc comment and ROADMAP.md's J.2 entry
+   * for why.
+   */
+  operationTimeoutMs?: number;
+  /**
+   * Per-call circuit-breaker timeout override for batch() specifically.
+   * Falls back to operationTimeoutMs, then the breaker's 15s default,
+   * when omitted. A separate knob because batch()'s multi-statement
+   * wrangler --command transport is measurably slower than a single
+   * first()/all()/run() call in this environment (31.7s for a 7-
+   * statement batch(), isolated, no prior calls in the same test --
+   * see ROADMAP.md's J.2 entry) -- one shared value has to either
+   * over-cover every single-statement call to fit batch(), or
+   * under-cover batch() to stay tight for single-statement calls.
+   * This lets batch() get the room it needs without loosening the
+   * breaker's timeout for the calls that don't.
+   */
+  batchOperationTimeoutMs?: number;
+}
+
+export function createD1Client(db: D1Database, options?: CreateD1ClientOptions): D1Client {
+  const operationTimeoutMsOverride = options?.operationTimeoutMs;
+  // batch()'s own override falls back to operationTimeoutMs, then the
+  // breaker's 15s default -- see CreateD1ClientOptions.batchOperationTimeoutMs
+  // doc comment for why this needs its own value instead of sharing
+  // operationTimeoutMsOverride with first()/all()/run().
+  const batchOperationTimeoutMsOverride =
+    options?.batchOperationTimeoutMs ?? operationTimeoutMsOverride;
+
   return {
     first<T>(sql: string, params: unknown[] = []) {
-      return breaker.withCircuit("db", async () => {
-        const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
-        const row = await stmt.first<T>();
-        return row ?? null;
-      });
+      return breaker.withCircuit(
+        "db",
+        async () => {
+          const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
+          const row = await stmt.first<T>();
+          return row ?? null;
+        },
+        operationTimeoutMsOverride,
+      );
     },
 
     all<T>(sql: string, params: unknown[] = []) {
-      return breaker.withCircuit("db", async () => {
-        const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
-        const { results } = await stmt.all<T>();
-        return results ?? [];
-      });
+      return breaker.withCircuit(
+        "db",
+        async () => {
+          const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
+          const { results } = await stmt.all<T>();
+          return results ?? [];
+        },
+        operationTimeoutMsOverride,
+      );
     },
 
     run(sql: string, params: unknown[] = []) {
-      return breaker.withCircuit("db", async () => {
-        const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
-        const result = await stmt.run();
-        return { changes: result.meta?.changes ?? 0 };
-      });
+      return breaker.withCircuit(
+        "db",
+        async () => {
+          const stmt = params.length ? db.prepare(sql).bind(...params) : db.prepare(sql);
+          const result = await stmt.run();
+          return { changes: result.meta?.changes ?? 0 };
+        },
+        operationTimeoutMsOverride,
+      );
     },
 
     batch<T>(statements: Array<{ sql: string; params?: unknown[] }>) {
-      return breaker.withCircuit("db", async () => {
-        const prepared = statements.map(({ sql, params = [] }) =>
-          params.length ? db.prepare(sql).bind(...params) : db.prepare(sql),
-        );
-        const results = await db.batch<T>(prepared);
-        return results.map((r) => r.results ?? []);
-      });
+      return breaker.withCircuit(
+        "db",
+        async () => {
+          const prepared = statements.map(({ sql, params = [] }) =>
+            params.length ? db.prepare(sql).bind(...params) : db.prepare(sql),
+          );
+          const results = await db.batch<T>(prepared);
+          return results.map((r) => r.results ?? []);
+        },
+        batchOperationTimeoutMsOverride,
+      );
     },
   };
 }

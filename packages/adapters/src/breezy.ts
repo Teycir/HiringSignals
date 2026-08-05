@@ -120,7 +120,13 @@ function normalize(raw: unknown, source: SourceConfig): NormalizedJob[] {
       employmentType: position.type?.name ?? undefined,
       requisitionId: position.requisition_id ?? undefined,
       locationRaw,
-      locationMode: position.location?.is_remote === true ? "remote" : inferLocationMode(locationRaw),
+      locationMode:
+        position.location?.is_remote === true ? "remote" : inferLocationMode(locationRaw),
+      // breezyLocationSchema's country/state are objects with only a
+      // free-text `name` (e.g. "United States"), not codes -- countryCode/
+      // regionCode stay undefined rather than mismapping a name into a
+      // code field. city has no such ambiguity.
+      city: position.location?.city ?? undefined,
       postedAt,
       updatedAt: normalizeTimestamp(position.updated_date) ?? postedAt,
     };
@@ -135,9 +141,11 @@ function resolveCanonicalUrl(position: BreezyPosition, source: SourceConfig): st
 function resolveLocationRaw(position: BreezyPosition): string | undefined {
   const location = position.location;
   if (!location) return undefined;
-  return [location.name, location.city, location.state?.name, location.country?.name]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join(", ") || undefined;
+  return (
+    [location.name, location.city, location.state?.name, location.country?.name]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join(", ") || undefined
+  );
 }
 
 function normalizeTimestamp(value: string | null | undefined): string | undefined {
