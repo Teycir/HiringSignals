@@ -17,6 +17,50 @@ database_name = "hiring-signals"
 database_id = "1b1d1f22-62de-4e59-95f5-e852c1a0c445"
 migrations_dir = "../../infrastructure/d1/migrations"
 
+# --- CI environment: isolated D1 database for the live-D1 test suites
+# that touch ONLY D1 (packages/db/test/*.test.ts's createLiveD1Client
+# callers, plus apps/api/test/jobs/{reconciliation,scheduler}.test.ts's
+# createLiveD1Database callers -- confirmed by grepping every live-D1
+# test file's @hiring-signals/test-support import, 2026-08-05: exactly
+# these 9 files import only createLiveD1Client/createLiveD1Database,
+# nothing else from that package).
+#
+# `binding = "DB"` deliberately matches the top-level binding name (not
+# wrangler's own auto-suggested "hiring_signals_ci") so createD1Client()
+# and every packages/db repo function work completely unmodified under
+# either environment -- only which physical database `env.DB`/the
+# D1Client passed to a repo function resolves to differs.
+#
+# `env.ci.vars`/`[ai]`/`[[vectorize]]`/`[[kv_namespaces]]` are
+# deliberately NOT added here: per Cloudflare's own docs, bindings are
+# non-inheritable per environment and must be redeclared explicitly, and
+# these 9 files' handlers/repo functions never read env.AI, env.VECTORIZE,
+# or any KV binding (confirmed by the same import-grep above) -- adding
+# unused bindings here would be dead config, not real isolation of
+# anything these tests touch. apps/api/test/jobs/ingest-consumer.test.ts
+# is the one live-D1 file that DOES touch AI/Vectorize/KV (via
+# createLiveAiBinding/createLiveVectorizeIndex/createLiveKvNamespace,
+# packages/test-support/src/live-cf-bindings.ts) -- and those three
+# helpers hit Cloudflare's REST API directly with hardcoded
+# account-level resource names/ids, entirely bypassing wrangler.toml, so
+# there is no config-based isolation path for them at all (Workers AI
+# has no per-database concept to isolate in the first place; Vectorize's
+# index name and every KV namespace id are hardcoded constants in that
+# file, not read from any binding). That file is deliberately excluded
+# from CI's live-D1 job below and stays manual-only, matching this
+# repo's decision (2026-08-05) not to run it against production
+# AI/Vectorize/KV data on every push.
+#
+# Provisioned 2026-08-05:
+#   npx wrangler d1 create hiring-signals-ci
+#   npx wrangler d1 migrations apply hiring-signals-ci --remote
+[env.ci]
+[[env.ci.d1_databases]]
+binding = "DB"
+database_name = "hiring-signals-ci"
+database_id = "b1b02fb1-a493-4a7a-8ece-f3763ded98cf"
+migrations_dir = "../../infrastructure/d1/migrations"
+
 # --- KV: ephemeral shared cache (facets, rate-limit counters, abuse logs)
 # Stored separately from raw payloads (below) to limit blast radius:
 # anyone with read access to CACHE cannot read raw ATS board responses.

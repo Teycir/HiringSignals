@@ -51,6 +51,22 @@ function resolveWranglerCompatiblePath(): string {
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const API_DIR = path.join(REPO_ROOT, "apps/api");
 
+/** Which physical D1 database every execRemote call targets. Defaults to
+ * the real production `hiring-signals` database (unchanged behavior for
+ * every existing local/manual call site) -- set D1_DATABASE_NAME to
+ * override, e.g. "hiring-signals-ci" for the isolated CI database
+ * (wrangler.toml's `[env.ci]` block, provisioned 2026-08-05). Read once
+ * at module load rather than per-call: every caller in a given process
+ * (a single CI job, a single local test run) targets one database for
+ * the whole run, never a mix, so there is no case where a stale
+ * module-load-time read would be wrong within one run. */
+const D1_DATABASE_NAME = process.env.D1_DATABASE_NAME || "hiring-signals";
+/** Which wrangler --env this database lives under, if any (e.g. "ci" for
+ * hiring-signals-ci, which only exists under `[env.ci]`). Empty string
+ * means no --env flag, matching wrangler's own default when a database
+ * is declared at the top level. */
+const D1_WRANGLER_ENV = process.env.D1_WRANGLER_ENV || "";
+
 /** Escapes one JS value into a SQL literal for inline substitution into
  * a `--command` string. Mirrors infrastructure/scripts/lib/d1-exec.mjs's
  * `sqlString`, extended to numbers/booleans/null so this transport can
@@ -125,11 +141,9 @@ function execRemoteOnce(sql: string): Promise<WranglerStatementResult[]> {
       PATH: resolveWranglerCompatiblePath(),
       ...(token ? { CLOUDFLARE_API_TOKEN: token } : {}),
     };
-    const child = spawn(
-      "npx",
-      ["wrangler", "d1", "execute", "hiring-signals", "--remote", "--json", "--command", sql],
-      { cwd: API_DIR, shell: false, env },
-    );
+    const args = ["wrangler", "d1", "execute", D1_DATABASE_NAME, "--remote", "--json", "--command", sql];
+    if (D1_WRANGLER_ENV) args.push("--env", D1_WRANGLER_ENV);
+    const child = spawn("npx", args, { cwd: API_DIR, shell: false, env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));

@@ -3451,23 +3451,84 @@ exceptions.
     anywhere else in the repo before removing; `packages/domain test`
     70/70 passing; `packages/adapters test` 114/114 passing.
 
-- [ ] **Follow-up: live-D1 suites in CI, if ever wanted** — not
-      currently planned given the cost/risk tradeoff above (the fast
-      pure-logic subset — option (c) below — is what actually shipped
-      2026-08-02), but if priorities change (e.g. a pre-release gate,
-      or a nightly/manual-dispatch job rather than every push), the
-      real open decision is scope/isolation, not auth (already
-      solved). Options: (a) accept the shared-production-D1 risk
-      as-is, relying on existing test cleanup discipline; (b)
-      provision a genuinely separate D1 database for CI (new
-      `wrangler.toml` env or a second database binding) so a bad CI
-      run can never touch real data; (c) *(shipped, current state)*
-      run only the fast pure-logic subset automatically and treat the
-      full live suite as a manual/pre-release check. Whichever of
-      (a)/(b) is chosen if this gets revisited, budget CI
-      `timeout-minutes` generously (some suites alone run 500–1500s+
-      against real Cloudflare infrastructure) and export
-      `CLOUDFLARE_API_TOKEN: ${{ secrets.CF_TOKEN }}` in the job env.
+- [x] **Follow-up: live-D1 suites in CI, if ever wanted** — **Status
+      (2026-08-05): option (b) shipped.** Repo owner's decision this
+      session was explicit: "safety first" — of the three options this
+      item left open, (a) accept shared-production risk was rejected
+      outright, and between (b) isolate vs. (c) stay pure-logic-only,
+      (b) was chosen. Provisioned `hiring-signals-ci`
+      (`npx wrangler d1 create hiring-signals-ci`, region WEUR, id
+      `b1b02fb1-a493-4a7a-8ece-f3763ded98cf`), migrations 0001-0006
+      applied and independently verified via a live `SELECT name FROM
+      sqlite_master` (not just trusting the migration tool's own ✅
+      table). `wrangler.toml`'s new `[env.ci]` block rebinds `DB` to
+      this database (binding name kept as `"DB"`, matching the
+      top-level binding, so zero application-code changes were
+      needed). `d1-remote-transport.ts` (the single shared transport
+      both `createLiveD1Client` and `createLiveD1Database` route
+      through) gained `D1_DATABASE_NAME`/`D1_WRANGLER_ENV` env vars,
+      defaulting to unchanged production behavior when unset.
+      `.github/workflows/ci.yml` gained a `live-d1-tests` job running
+      only against the isolated database, with `CLOUDFLARE_API_TOKEN`
+      set as a real GitHub secret (`gh secret set`, confirmed via
+      `gh secret list`, value sourced from `.env.local` and never
+      printed).
+
+      **Scope is narrower than "the live-D1 suites," and deliberately
+      so.** Grepping every live-D1 test file's
+      `@hiring-signals/test-support` import (2026-08-05, all 10 files
+      checked individually, not sampled) found exactly 9 that import
+      only `createLiveD1Client`/`createLiveD1Database` — the 7
+      `packages/db/test/*.test.ts` files plus
+      `apps/api/test/jobs/{reconciliation,scheduler}.test.ts`. The
+      10th, `ingest-consumer.test.ts`, also calls
+      `createLiveAiBinding`/`createLiveVectorizeIndex`/
+      `createLiveKvNamespace` (`live-cf-bindings.ts`) — and those three
+      hit Cloudflare's REST API directly with hardcoded account-level
+      resource names/ids (confirmed by reading that file in full),
+      entirely bypassing `wrangler.toml`. Workers AI has no
+      per-database concept to isolate at all; Vectorize's index name
+      and every KV namespace id are literal constants in that one
+      file, not config-driven. There is no equivalent of "point this
+      at a different database" available for AI/Vectorize/KV the way
+      there now is for D1 — so isolating D1 alone does not make
+      `ingest-consumer.test.ts` safe to run automatically, and it
+      stays excluded from CI, manual-only, same as before. This is a
+      real, load-bearing gap, not an oversight papered over: the repo
+      owner chose this scope explicitly
+      ("CI runs only D1-only suites (isolated); skip suites touching
+      AI/Vectorize/KV for now") after the gap was surfaced, rather
+      than either running everything against production or silently
+      narrowing scope without asking.
+
+      **Verified for real, not just wired.** `pnpm -r typecheck` clean
+      across all 6 workspaces after the transport change.
+      `companies-repo.test.ts` (5/5, `createLiveD1Client` path) and
+      `scheduler.test.ts` (5/5, `createLiveD1Database` path — the
+      other of the two transport-consuming shapes) both run to a real
+      pass with `D1_DATABASE_NAME=hiring-signals-ci
+      D1_WRANGLER_ENV=ci` set, confirmed via direct
+      `wrangler d1 execute` row counts against both `hiring-signals-ci`
+      (0 companies, consistent with passing tests that clean up after
+      themselves) and production `hiring-signals` (no new rows from
+      this session's runs) — not inferred from "tests passed" alone.
+
+      **Unrelated finding surfaced, not fixed under this task's
+      scope:** while independently verifying no new rows landed in
+      production, found one pre-existing orphaned test row already
+      there from a prior, unrelated session
+      (`companies.slug = 'test-swr-fas-none-1-1785952806297'`,
+      `created_at = 2026-08-05T18:00:06Z`, ~1h40m before this session's
+      work started) — `signals-write-repo`-pattern naming, a single
+      row, not a systemic leak. Left in place; deleting someone's
+      production data is not this task's call to make unasked.
+      Flagged to the repo owner directly, not silently cleaned up or
+      silently ignored.
+
+      Full narrative, evidence, and the two-round Q&A that shaped this
+      scope is in butler session memory (`HiringSignals` project,
+      session `session-2026-08-05-ci-d1-isolation`) rather than
+      duplicated at ROADMAP.md length here.
 
 - [x] Update AGENTS.md policy section's "Follow-up, tracked, not done
       today" note once `ingest-consumer.test.ts` lands too. Done

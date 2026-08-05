@@ -1,33 +1,68 @@
-# CI: typecheck + lint across every workspace package, plus fast
-# pure-logic tests (packages/domain, packages/adapters) on every
-# push/PR (ROADMAP.md Milestone J CI item). Deliberately does NOT run
-# the live-D1 suites (packages/db, apps/api) here -- every one of those
-# talks to real remote Cloudflare D1 (packages/test-support's
-# live-d1-client.ts / d1-remote-transport.ts, per AGENTS.md's "zero
-# mocks, zero fakes" policy), writes real rows to the same production
-# `hiring-signals` database this app actually serves from, and some
-# suites alone run 500-1500s+ against real Cloudflare infrastructure.
-# For a solo-maintainer project that value doesn't justify that cost
-# and risk on every commit -- explicitly discussed and decided
-# 2026-08-02, not an oversight. Run those manually/locally
-# (`pnpm --filter @hiring-signals/db test`, etc., see AGENTS.md) when
-# you actually want that confidence, e.g. before a release.
+# CI: typecheck + lint across every workspace package, fast pure-logic
+# tests (packages/domain, packages/adapters), and -- as of 2026-08-05 --
+# the subset of live-D1 test suites that touch ONLY D1, run against an
+# isolated `hiring-signals-ci` database, never production.
 #
-# packages/domain and packages/adapters are the safe, fast exception:
-# both are pure logic with zero @hiring-signals/test-support or live-D1
-# dependency (confirmed via their package.json dependency lists,
-# 2026-08-02) -- domain has none of this repo's own packages as a
+# History: this workflow originally ran zero live-D1 suites at all
+# (2026-08-02 decision, see below), because every one of them talks to
+# real remote Cloudflare D1 (packages/test-support's live-d1-client.ts /
+# d1-remote-transport.ts, per AGENTS.md's "zero mocks, zero fakes"
+# policy) and, at the time, all shared the same production
+# `hiring-signals` database this app actually serves from -- writing
+# real rows there on every push was judged not worth the risk for a
+# solo-maintainer project. That risk is now solved differently, not
+# just deferred: wrangler.toml's `[env.ci]` block declares a real,
+# separate `hiring-signals-ci` D1 database (created 2026-08-05,
+# migrations 0001-0006 applied), and d1-remote-transport.ts's
+# D1_DATABASE_NAME/D1_WRANGLER_ENV env vars (same date) let the exact
+# same test code target it instead of production -- zero test-file
+# changes required, only which physical database `env.DB`/D1Client
+# resolves to.
+#
+# Scope is deliberately narrower than "every live-D1 suite": grepping
+# every live-D1 test file's @hiring-signals/test-support import
+# (2026-08-05) found exactly 9 files (packages/db/test/*.test.ts's
+# createLiveD1Client callers, plus apps/api/test/jobs/
+# {reconciliation,scheduler}.test.ts's createLiveD1Database callers)
+# that touch ONLY D1. The 10th, apps/api/test/jobs/
+# ingest-consumer.test.ts, also calls createLiveAiBinding/
+# createLiveVectorizeIndex/createLiveKvNamespace
+# (packages/test-support/src/live-cf-bindings.ts) -- and those three
+# helpers hit Cloudflare's REST API directly with hardcoded
+# account-level resource names/ids (Workers AI has no per-database
+# concept to isolate; the Vectorize index name and every KV namespace id
+# are literal constants in that file, not config-driven), so there is no
+# wrangler.toml-based isolation path for them the way there now is for
+# D1. Running that file here would still write real vectors/KV values to
+# production on every push, which defeats the point of this change --
+# so it stays excluded and manual-only, same as before (decided
+# 2026-08-05, not an oversight). Revisit if/when an equivalent
+# account-level isolation story exists for AI/Vectorize/KV.
+#
+# packages/domain and packages/adapters remain the always-on fast
+# exception: both are pure logic with zero @hiring-signals/test-support
+# or live-D1 dependency (confirmed via their package.json dependency
+# lists, 2026-08-02) -- domain has none of this repo's own packages as a
 # dependency at all, adapters depends only on domain. Their vitest
-# suites run in seconds against fixtures/pure functions, so they cost
-# nothing extra to run on every push and catch real regressions in
-# classification, lifecycle, scoring, and every ATS adapter's
-# normalize() logic before merge.
+# suites run in seconds against fixtures/pure functions.
 #
-# Auth for the live-D1 suites (when run manually) is no longer a
-# blocker either way: the repo's CF_TOKEN was widened 2026-08-02 to
-# include D1:Edit (alongside its original Workers AI + Vectorize
-# scope, see .env.local.example's header comment) and verified working
-# as wrangler's CLOUDFLARE_API_TOKEN against production D1.
+# Auth: the live-d1-tests job below needs the same CF_TOKEN this repo
+# already uses locally (widened 2026-08-02 to include D1:Edit alongside
+# its original Workers AI + Vectorize scope, see .env.local.example's
+# header comment), stored as a GitHub Actions repo secret named
+# CLOUDFLARE_API_TOKEN -- that specific name matches wrangler's own
+# standard env var and is what d1-remote-transport.ts's
+# getCloudflareApiToken() checks first, distinct from this repo's own
+# CF_TOKEN name used locally in .env.local. Set via
+# `gh secret set CLOUDFLARE_API_TOKEN` from the same token value (done
+# 2026-08-05, sourced from .env.local, never printed).
+#
+# Expected non-fatal wrangler warning: `d1 migrations apply`/`d1
+# execute --env ci` print a warning that "vars"/"kv_namespaces"/
+# "queues"/"vectorize"/"ai" exist at the top level but not on "env.ci".
+# This is expected and correct, not a misconfiguration -- wrangler.toml's
+# `[env.ci]` comment explains why those bindings are deliberately not
+# redeclared there (the 9 files this job runs never read any of them).
 name: CI
 
 on:
@@ -84,3 +119,59 @@ jobs:
       # specifically) once a baseline of real vs. noise findings exists.
       - name: Dependency audit (non-blocking)
         run: pnpm audit --audit-level=high || true
+
+  # Live-D1 suites that touch ONLY D1 (see this file's header comment
+  # for the full scope reasoning and the 9-file grep evidence). Runs
+  # against the isolated hiring-signals-ci database, never production --
+  # migrations are (re-)applied first so a fresh/behind-schema database
+  # never causes a spurious test failure. Separate job from fast-checks
+  # (not an extra step in it) so: (a) a failure here is visually distinct
+  # in the Actions UI from a typecheck/lint failure, (b) this job alone
+  # needs the CLOUDFLARE_API_TOKEN secret -- keeping it out of
+  # fast-checks means that job's steps have no secret exposure at all,
+  # and (c) wall-clock cost is real (500s+ per suite per prior live runs,
+  # see AGENTS.md/session memory) and shouldn't block fast-checks'
+  # quick typecheck/lint/pure-logic-test feedback from finishing first.
+  live-d1-tests:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      D1_DATABASE_NAME: hiring-signals-ci
+      D1_WRANGLER_ENV: ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Idempotent -- applies only whatever migrations aren't already
+      # applied to hiring-signals-ci (currently all 6, 0001-0006, already
+      # applied as of provisioning; this step is a safety net for any
+      # future migration added after this workflow exists, not dead
+      # weight). Runs from apps/api, matching every other wrangler d1
+      # invocation's cwd convention in this repo (wrangler.toml lives
+      # there).
+      - name: Apply migrations to hiring-signals-ci
+        working-directory: apps/api
+        run: npx wrangler d1 migrations apply hiring-signals-ci --remote --env ci
+
+      # packages/db: 7 files, all createLiveD1Client-only.
+      - name: Test (packages/db, live D1 -- isolated CI database)
+        run: pnpm --filter @hiring-signals/db test
+
+      # apps/api: only reconciliation.test.ts and scheduler.test.ts, NOT
+      # the full apps/api test suite -- ingest-consumer.test.ts is
+      # deliberately excluded (see header comment) since vitest has no
+      # built-in "run this dir except this one file" flag, name both
+      # files explicitly rather than trying to exclude by pattern.
+      - name: Test (apps/api jobs, live D1 -- isolated CI database)
+        working-directory: apps/api
+        run: npx vitest run test/jobs/reconciliation.test.ts test/jobs/scheduler.test.ts
