@@ -97,7 +97,14 @@ jobs:
       - name: Typecheck (all workspaces)
         run: pnpm -r typecheck
 
-      - name: Lint (all workspaces)
+      # Every package's own `lint` script passes `--max-warnings 0`
+      # (2026-08-06, ROADMAP.md Milestone G.4) -- ESLint's default exit
+      # code is 0 even with warnings present, only errors fail it, so
+      # this flag is what actually makes a warning fail CI. Enforced at
+      # the package.json script level (not here) so `pnpm lint` behaves
+      # identically locally and in CI -- no separate "strict CI mode"
+      # to keep in sync.
+      - name: Lint (all workspaces, zero warnings allowed)
         run: pnpm -r lint
 
       # Pure-logic suites only -- no live D1/AI/Vectorize, no secrets

@@ -6,7 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "db:migrations:apply:local": "wrangler d1 migrations apply hiring-signals --local",
     "db:migrations:apply:remote": "wrangler d1 migrations apply hiring-signals --remote"

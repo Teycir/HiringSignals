@@ -996,29 +996,43 @@ the `CACHE` namespace).
 - [x] Update `AGENTS.md`'s "Follow-up, tracked, not done today" note —
       done 2026-08-01, once `ingest-consumer.test.ts` actually landed.
 
-### `packages/test-support` follow-ups (open, unresolved)
+### `packages/test-support` follow-ups
 
-- [ ] `live-cf-bindings.ts`'s `loadCfToken()` (`.env.local` parser) only
-      matches lines shaped exactly `CF_TOKEN=value`. Swap in a real
-      dotenv parser, or document that only this exact shape is
-      supported.
-- [ ] `live-d1-client.ts`'s `execRemote` and `live-cf-bindings.ts`'s
-      `runWrangler` are near-identical spawn-and-capture plumbing.
-      Consider factoring into one shared helper so the two stay in
-      sync as this grows.
-- [ ] `live-d1-client.ts`'s `execRemote` has no credential preflight
-      of its own, relies entirely on ambient wrangler auth — unlike
-      `live-cf-bindings.ts`'s explicit `loadCfToken()`/clear
-      "Missing CF_TOKEN" error. Decide whether to align or explicitly
-      document why D1 differs.
-- [ ] `live-d1-client.ts`'s `execRemote` includes full SQL text
-      (params inlined) in every thrown error. Fine for debugging today
-      given test-authored literal values, but worth a truncation/
-      redaction strategy before this client is used more broadly.
-- [ ] Add a short README/doc comment for `@hiring-signals/test-support`
-      covering: which live Cloudflare resources each file touches,
-      required env vars, what a missing-token failure looks like per
-      file, and why these are real clients, not mocks (per `AGENTS.md`).
+- [x] `live-cf-bindings.ts`'s `loadCfToken()` only matched lines shaped
+      exactly `CF_TOKEN=value`. **Done (2026-08-06):** unified into
+      `d1-remote-transport.ts`'s `resolveCfToken()`/`requireCfToken()`,
+      shared by both files — now also recognizes `CLOUDFLARE_API_TOKEN`
+      as an ambient env var or `.env.local` line, not just `CF_TOKEN`.
+      Still a simple one-line-regex parser, not a general dotenv
+      library (documented as an intentional limit in the function's own
+      doc comment) — sufficient for this repo's small, hand-maintained
+      `.env.local`.
+- [ ] `execRemoteOnce` (`d1-remote-transport.ts`) and `runWrangler`
+      (`live-cf-bindings.ts`) are still two separate spawn-and-capture
+      implementations — only their token resolution was unified
+      (2026-08-06), not the spawn/stdout/stderr-capture plumbing
+      itself. Different enough today (one runs `wrangler d1 execute
+      --json` with retry, the other runs arbitrary `wrangler`
+      subcommands for KV) that a full merge risks real behavior
+      change — still worth a careful factor-out of just the shared
+      child-process core if this grows further.
+- [x] `execRemoteOnce` had no credential preflight, relying entirely on
+      ambient wrangler auth. **Done (2026-08-06):** now calls
+      `requireCfToken()` before spawning anything, same explicit
+      fail-fast behavior `live-cf-bindings.ts`'s `loadCfToken()` already
+      had.
+- [x] `execRemoteOnce` included full, untruncated SQL text in thrown
+      errors. **Done (2026-08-06):** `previewSql()` truncates to
+      `SQL_ERROR_PREVIEW_CHARS` (500) with a "N more chars truncated"
+      suffix; full text remains test-authored literals only (never
+      end-user input), so this is a debugging-usability limit, not a
+      security redaction.
+- [x] No README for `@hiring-signals/test-support`. **Done
+      (2026-08-06):** expanded to cover all four modules, required env
+      vars, what a missing-token failure looks like, and the "why real
+      clients not mocks" framing per `AGENTS.md`.
+      Verified 2026-08-06: `pnpm -r typecheck`/`lint` clean across all
+      6 workspace packages (commit `1cf6a63`).
 
 ## Milestone G — Hardening, deploy (Phase 3 remainder / Phase 4)
 
@@ -1154,13 +1168,42 @@ Production) and a 7-step deployment sequence. Current CI
 deploy automation exists yet per this session's read of the workflow
 file.
 
-- [ ] Decide realistic environment scope for a solo-maintainer project —
-      spec's 4-tier model (with separate Preview/Staging D1 registries)
-      may be more process than a single maintainer needs; consider
-      collapsing to Local + Production with a manual smoke-test step
-      before promoting, and document that deliberate simplification here
-      (same "explicitly discussed and decided" pattern Milestone J's CI
-      scope decision used) rather than silently diverging from spec §18.
+- [x] **Decide realistic environment scope for a solo-maintainer
+      project.** ✅ decided 2026-08-06 (repo owner): stays simplified,
+      not the spec's 4-tier Local/Preview/Staging/Production model.
+      Current shape — Local (`wrangler dev` + local D1) and Production
+      (`hiring-signals`), plus the isolated `hiring-signals-ci` database
+      Milestone J already provisioned for automated live-D1 tests — is
+      the accepted end state, not an interim step toward the full
+      4-tier model. No separate Preview/Staging D1 registries planned.
+
+- [x] **Lint must be zero-error, zero-warning on every push.** ✅ done
+      2026-08-06. Every workspace package's `lint` script now passes
+      `eslint . --max-warnings 0` (`apps/web`'s bare `eslint` gets the
+      same flag, no `.` arg per its own existing convention) — ESLint's
+      default exit code is 0 even with warnings present, only errors
+      fail it by default, so this flag is what actually makes a
+      warning fail CI; previously `eslint.base.mjs`'s
+      `no-unused-vars`/`consistent-type-imports`/`no-console` rules
+      (all `"warn"`, unchanged — downgrading them to `"error"` wasn't
+      needed once `--max-warnings 0` treats any warning as build
+      breaking either way) could have accumulated warnings on `main`
+      indefinitely without ever failing a push. Verified before this
+      change that the repo was already at genuinely zero warnings
+      across all 6 packages (`--max-warnings 0` run individually per
+      package, all exit 0) — this wasn't fixing existing drift, it was
+      closing the gap that would have let drift start. Enforcement
+      mechanism deliberately lives in each package's own `package.json`
+      script, not as a separate flag only in `ci.yml` — so `pnpm lint`
+      run locally behaves identically to what CI runs, no
+      local/CI-only-strict-mode split to keep in sync. Sanity-checked
+      the guard is real, not cosmetic: added a throwaway unused-var
+      file, confirmed `pnpm lint` failed with "ESLint found too many
+      warnings (maximum: 0)" and exit code 1, removed the file,
+      reconfirmed clean. `ci.yml`'s lint step comment updated to
+      explain why the flag (not a rule-severity change) is what makes
+      this enforceable. Verified: `pnpm -r typecheck`/`lint` clean
+      across all 6 workspace packages after the change.
 - [ ] If any deploy automation is added: never point preview/staging at
       production secrets or write bindings (spec §18.1) — a hard
       constraint regardless of how simplified the environment tier
