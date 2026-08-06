@@ -681,15 +681,87 @@ never duplicates. Verify: happy-path + failure-path tests in
     caveat I.3 already left for its own missing route-level test.
 
 - [ ] **I.5 — Classification assist (deferred until I.1–I.4 verified)**
-  - Not detailed — deliberately. Semantic similarity between job
-    embedding and role-category centroids becomes *additional* signal
-    `classifyJob` consults only in already-existing "low title
-    confidence, need department/description disambiguation" path (spec
-    §6.2 step 5) — NEVER a gate on whether classification runs, NEVER
-    can push to `autoClassified: true` on its own if deterministic
-    channels (per H.1's structured-channel guard) disagree. Expand
-    into real sub-tasks, spec-cited against §9.5 addendum, before
-    writing any `classification.ts` change.
+  Semantic similarity between job embedding and role-category centroids
+  becomes *additional* signal `classifyJob` consults only in the
+  already-existing "low title confidence, need department/description
+  disambiguation" path (spec §6.2 step 5) — NEVER a gate on whether
+  classification runs, NEVER able to push `autoClassified: true` on its
+  own if deterministic channels (per H.1's structured-channel guard)
+  disagree. Spec-cited against §9.4's addendum (not §9.5 — corrected
+  2026-08-06, no §9.5 exists; the classification-assist guardrail is in
+  §9.4, capability 2).
+
+  **Design decision (2026-08-06): centroids, not nearest-neighbor label
+  agreement.** `ArxivExplorer`'s live Vectorize patterns
+  (`handleMoreLikeThis`'s `getByIds` + `query`, search-time semantic
+  ranking) are the proven reference for *mechanics* — same client,
+  same `topK` + relative-score cutoff shape, same log-and-continue
+  degradation. But both of those are read-path retrieval (rank/return
+  items to a user who judges relevance themselves), not a classification
+  input, and are reused already by I.3/I.4. `ArxivExplorer` has no
+  centroid concept, and its one prior attempt at category *routing*
+  (`topic_categories`/`arxiv_categories`/`paper_categories` join tables)
+  was deliberately dropped in migration `0015_drop_category_joins.sql`
+  in favor of plain FTS keyword matching — a data point against
+  reusing its retrieval pattern for a classification-confidence
+  decision. The alternative considered, querying the jobs Vectorize
+  index directly and reading neighbors' `roleCategory` metadata for
+  label agreement, was rejected: it lets the pipeline's own past
+  (mis)classifications become training signal for future ones
+  (compounding drift, unlike a fixed seed set), degrades on sparse/rare
+  categories with few indexed examples (cold start), and is materially
+  harder to audit (the answer to "why this nudge" changes over time as
+  the live index changes, vs. a stable, inspectable seed set). Centroid
+  chosen despite the added one-time setup cost.
+
+  - [ ] **I.5a — Centroid definitions + one-time embed.** Small,
+        version-controlled seed list (~10-20 canonical example
+        titles/short descriptions per `RoleCategory`, all 10 categories
+        represented so none is cold-started). One-time script, reusing
+        I.3's `backfill-embeddings.mjs` request/auth pattern rather than
+        a new one, embeds each seed via `env.AI` and upserts into the
+        *existing* `hiring-signals-jobs` Vectorize index (no new index)
+        with a distinct metadata tag (e.g. `kind: "category_centroid"`)
+        so centroid vectors are queryable but structurally excluded from
+        `findSemanticSignalMatches`/`handleMoreLikeThis`-equivalent
+        result sets (filter on `kind !== "category_centroid"`, or a
+        `topK` query scoped to `kind: "category_centroid"` only for
+        this feature's own lookups). Re-running the script is how a
+        centroid gets updated — no admin UI, matching I.3's
+        ops-script-not-admin-route precedent (spec's non-goals list).
+
+  - [ ] **I.5b — Centroid-similarity nudge function (pure,
+        domain-layer).** New function, separate from
+        `classifyJob` (keeps `classification.ts` LLM/embedding-free per
+        its own header comment) — takes a job's own embedding + the
+        already-chosen candidate category from `classifyJob`'s result,
+        queries only the centroid-tagged vectors, and returns a small
+        bounded nudge (additive or multiplicative, clamped) based on
+        cosine similarity to that *one* category's centroid — never
+        compares against all 10 and never picks a category itself, only
+        scores agreement with what the deterministic path already chose.
+
+  - [ ] **I.5c — Wire into ingest consumer, gated to step 5's band
+        only.** Call the nudge function from `ingest-consumer.ts` (not
+        from inside `classification.ts` itself) only when `classifyJob`'s
+        `confidence` falls in the existing low-confidence disambiguation
+        band, only after the job's own embedding already exists (never a
+        precondition for classification — classification always runs
+        first, unconditionally). Wrapped in the same log-and-continue
+        try/catch as `embedAndUpsertJob` — Vectorize/AI unreachable must
+        never block, retry, or degrade classification (spec §9.4's
+        guardrail, restated from §21). `autoClassified` may flip
+        false→true only via the nudge crossing `AUTO_CLASSIFY_THRESHOLD`
+        on a category a deterministic channel already matched — never
+        independent of one.
+
+  - [ ] **I.5d — Tests.** Nudge-function unit tests (pure, fast,
+        centroid vectors as fixtures — no live Cloudflare call needed
+        for this part). Ingest-consumer failure-path test mirroring
+        I.2's own ("Vectorize unreachable during the nudge lookup → job
+        still classifies via the deterministic path alone, unchanged
+        confidence"). Verify: `pnpm -r typecheck`/`lint`/`test` clean
+        workspace-wide, same bar as every other milestone here.
 
 ---
 
