@@ -19,6 +19,7 @@ import {
   UnsupportedProviderError,
   GreenhouseSchemaError,
 } from "@hiring-signals/adapters";
+import { createCircuitBreaker } from "../../../../lib/http/circuit-breaker";
 import {
   createD1Client,
   getSourceById,
@@ -1064,6 +1065,17 @@ interface EmbedJobParams {
  * embedding loses nothing a job already has, while losing an ATS fetch
  * loses the job's data entirely.
  */
+// Module-level, same pattern as lib/d1/client.ts's own "db" breaker:
+// one shared breaker instance for every embedAndUpsertJob call in this
+// isolate, not a fresh createCircuitBreaker(...) per call (which would
+// give every call its own independent failure count and defeat the
+// point of tripping the circuit after repeated AI-binding failures).
+// 10s timeout, tighter than D1's 15s default -- embedding is
+// best-effort per this function's own doc comment below, so a hung
+// AI.run() call should give up faster than a call whose result the
+// caller actually depends on.
+const aiBreaker = createCircuitBreaker({ resources: ["ai"], operationTimeoutMs: 10_000 });
+
 async function embedAndUpsertJob(
   ai: Pick<Bindings, "AI" | "VECTORIZE" | "EMBEDDING_MODEL">,
   params: EmbedJobParams,
@@ -1077,9 +1089,15 @@ async function embedAndUpsertJob(
       descriptionText: params.descriptionText,
     });
 
-    const embeddingResult = await ai.AI.run(ai.EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5", {
-      text: [text],
-    });
+    // Wrapped in the circuit breaker so a hung/unresponsive AI binding
+    // (observed under wrangler dev --local -- see this session's
+    // commit 8ba4517 follow-up note) times out instead of hanging this
+    // function, and the enclosing try/catch below turns that timeout
+    // into the same log-and-continue path as any other embedding
+    // failure -- no change to this function's existing contract.
+    const embeddingResult = await aiBreaker.withCircuit("ai", () =>
+      ai.AI.run(ai.EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5", { text: [text] }),
+    );
 
     if (!("data" in embeddingResult) || !embeddingResult.data?.[0]) {
       // Async-batch response shape (request_id, no data yet) -- shouldn't
