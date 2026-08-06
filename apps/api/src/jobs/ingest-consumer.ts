@@ -13,6 +13,8 @@ import {
   computeLifecycleTransition,
   computeNewJobScore,
   buildJobEmbeddingText,
+  applyClassificationAssist,
+  NUDGE_ELIGIBLE_BELOW_CONFIDENCE,
 } from "@hiring-signals/domain";
 import {
   getAdapterForProvider,
@@ -783,8 +785,15 @@ async function processNormalizedJob(
   // change, not about whether this run produced a scored signal: a
   // content edit on a job with no active signal still deserves an
   // updated embedding even though it returns 0 signals below.
+  // Captured for I.5c's classification-assist nudge below: only
+  // populated when this branch actually ran (new job, or existing job
+  // whose content changed) -- undefined otherwise, in which case I.5c
+  // falls back to VECTORIZE.getByIds on the job's already-stored vector
+  // (safe there specifically because it's NOT the one just upserted
+  // this run -- no read-after-write race).
+  let freshEmbedding: number[] | undefined;
   if (!existing || upsertResult.contentChanged) {
-    await embedAndUpsertJob(ai, {
+    freshEmbedding = await embedAndUpsertJob(ai, {
       jobId,
       companyId: source.company_id,
       status: lifecycle.nextState,
@@ -843,9 +852,38 @@ async function processNormalizedJob(
     descriptionText: job.descriptionText,
   });
 
+  // I.5c: centroid-similarity nudge, only in classifyJob's own
+  // low-confidence band and only when it found a category to nudge --
+  // never a precondition for classification, which has already run
+  // unconditionally above regardless of this branch's outcome.
+  let nudgedConfidence = classification.confidence;
+  if (
+    classification.rolePrimary &&
+    classification.confidence < NUDGE_ELIGIBLE_BELOW_CONFIDENCE
+  ) {
+    nudgedConfidence = await applyCentroidNudge(ai, {
+      jobId,
+      rolePrimary: classification.rolePrimary,
+      confidence: classification.confidence,
+      freshEmbedding,
+    });
+  }
+
+  // Recomputed against nudgedConfidence, not classification.autoClassified
+  // -- that field was set inside classifyJob against the pre-nudge
+  // confidence and is now stale whenever the nudge branch above ran.
+  // ROADMAP.md I.5c: autoClassified may flip false->true only via the
+  // nudge crossing AUTO_CLASSIFY_THRESHOLD on a category a deterministic
+  // channel already matched (classification.rolePrimary defined) --
+  // exactly what this comparison expresses. NUDGE_ELIGIBLE_BELOW_CONFIDENCE
+  // is the same numeric value as AUTO_CLASSIFY_THRESHOLD (see
+  // classification-assist.ts), reused here rather than importing both
+  // names for one constant.
+  const autoClassified = nudgedConfidence >= NUDGE_ELIGIBLE_BELOW_CONFIDENCE;
+
   await updateJobClassification(client, jobId, source.company_id, {
     rolePrimary: classification.rolePrimary ?? null,
-    classificationConfidence: classification.confidence,
+    classificationConfidence: nudgedConfidence,
     classificationVersion: classification.classificationVersion,
   });
 
@@ -853,7 +891,7 @@ async function processNormalizedJob(
   // below-threshold jobs are still stored but not surfaced as signals
   // yet -- classification_confidence < 0.80 means role assignment isn't
   // trustworthy enough to drive a scored signal).
-  if (!classification.autoClassified || !classification.rolePrimary) {
+  if (!autoClassified || !classification.rolePrimary) {
     return 0;
   }
 
@@ -1079,7 +1117,7 @@ const aiBreaker = createCircuitBreaker({ resources: ["ai"], operationTimeoutMs: 
 async function embedAndUpsertJob(
   ai: Pick<Bindings, "AI" | "VECTORIZE" | "EMBEDDING_MODEL">,
   params: EmbedJobParams,
-): Promise<void> {
+): Promise<number[] | undefined> {
   try {
     const text = buildJobEmbeddingText({
       titleRaw: params.titleRaw,
@@ -1105,7 +1143,7 @@ async function embedAndUpsertJob(
       // here keeps this function's own types honest rather than casting
       // past a shape run() itself says is possible.
       console.error(`Embedding skipped for job ${params.jobId}: no embedding data returned`);
-      return;
+      return undefined;
     }
 
     const metadata: Record<string, VectorizeVectorMetadata> = {
@@ -1127,11 +1165,99 @@ async function embedAndUpsertJob(
         metadata,
       },
     ]);
+
+    // Handed back so I.5c's classification-assist nudge (called moments
+    // later in the same ingest run, when this branch fired) can reuse
+    // this exact vector instead of a second AI.run() call, or a
+    // VECTORIZE.getByIds read that would race the async upsert above --
+    // see this repo's own Vectorize eventual-consistency note in
+    // backfill-embeddings.mjs (upserts typically take a few seconds to
+    // become query-visible). Nothing downstream of this function's
+    // existing callers relies on a void return; this is purely additive.
+    return embeddingResult.data[0];
   } catch (error) {
     // Log-and-continue, never throw: see this function's doc comment for
     // why an embedding failure must not fail the enclosing ingest
     // message/job processing.
     console.error(`Embedding failed for job ${params.jobId}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * I.5c: centroid-similarity classification nudge, called from
+ * processNormalizedJob only when classifyJob's confidence is below
+ * NUDGE_ELIGIBLE_BELOW_CONFIDENCE and rolePrimary is defined (see
+ * classification-assist.ts's own doc comment -- this function is the
+ * caller-side contract enforcement for "never called when rolePrimary
+ * is undefined").
+ *
+ * Resolves exactly one embedding for the job (the fresh one from this
+ * run's embedAndUpsertJob call if it fired, otherwise a VECTORIZE.getByIds
+ * read of the job's already-stored vector from a prior run -- safe there
+ * specifically because it is NOT the vector this run just upserted, so
+ * there's no read-after-write race), queries the single matching
+ * category centroid (filter: kind + roleCategory, topK: 1), and applies
+ * the pure nudge function.
+ *
+ * Same log-and-continue contract as embedAndUpsertJob: any failure here
+ * (AI/Vectorize unreachable, circuit open, no centroid found) must never
+ * block, retry, or degrade classification -- returns the original,
+ * un-nudged classification unchanged on any failure path.
+ */
+async function applyCentroidNudge(
+  ai: Pick<Bindings, "AI" | "VECTORIZE" | "EMBEDDING_MODEL">,
+  params: {
+    jobId: string;
+    rolePrimary: RoleCategory;
+    confidence: number;
+    freshEmbedding: number[] | undefined;
+  },
+): Promise<number> {
+  try {
+    const jobEmbedding =
+      params.freshEmbedding ??
+      (await aiBreaker.withCircuit("ai", async () => {
+        const stored = await ai.VECTORIZE.getByIds([params.jobId]);
+        return stored[0]?.values;
+      }));
+
+    if (!jobEmbedding) {
+      // No fresh embedding this run and nothing stored from a prior run
+      // (e.g. I.1's earlier embedding attempt itself failed) -- nothing
+      // to compare against, original confidence stands unchanged.
+      return params.confidence;
+    }
+
+    const matches = await aiBreaker.withCircuit("ai", () =>
+      ai.VECTORIZE.query(jobEmbedding, {
+        topK: 1,
+        filter: { kind: "category_centroid", roleCategory: params.rolePrimary },
+      }),
+    );
+
+    const centroidSimilarity = matches.matches[0]?.score;
+    if (centroidSimilarity === undefined) {
+      // No centroid indexed for this category (shouldn't happen once
+      // I.5a's seed script has run for every RoleCategory, but a missing
+      // centroid is exactly the kind of thing that must degrade
+      // gracefully rather than throw) -- original confidence stands.
+      return params.confidence;
+    }
+
+    const { nudgedConfidence } = applyClassificationAssist({
+      rolePrimary: params.rolePrimary,
+      confidence: params.confidence,
+      centroidSimilarity,
+    });
+    return nudgedConfidence;
+  } catch (error) {
+    // Log-and-continue, never throw: spec §9.4/§21 guardrail -- Vectorize/AI
+    // unreachable during the nudge lookup must never block, retry, or
+    // degrade classification. The deterministic classifyJob result this
+    // function was called with already stands on its own.
+    console.error(`Classification-assist nudge failed for job ${params.jobId}:`, error);
+    return params.confidence;
   }
 }
 

@@ -788,7 +788,7 @@ never duplicates. Verify: happy-path + failure-path tests in
       `pnpm --filter @hiring-signals/domain test` 81/81 (72 prior +
       9 new), `typecheck`/`lint` clean, `npx prettier --write` applied.
 
-  - [ ] **I.5c — Wire into ingest consumer, gated to step 5's band
+  - [x] **I.5c — Wire into ingest consumer, gated to step 5's band
         only.** Call the nudge function from `ingest-consumer.ts` (not
         from inside `classification.ts` itself) only when `classifyJob`'s
         `confidence` falls in the existing low-confidence disambiguation
@@ -801,14 +801,62 @@ never duplicates. Verify: happy-path + failure-path tests in
         false→true only via the nudge crossing `AUTO_CLASSIFY_THRESHOLD`
         on a category a deterministic channel already matched — never
         independent of one.
+    - **Status (2026-08-06): found already implemented, not built this
+      session** — `applyCentroidNudge` (`ingest-consumer.ts`) was
+      already fully wired into `processNormalizedJob` exactly per this
+      item's own spec (low-confidence gate, `freshEmbedding` reuse with
+      a `VECTORIZE.getByIds` fallback for the no-embedding-this-run
+      case, single-centroid `filter: { kind, roleCategory }` query,
+      `autoClassified` recomputed from `nudgedConfidence` not the
+      pre-nudge value) — this checkbox had simply lagged behind actual
+      shipped state, same "roadmap trailing reality" pattern I.3/I.4
+      each had to correct for themselves. Verified against the file
+      directly before checking this off, not assumed from the prose
+      above.
 
-  - [ ] **I.5d — Tests.** Nudge-function unit tests (pure, fast,
+  - [x] **I.5d — Tests.** Nudge-function unit tests (pure, fast,
         centroid vectors as fixtures — no live Cloudflare call needed
         for this part). Ingest-consumer failure-path test mirroring
         I.2's own ("Vectorize unreachable during the nudge lookup → job
         still classifies via the deterministic path alone, unchanged
         confidence"). Verify: `pnpm -r typecheck`/`lint`/`test` clean
         workspace-wide, same bar as every other milestone here.
+    - **Status (2026-08-06): done.** The nudge-function unit tests were
+      already covered by I.5b's own `classification-assist.test.ts`
+      (9/9) — genuinely nothing missing there. The real gap was
+      integration coverage of the wiring itself: no test anywhere
+      exercised `applyCentroidNudge` inside `processNormalizedJob`.
+      Added two tests to `apps/api/test/jobs/ingest-consumer.test.ts`'s
+      new `"handleIngestMessage - I.5c/I.5d classification-assist
+      nudge (spec 9.4)"` describe block, both driving the real pipeline
+      against live D1/AI/Vectorize (this file's established policy, no
+      new fakes introduced): (1) a "Security Engineer" title-only job
+      (real 0.70 pre-nudge confidence per `role-rules.ts`'s own
+      `PHRASE_RULES` entry, not invented) confirms a live centroid
+      query actually nudges `classification_confidence` away from
+      exactly 0.70; (2) a `VECTORIZE.query` rejection (new
+      `vectorizeQueryOverride` test hook, same pattern as the existing
+      `aiRunOverride`) confirms classification still completes at the
+      un-nudged 0.70, the job is still acked and never retried, and the
+      failure is logged via the same `"Classification-assist nudge
+      failed for job"` message the source's own catch block emits —
+      mirroring I.2's own `AI.run`-rejection test exactly, per this
+      item's own instruction.
+      **Timeout correction caught by actually running the tests, not
+      assumed:** the file's 90s default `testTimeout` was too tight for
+      these two — each single `handleIngestMessage` pass measured
+      55–81s on its own (real Workers AI embed + live centroid
+      Vectorize query), and `cleanupCompany`'s teardown batch adds
+      another ~30s+ on top (documented elsewhere in this file, J.2) —
+      both tests genuinely timed out on the first real run despite the
+      pipeline itself completing successfully every time (`ingest_success`
+      logged, correct `signalsCreated: 0` in both cases). Fixed with an
+      explicit `150_000`ms override, same pattern this file's own H.4
+      `persistent_demand` test already uses for the same reason.
+      Verified for real: `npx vitest run test/jobs/ingest-consumer.test.ts
+      -t 'I.5'` — 2/2 passing (281s combined, network-bound as expected
+      for this file); `pnpm -r typecheck`/`lint` clean across all 6
+      workspace packages.
 
 ---
 

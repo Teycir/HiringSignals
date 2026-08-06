@@ -109,7 +109,36 @@ export interface WranglerStatementResult {
   meta?: { changes?: number };
 }
 
-function getCloudflareApiToken(): string | undefined {
+/**
+ * Resolves a Cloudflare API token from, in order: `CLOUDFLARE_API_TOKEN`,
+ * `CF_TOKEN` (either as an ambient env var, or as a `KEY=value` line in
+ * `.env.local` at the repo root). Shared by every live-Cloudflare helper
+ * in this package (`d1-remote-transport.ts`'s own callers below, and
+ * `live-cf-bindings.ts`'s `loadCfToken` re-export) so there is exactly
+ * one token-resolution implementation, not two independently-maintained
+ * copies that can silently drift apart (test-support follow-up,
+ * ROADMAP.md Milestone J -- `live-cf-bindings.ts`'s original
+ * `loadCfToken` only ever matched a bare `^CF_TOKEN=` line and never
+ * recognized `CLOUDFLARE_API_TOKEN` in `.env.local` at all, while this
+ * file's version already handled both; unifying on this file's broader
+ * version is strictly more permissive, not a behavior narrowing).
+ *
+ * `.env.local` parsing is intentionally simple (one regex line-match,
+ * first match wins, `m` flag so it isn't anchored to the file start) --
+ * not a general dotenv parser (no quoting, no escaping, no multi-line
+ * values, no comment handling beyond "line doesn't match the pattern").
+ * Sufficient for this repo's own `.env.local` (a small, hand-maintained
+ * file, see that file's own header comment on its token's scope) --
+ * swap in a real dotenv library here if `.env.local` ever needs more
+ * than flat `KEY=value` lines.
+ *
+ * Read fresh on every call (not cached at module load) so a token
+ * rotated mid-process -- e.g. `.env.local` edited between two test
+ * files in the same `vitest run` -- is picked up without requiring a
+ * process restart; the read itself is cheap (one small local file, or
+ * skipped entirely when an env var is already set).
+ */
+export function resolveCfToken(): string | undefined {
   if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
   if (process.env.CF_TOKEN) return process.env.CF_TOKEN;
   const envLocalPath = path.join(REPO_ROOT, ".env.local");
@@ -127,6 +156,52 @@ function getCloudflareApiToken(): string | undefined {
   return undefined;
 }
 
+/**
+ * Same resolution as `resolveCfToken()`, but throws immediately with a
+ * clear, actionable message when no token is found anywhere, instead of
+ * returning `undefined` and letting a later network call fail with a
+ * generic 401/403 stack trace (test-support follow-up, ROADMAP.md
+ * Milestone J: `live-d1-client.ts`/`d1-remote-transport.ts` previously
+ * had no credential preflight of their own, unlike
+ * `live-cf-bindings.ts`'s explicit throwing `loadCfToken` -- this
+ * closes that gap by giving the D1 transport the same upfront check,
+ * rather than picking the opposite direction and silencing
+ * `live-cf-bindings.ts`'s existing clear failure). `execRemoteOnce`
+ * below calls this rather than `resolveCfToken()` directly so a missing
+ * token fails fast, before ever spawning a `wrangler` subprocess.
+ */
+export function requireCfToken(): string {
+  const token = resolveCfToken();
+  if (!token) {
+    throw new Error(
+      "Missing Cloudflare API token: set CLOUDFLARE_API_TOKEN or CF_TOKEN in the " +
+        "environment, or add a CF_TOKEN=... / CLOUDFLARE_API_TOKEN=... line to " +
+        ".env.local at the repo root.",
+    );
+  }
+  return token;
+}
+
+/**
+ * Truncation length for SQL text included in thrown errors. Values in
+ * this transport's SQL are always test-authored literals (see this
+ * file's own header comment -- never end-user input), so there is
+ * nothing here that needs redacting for a *sensitivity* reason; the
+ * truncation is purely a debugging-usability limit (test-support
+ * follow-up, ROADMAP.md Milestone J), since a large seed/batch
+ * statement's full inlined text is unwieldy in a failed-test log and
+ * the first ~500 chars is normally enough to identify which statement
+ * failed. Full, untruncated SQL is always still visible by re-running
+ * the failing call in isolation with a debugger/log statement -- this
+ * limit only affects the thrown error's own message. */
+const SQL_ERROR_PREVIEW_CHARS = 500;
+
+function previewSql(sql: string): string {
+  return sql.length > SQL_ERROR_PREVIEW_CHARS
+    ? `${sql.slice(0, SQL_ERROR_PREVIEW_CHARS)}… (${sql.length - SQL_ERROR_PREVIEW_CHARS} more chars truncated)`
+    : sql;
+}
+
 /** One raw `wrangler d1 execute --remote --json` invocation, no retry.
  * Rejects with the real wrangler stderr/stdout on failure -- no
  * swallowed errors, since a live-network test needs the real error text
@@ -135,11 +210,20 @@ function getCloudflareApiToken(): string | undefined {
  * single-attempt logic without duplicating the process-wiring. */
 function execRemoteOnce(sql: string): Promise<WranglerStatementResult[]> {
   return new Promise((resolve, reject) => {
-    const token = getCloudflareApiToken();
+    // Fails fast, before spawning anything, on a missing token --
+    // credential-preflight parity with live-cf-bindings.ts's
+    // loadCfToken (test-support follow-up, ROADMAP.md Milestone J).
+    let token: string;
+    try {
+      token = requireCfToken();
+    } catch (err) {
+      reject(err);
+      return;
+    }
     const env = {
       ...process.env,
       PATH: resolveWranglerCompatiblePath(),
-      ...(token ? { CLOUDFLARE_API_TOKEN: token } : {}),
+      CLOUDFLARE_API_TOKEN: token,
     };
     const args = ["wrangler", "d1", "execute", D1_DATABASE_NAME, "--remote", "--json", "--command", sql];
     if (D1_WRANGLER_ENV) args.push("--env", D1_WRANGLER_ENV);
@@ -152,7 +236,9 @@ function execRemoteOnce(sql: string): Promise<WranglerStatementResult[]> {
     child.on("close", (code) => {
       if (code !== 0) {
         const output = [stderr, stdout].filter(Boolean).join("\n");
-        reject(new Error(`wrangler d1 execute --remote failed (exit ${code}):\n${output}\nSQL: ${sql}`));
+        reject(
+          new Error(`wrangler d1 execute --remote failed (exit ${code}):\n${output}\nSQL: ${previewSql(sql)}`),
+        );
         return;
       }
       try {

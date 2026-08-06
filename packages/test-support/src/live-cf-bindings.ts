@@ -5,6 +5,13 @@
  * `Ai`/`VectorizeIndex`/`KVNamespace` binding outside a deployed Worker,
  * so each of these shells out to a real Cloudflare-facing CLI:
  *
+ * Token resolution (`loadCfToken` below) delegates to
+ * `d1-remote-transport.ts`'s `requireCfToken` -- unified 2026-08-06
+ * (test-support follow-up, ROADMAP.md Milestone J) so this file and
+ * the D1 transport share exactly one CF_TOKEN/CLOUDFLARE_API_TOKEN/
+ * `.env.local` resolution implementation instead of two that could
+ * silently drift apart.
+ *
  * - AI + VECTORIZE: `wrangler`'s dev/remote HTTP surface isn't scriptable
  *   for a one-off run() the way D1/KV are, so these two go through the
  *   same direct REST calls infrastructure/scripts/backfill-embeddings.mjs
@@ -13,10 +20,13 @@
  *   Edit only -- see .env.local's own header comment for why).
  * - KV: unlike AI/Vectorize, `wrangler kv key put/get/delete` IS a real
  *   scriptable CLI surface (confirmed via `wrangler kv key --help`,
- *   2026-07-30) -- so per the "use wrangler CLI for KV too, like D1"
- *   decision, this piggybacks on wrangler's own login instead of
- *   widening CF_TOKEN's scope to include KV, keeping that token exactly
- *   as narrowly scoped as .env.local's header documents.
+ *   2026-07-30). Originally piggybacked on wrangler's own interactive
+ *   login rather than widening CF_TOKEN's scope -- revised 2026-08-06
+ *   after that stored login expired in a non-interactive environment
+ *   with no way to re-run the browser-based `wrangler login` flow.
+ *   CF_TOKEN's scope now includes KV:Edit (see .env.local's header) and
+ *   runWrangler() passes it through as CLOUDFLARE_API_TOKEN, same as
+ *   d1-remote-transport.ts already does for `wrangler d1`.
  *
  * Lives in `@hiring-signals/test-support` (a real workspace package),
  * not inside `apps/api/test/lib/` where it originated (2026-07-30) --
@@ -31,8 +41,8 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import * as fs from "node:fs";
 import type { Ai, VectorizeIndex, VectorizeMatches, VectorizeVector, KVNamespace } from "@cloudflare/workers-types";
+import { requireCfToken } from "./d1-remote-transport";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // packages/test-support/src -> repo root -> apps/api. Same "exactly one
@@ -52,26 +62,44 @@ const KV_NAMESPACE_IDS = {
 } as const;
 export type LiveKvBinding = keyof typeof KV_NAMESPACE_IDS;
 
-/** Reads CF_TOKEN from .env.local if not already in the environment --
- * same inline parser backfill-embeddings.mjs uses. */
+/**
+ * Reads a Cloudflare API token from the environment or `.env.local`,
+ * throwing immediately if none is found. Re-exported name kept as
+ * `loadCfToken` for this file's own existing call sites below and for
+ * any external caller already importing it from this module -- the
+ * actual resolution logic now lives once, in
+ * `d1-remote-transport.ts`'s `requireCfToken` (test-support follow-up,
+ * ROADMAP.md Milestone J: this file's version previously only matched
+ * a bare `CF_TOKEN=` line and never recognized `CLOUDFLARE_API_TOKEN`,
+ * while d1-remote-transport.ts's version already handled both --
+ * unifying here is strictly more permissive than before, not a
+ * behavior narrowing, and removes the risk of the two copies drifting
+ * further apart).
+ */
 function loadCfToken(): string {
-  if (process.env.CF_TOKEN) return process.env.CF_TOKEN;
-  const envPath = path.join(REPO_ROOT, ".env.local");
-  if (fs.existsSync(envPath)) {
-    for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
-      const m = line.match(/^CF_TOKEN=(.*)$/);
-      if (m?.[1]) return m[1].trim();
-    }
-  }
-  throw new Error("Missing CF_TOKEN. Set it in the environment or in .env.local at the repo root.");
+  return requireCfToken();
 }
 
 /** Runs one `wrangler` subcommand against the API app's directory (where
  * wrangler.toml's bindings live), rejecting with real stderr/stdout on
- * failure -- same discipline as live-d1-client.ts's execRemote. */
+ * failure -- same discipline as live-d1-client.ts's execRemote.
+ *
+ * Passes CLOUDFLARE_API_TOKEN (derived from CF_TOKEN via loadCfToken())
+ * into the spawned process's env -- this file's own header comment
+ * originally chose to rely on wrangler's stored interactive login
+ * instead of CF_TOKEN for the KV surface specifically, but a stored
+ * login can silently expire and its refresh flow needs an interactive
+ * terminal, which CI/agent environments don't have. CF_TOKEN must be
+ * scoped to include KV:Edit for this to work (see .env.local's header
+ * comment on this token's scope) -- same env-injection pattern
+ * d1-remote-transport.ts already uses for its own wrangler d1 calls. */
 function runWrangler(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("npx", ["wrangler", ...args], { cwd: API_DIR, shell: false });
+    const child = spawn("npx", ["wrangler", ...args], {
+      cwd: API_DIR,
+      shell: false,
+      env: { ...process.env, CLOUDFLARE_API_TOKEN: loadCfToken() },
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
