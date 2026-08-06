@@ -7,6 +7,7 @@ export * from "./api-envelope";
 export * from "./title-normalize";
 export * from "./role-rules";
 export * from "./classification";
+export * from "./classification-assist";
 export * from "./lifecycle";
 export * from "./signal-score";
 export * from "./embedding-text";

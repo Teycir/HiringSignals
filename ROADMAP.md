@@ -747,7 +747,7 @@ never duplicates. Verify: happy-path + failure-path tests in
       not just a "success" response trusted at face value.
       `npx prettier --write` applied, `node --check` clean.
 
-  - [ ] **I.5b — Centroid-similarity nudge function (pure,
+  - [x] **I.5b — Centroid-similarity nudge function (pure,
         domain-layer).** New function, separate from
         `classifyJob` (keeps `classification.ts` LLM/embedding-free per
         its own header comment) — takes a job's own embedding + the
@@ -757,6 +757,36 @@ never duplicates. Verify: happy-path + failure-path tests in
         cosine similarity to that *one* category's centroid — never
         compares against all 10 and never picks a category itself, only
         scores agreement with what the deterministic path already chose.
+    - **Status (2026-08-06): done.**
+      `packages/domain/src/classification-assist.ts` —
+      `applyClassificationAssist(input)` is pure arithmetic, no
+      Vectorize/AI import at all (the caller, I.5c, resolves
+      `centroidSimilarity` via `env.VECTORIZE.query` with `filter: {
+      kind: "category_centroid", roleCategory: rolePrimary }, topK: 1`
+      before calling this). `VectorizeQueryOptions.filter` confirmed
+      real and typed against `@cloudflare/workers-types`
+      (`VectorizeVectorMetadataFilter`), so I.5c can query the single
+      relevant centroid directly rather than fetching all 10 and
+      comparing client-side. `NUDGE_ELIGIBLE_BELOW_CONFIDENCE` set to
+      `AUTO_CLASSIFY_THRESHOLD` (0.8) — the only spec-grounded number
+      available, since spec §6.2 step 5's "only when title confidence
+      is low" governs an inspection-order optimization inside
+      `classifyJob`, not a literal numeric gate (see that file's own
+      2026-07-28 fix comment). `MAX_NUDGE_MAGNITUDE` (0.05) chosen so
+      even a perfect-agreement nudge cannot carry
+      `WEIGHT_TITLE`-alone's 0.70 across the 0.80 auto-classify line —
+      the numeric guarantee behind spec §9.4's "never the sole basis"
+      guardrail, asserted directly in a test rather than left as
+      prose. Linear mapping centered at 0.5 similarity as neutral
+      (not 0 — unrelated short job-title embeddings under
+      bge-base-en-v1.5 don't score near 0 cosine in practice, so 0
+      would make "no adjustment" unreachable for realistic inputs).
+      `packages/domain/test/classification-assist.test.ts` (9 tests:
+      neutral midpoint, max positive/negative nudge, clamping at 0/1,
+      out-of-range similarity still clamped, the 0.70+nudge<0.80
+      guarantee, version string present). Verified:
+      `pnpm --filter @hiring-signals/domain test` 81/81 (72 prior +
+      9 new), `typecheck`/`lint` clean, `npx prettier --write` applied.
 
   - [ ] **I.5c — Wire into ingest consumer, gated to step 5's band
         only.** Call the nudge function from `ingest-consumer.ts` (not
