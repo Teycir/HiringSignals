@@ -1,0 +1,80 @@
+{
+  "_comment": "Seed phrases for I.5a's per-category Vectorize centroids (ROADMAP.md I.5a, spec §9.4 capability 2). Each category's phrases are drawn from packages/domain/src/role-rules.ts's PHRASE_RULES so the centroid stays conceptually aligned with the deterministic classification rules it exists to nudge, not an independent guess at what the category 'means'. All 10 RoleCategory values are represented so none is cold-started (see ROADMAP.md I.5a). Update this file by hand if role-rules.ts's PHRASE_RULES changes meaningfully -- re-run build-category-centroids.mjs afterward to refresh the upserted vectors.",
+  "software_engineering": [
+    "software engineer",
+    "software developer",
+    "backend engineer",
+    "frontend engineer",
+    "full stack engineer",
+    "full stack developer",
+    "mobile engineer",
+    "ios engineer",
+    "android engineer"
+  ],
+  "data_engineering_analytics": [
+    "data engineer",
+    "data analyst",
+    "analytics engineer",
+    "business intelligence analyst",
+    "etl developer",
+    "bi analyst"
+  ],
+  "cloud_platform_devops_sre": [
+    "site reliability engineer",
+    "platform engineer",
+    "devops engineer",
+    "cloud engineer",
+    "infrastructure engineer",
+    "sre"
+  ],
+  "cybersecurity": [
+    "security engineer",
+    "security analyst",
+    "penetration tester",
+    "security operations center analyst",
+    "application security engineer",
+    "soc analyst",
+    "iam engineer",
+    "grc analyst"
+  ],
+  "it_support_help_desk": [
+    "help desk technician",
+    "it support specialist",
+    "desktop support technician",
+    "service desk analyst",
+    "technical support representative"
+  ],
+  "systems_network_administration": [
+    "systems administrator",
+    "network administrator",
+    "network engineer",
+    "systems engineer",
+    "infrastructure administrator"
+  ],
+  "qa_test_automation": [
+    "qa engineer",
+    "test automation engineer",
+    "quality assurance engineer",
+    "software test engineer",
+    "sdet"
+  ],
+  "product_technical_program_management": [
+    "technical program manager",
+    "product manager",
+    "technical product manager",
+    "tpm"
+  ],
+  "erp_business_systems": [
+    "erp analyst",
+    "business systems analyst",
+    "sap consultant",
+    "salesforce administrator"
+  ],
+  "ai_machine_learning": [
+    "machine learning engineer",
+    "ai engineer",
+    "ml engineer",
+    "research scientist",
+    "applied scientist"
+  ]
+}

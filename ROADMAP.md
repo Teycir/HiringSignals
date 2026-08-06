@@ -714,7 +714,7 @@ never duplicates. Verify: happy-path + failure-path tests in
   the live index changes, vs. a stable, inspectable seed set). Centroid
   chosen despite the added one-time setup cost.
 
-  - [ ] **I.5a — Centroid definitions + one-time embed.** Small,
+  - [x] **I.5a — Centroid definitions + one-time embed.** Small,
         version-controlled seed list (~10-20 canonical example
         titles/short descriptions per `RoleCategory`, all 10 categories
         represented so none is cold-started). One-time script, reusing
@@ -729,6 +729,23 @@ never duplicates. Verify: happy-path + failure-path tests in
         this feature's own lookups). Re-running the script is how a
         centroid gets updated — no admin UI, matching I.3's
         ops-script-not-admin-route precedent (spec's non-goals list).
+    - **Status (2026-08-06): done, verified against live Cloudflare.**
+      `infrastructure/scripts/category-centroid-seeds.json` (seed
+      phrases pulled from `packages/domain/src/role-rules.ts`'s
+      `PHRASE_RULES`, all 10 `RoleCategory` values represented, 4-9
+      phrases each) + `infrastructure/scripts/build-category-centroids.mjs`
+      (mean-pools each category's seed embeddings via `env.AI`'s REST
+      equivalent, L2-normalizes the result since a mean of unit vectors
+      isn't itself unit-length and I.5b's cosine comparison assumes it
+      is, upserts one vector per category as `centroid:<roleCategory>`).
+      Real dry run against Workers AI confirmed all 10 categories embed
+      at `dim 768`, matching I.1's index config. Real (non-dry-run) run
+      upserted successfully; a follow-up `get_by_ids` REST call against
+      the live index confirmed `centroid:cybersecurity` is retrievable
+      with the expected `{kind: "category_centroid", roleCategory:
+      "cybersecurity", seedCount: 8}` metadata and a 768-dim vector —
+      not just a "success" response trusted at face value.
+      `npx prettier --write` applied, `node --check` clean.
 
   - [ ] **I.5b — Centroid-similarity nudge function (pure,
         domain-layer).** New function, separate from
