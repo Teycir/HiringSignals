@@ -430,11 +430,24 @@ production") to the extent they affect write-path implementation
 choices — full list is in the spec, this is just the subset relevant to
 Milestones A–D:
 
-- [ ] Where do lifecycle thresholds (`2`/`4`/`14` from spec §5.4) live
+- [x] Where do lifecycle thresholds (`2`/`4`/`14` from spec §5.4) live
       as "configuration, not hard-coded" — a constants module is enough
       for v1 per Milestone B, but confirm that satisfies the spec's
       intent or whether it needs to be admin-editable (D1-backed config
       table) before Milestone D ships to any real source.
+  - **Status (2026-08-06): resolved, no code change needed.** Spec
+    §5.4's requirement is literally "must be configuration, not
+    hard-coded" — it does not say admin-editable or database-backed.
+    `packages/domain/src/lifecycle.ts`'s named constants
+    (`POSSIBLY_CLOSED_AFTER_MISSING_RUNS`, `CLOSED_AFTER_MISSING_RUNS`,
+    `CLOSED_AFTER_DAYS`) already satisfy that: declared once, documented,
+    changeable in one place, not inlined into the state-machine logic.
+    A D1-backed admin-editable config table is a stronger, legitimate
+    interpretation but adds real scope (migration, admin route,
+    validation, audit trail) with no operational need identified yet
+    for a solo-maintainer v1. Deferred, not blocking Milestone D;
+    revisit only if a concrete need to tune thresholds without a deploy
+    shows up.
 
 - [x] `packages/db` has no `createCompany` (or any companies-repo write
       function) — found while building the source-management ops
