@@ -53,6 +53,40 @@ $ hs signals list --role software_engineering --limit 2
 `--roles` is silently ignored by citty (unknown flag), producing an
 unfiltered result set with no error. Always use `--role`.
 
+### Saved filter profiles (`--save`, `--clear-saved`)
+
+`--save` persists the given filter flags (not `--sort`/`--cursor`/
+`--limit`) to a local config file so you don't have to re-type them
+every invocation. Storage location: `~/.hiring-signals/config.json`, or
+`$XDG_CONFIG_HOME/hiring-signals/config.json` if that env var is set.
+
+```
+$ hs signals list --role cybersecurity --save
+{"data":[...],"meta":{...}}
+```
+
+With **no** filter flags and a saved profile present, `hs signals list`
+applies it automatically and prints a one-line note to stderr (stdout
+stays pure JSON):
+
+```
+$ hs signals list
+Using saved filters: role=cybersecurity
+{"data":[...],"meta":{...}}
+```
+
+Supplying any filter flag skips the saved profile entirely for that
+invocation (no note printed). `--clear-saved` removes the saved profile:
+
+```
+$ hs signals list --clear-saved
+{"data":{"clearedSaved":true}}
+```
+
+If the saved file is missing, corrupt, or fails validation, it's
+silently discarded and the command proceeds unfiltered -- no error, no
+prompt.
+
 ## `hs signals get <signalId>`
 
 Positional arg: `signalId` (UUID).
@@ -138,7 +172,9 @@ $ hs admin reconcile --yes
 ## Tests
 
 `pnpm --filter @hiring-signals/cli test` -- `test/api-client.test.ts`
-(mocked `fetch`, no live server needed) and `test/cli-process.test.ts`
-(real subprocess spawns of `bin/hs.mjs`, asserting exit codes and the
-single-JSON-object stderr contract). Neither suite depends on
-`wrangler dev` being up.
+(mocked `fetch`, no live server needed), `test/cli-process.test.ts` and
+`test/signals-list-saved-filters.test.ts` (real subprocess spawns of
+`bin/hs.mjs`, asserting exit codes and the single-JSON-object stderr
+contract), `test/feed-url.test.ts` and `test/config-store.test.ts` (pure
+logic / real temp-dir filesystem I/O, no network). None of these suites
+depend on `wrangler dev` being up.

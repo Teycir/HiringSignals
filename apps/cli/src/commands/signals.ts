@@ -1,6 +1,34 @@
 import { defineCommand } from "citty";
 import { signalsQuerySchema } from "@hiring-signals/domain";
 import { fetchSignals, fetchSignalDetail, resolveConfig } from "../api-client";
+import {
+  loadSavedFilters,
+  saveFilters,
+  clearSavedFilters,
+  hasAnyFilter,
+  type SavedFilterFlags,
+} from "../config-store";
+
+const FILTER_FLAG_KEYS = [
+  "role",
+  "company",
+  "q",
+  "locationMode",
+  "country",
+  "source",
+  "signalType",
+  "minScore",
+  "observedSince",
+] as const;
+
+function pickFilterFlags(args: Record<string, unknown>): SavedFilterFlags {
+  const out: SavedFilterFlags = {};
+  for (const key of FILTER_FLAG_KEYS) {
+    const value = args[key];
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
 
 /**
  * `hs signals list [flags]` -- GET /api/v1/signals (spec 9.2/9.3).
@@ -12,6 +40,16 @@ import { fetchSignals, fetchSignalDetail, resolveConfig } from "../api-client";
  * the real coercion/validation (z.coerce.number(), enum checks, etc.)
  * before anything is sent, so a bad value fails locally with a clear
  * message instead of round-tripping to the API first.
+ *
+ * Saved filter profiles (ROADMAP.md Milestone N.1): `--save` persists the
+ * current filter flags (not sort/cursor/limit -- those are per-invocation
+ * concerns, not part of "my usual role/location search") to a local config
+ * file via config-store.ts. `--clear-saved` removes it. With NO filter
+ * flags supplied and a saved profile present, the saved profile is applied
+ * automatically -- a CLI has no URL to treat as source of truth the way a
+ * browser tab does, so "no flags supplied" is the CLI's equivalent of "no
+ * URL params." A one-line stderr note makes this visible rather than
+ * silent, since there's no banner UI to show it in otherwise.
  */
 const list = defineCommand({
   meta: { name: "list", description: "List signals matching filters." },
@@ -28,18 +66,42 @@ const list = defineCommand({
     sort: { type: "string", description: "score_desc|newest|company_asc" },
     cursor: { type: "string", description: "Pagination cursor from a prior response" },
     limit: { type: "string", description: "Page size, 1-100" },
+    save: { type: "boolean", description: "Save the given filter flags as the default profile" },
+    clearSaved: { type: "boolean", description: "Remove the saved filter profile" },
   },
   async run({ args }) {
+    if (args.clearSaved) {
+      await clearSavedFilters();
+      process.stdout.write(JSON.stringify({ data: { clearedSaved: true } }) + "\n");
+      return;
+    }
+
+    let filterFlags = pickFilterFlags(args as unknown as Record<string, unknown>);
+
+    if (args.save) {
+      await saveFilters(filterFlags);
+    } else if (!hasAnyFilter(filterFlags)) {
+      const saved = await loadSavedFilters();
+      if (saved) {
+        filterFlags = saved;
+        const summary = Object.entries(saved)
+          .filter(([, v]) => v !== undefined && v !== "")
+          .map(([k, v]) => `${k}=${v}`)
+          .join(", ");
+        process.stderr.write(`Using saved filters: ${summary}\n`);
+      }
+    }
+
     const parsed = signalsQuerySchema.parse({
-      roles: args.role,
-      company: args.company,
-      q: args.q,
-      locationMode: args.locationMode,
-      country: args.country,
-      source: args.source,
-      signalType: args.signalType,
-      minScore: args.minScore,
-      observedSince: args.observedSince,
+      roles: filterFlags.role,
+      company: filterFlags.company,
+      q: filterFlags.q,
+      locationMode: filterFlags.locationMode,
+      country: filterFlags.country,
+      source: filterFlags.source,
+      signalType: filterFlags.signalType,
+      minScore: filterFlags.minScore,
+      observedSince: filterFlags.observedSince,
       sort: args.sort,
       cursor: args.cursor,
       limit: args.limit,

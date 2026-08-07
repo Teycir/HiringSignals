@@ -314,7 +314,7 @@ it's a joint sign-off, not a G-only task.
 
 ---
 
-## Milestone N — Saved filters (local config file, no backend)
+## Milestone N — Saved filters (local config file, no backend) — complete, landed 2026-08-07
 
 Spec §2.2 (P1: "Saved role/location filter profiles"). Deliberately
 local-only — no backend, no accounts, no new API surface. Spec P1 says
@@ -330,31 +330,59 @@ cleanly onto a local config file, which is the CLI-native equivalent.
 preferences every invocation without this. Lowest-effort high-retention
 feature available.
 
-- [ ] **N.1 — Filter profile save/load** (`apps/cli`)
-  - `hiring-signals signals list --role backend --location london --save`
-    writes the current filter flags to a local config file
-    (`~/.hiring-signals/config.json` or `$XDG_CONFIG_HOME` equivalent)
-    under a `savedFilters` key. Plain JSON of `signalsQuerySchema`
-    params — same schema Milestone N originally specified, just a
-    different storage location.
-  - `hiring-signals signals list` with **no** filter flags and a saved
-    profile present: use the saved filters automatically (a CLI has no
-    URL to treat as source of truth the way a browser tab does, so
-    "no flags supplied" is the CLI's equivalent of "no URL params" —
-    apply the saved profile rather than defaulting to unfiltered).
-    Print a one-line stderr note (`Using saved filters: role=backend,
-    location=london`) so the behavior is visible, not silent — this
-    preserves the original "don't silently apply saved filters"
-    intent even though there's no banner UI to show it in.
-  - `hiring-signals signals list --clear-saved` removes the saved
-    profile.
-  - No v1 versioning — if the stored JSON fails `signalsQuerySchema`
-    parsing on load, silently discard it and proceed unfiltered (same
-    fallback behavior originally specified, adapted from "show
-    re-save prompt" to "just proceed," since a CLI has no persistent
-    UI to show a prompt in between invocations).
-  - **Sequence after Milestone F.1**, not Milestone F — this now
-    depends on the CLI existing, not the deleted dashboard.
+- [x] **N.1 — Filter profile save/load** (`apps/cli`) — done 2026-08-07.
+  - New `apps/cli/src/config-store.ts`: `getConfigPath`,
+    `loadSavedFilters`, `saveFilters`, `clearSavedFilters`,
+    `hasAnyFilter`. Stores the **raw pre-parse flag strings** (e.g.
+    `{ role: "cybersecurity" }`), not `signalsQuerySchema`'s
+    parsed/defaulted output — storing the parsed output would have
+    silently baked `sort`/`limit`/`minScore` defaults into every saved
+    profile even for fields the user never touched. Path resolution:
+    `~/.hiring-signals/config.json` primary,
+    `$XDG_CONFIG_HOME/hiring-signals/config.json` when that env var is
+    set (spec's own "or `$XDG_CONFIG_HOME` equivalent" wording, read
+    literally as two distinct path shapes rather than one). `HS_CONFIG_DIR`
+    is a CLI-internal test seam, not a public flag/env var.
+  - `hs signals list --role backend --location london --save` writes
+    the current filter flags under a `savedFilters` key — implemented
+    exactly as specified (note: the real flag is `--location-mode`, not
+    `--location`; the milestone's own example predates that naming).
+  - `hs signals list` with **no** filter flags and a saved profile
+    present: applies the saved profile automatically, printing
+    `Using saved filters: role=..., ...` to stderr (stdout stays pure
+    JSON) — verified live against a local `wrangler dev` instance, not
+    just the mocked/unreachable-host test path.
+  - `hs signals list --clear-saved` removes the saved profile, prints
+    `{"data":{"clearedSaved":true}}`, no-ops (not an error) if nothing
+    was saved.
+  - No v1 versioning: invalid/corrupt saved JSON is silently discarded
+    on load via `signalsQuerySchema.safeParse`, proceeding unfiltered —
+    implemented as specified.
+  - Verify, 2026-08-07: `apps/cli/test/config-store.test.ts` (15 tests,
+    pure temp-dir filesystem I/O — path resolution, save/load round
+    trip, default-non-persistence, overwrite-not-merge, corrupt-JSON
+    and failed-validation discard, clear) and
+    `apps/cli/test/signals-list-saved-filters.test.ts` (7 tests, real
+    `bin/hs.mjs` subprocess spawns against an unreachable API host,
+    confirming `--save`/`--clear-saved`/auto-apply/no-auto-apply-when-
+    flags-given all fire correctly before the expected network
+    failure) — 22/22 new tests passing. Full `apps/cli` suite
+    (`npx vitest run`) 47/47 passing, no regressions (was 25/25 before
+    this milestone). `pnpm --filter @hiring-signals/cli
+    typecheck`/`lint` clean; workspace-wide `pnpm -r typecheck`/`lint`
+    clean afterward (6 of 7 projects). Manual smoke test against a real
+    local `wrangler dev` (port 8798): `--save` with `--role
+    cybersecurity` returned real signal data and persisted the profile;
+    a follow-up `hs signals list` with no flags printed the exact
+    stderr note and returned the same filtered result set from the
+    live API; `--clear-saved` removed the file. Dev server torn down
+    after verification.
+  - Docs: `apps/cli/README.md` updated with a "Saved filter profiles"
+    subsection and an updated Tests section listing the two new test
+    files.
+
+**Milestone N acceptance: N.1 (the milestone's only subtask) complete,
+verified 2026-08-07 — saved filter profiles are fully built and tested.**
 
 ---
 
