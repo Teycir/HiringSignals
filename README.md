@@ -64,8 +64,8 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 | Directory | Purpose | Status & Details |
 |-----------|---------|-----------------|
-| `apps/cli/` | CLI, primary interface | **Planned, not started** → decided with the user 2026-08-07. The real end-user is an AI agent, not a human typing commands, so it's JSON-by-default, no interactive prompts, machine-readable errors, thin client over `apps/api`'s existing routes. See ROADMAP.md Milestone F.1 for the full spec. |
-| `apps/web/` | *Deleted 2026-08-07* | **Removed, not deprioritized** → the Next.js/Cloudflare Pages dashboard was fully deleted (not left in place) once the CLI-first decision confirmed it added no capability the CLI/API surface didn't already have — every route it called is one of the same 7 `apps/api` endpoints the CLI will use. See ROADMAP.md Milestone F's status note for the deletion rationale. |
+| `apps/cli/` | CLI, primary interface | **Complete** → landed 2026-08-07. The real end-user is an AI agent, not a human typing commands, so it's JSON-by-default, no interactive prompts, machine-readable errors, thin client over `apps/api`'s existing routes. `hs signals list/get`, `hs companies list/get`, `hs facets`, `hs sources list`, `hs export signals`, `hs admin source run/scheduler flush/reconcile`. See `apps/cli/README.md` for exact invocations/output. |
+| `apps/web/` | *Deleted 2026-08-07* | **Removed, not deprioritized** → the Next.js/Cloudflare Pages dashboard was fully deleted (not left in place) once the CLI-first decision confirmed it added no capability the CLI/API surface didn't already have — every route it called is one of the same 7 `apps/api` endpoints the CLI uses. See ROADMAP.md for deletion rationale and full work-item history. |
 | `apps/api/` | Cloudflare Worker API | **Complete** → Routes, middleware, cron scheduler, queue consumer, reconciliation job, semantic-search service, CSV export route, secret-bearer-token admin triggers. |
 | `packages/domain/` | Core domain logic | **Complete** → Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge logic. |
 | `packages/adapters/` | ATS provider integrations | **8 P0 providers built** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio, breezy. |
@@ -76,7 +76,7 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 ## 🛠 Tech Stack
 
-- **CLI**: Node, TypeScript 5.x (planned — not yet scaffolded, see Layout table above)
+- **CLI**: Node, TypeScript 5.x (complete — see `apps/cli/README.md`)
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
 - **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize (semantic search, write path only -- query path not yet wired into the live route)
@@ -98,8 +98,8 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 - **Multi-ATS integration**: Official documented ATS API adapters (no scraping) — 8 of 11 P0 providers built
 - **Real-time monitoring**: Scheduled ingestion with adaptive cadence per provider
-- **Filtering**: By role, location, source, signal type, and company via `GET /api/v1/signals` query params; keyword `q` search on company/headline/summary works today; semantic search is write-path only — see Status. CLI exposure of these filters as flags is planned (Milestone F.1), not yet built.
-- **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; CLI export flag pending)
+- **Filtering**: By role, location, source, signal type, and company via `GET /api/v1/signals` query params; keyword `q` search on company/headline/summary works today; semantic search is write-path only (embeddings stored at ingestion, query route not yet wired). CLI exposure of these filters as flags is available via `hs signals list` — see `apps/cli/README.md`.
+- **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; also exposed as `hs export signals` in CLI)
 - **Bulk onboarding**: CSV import (`import-sources.mjs`) for batch source/company onboarding
 - **Health isolation**: Per-source error isolation prevents cascading failures
 
@@ -117,7 +117,15 @@ pnpm install
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
 ```
 
-There is no local dev command for the CLI yet — `apps/cli` is planned (Milestone F.1) but not scaffolded. Once it exists, exercise the API locally by calling the wrangler dev origin directly (e.g. `curl localhost:8787/api/v1/signals`).
+There is no `pnpm dev` for the CLI -- it's not a server. Point it at a
+running `apps/api` instead:
+
+```bash
+pnpm --filter @hiring-signals/api dev   # in one terminal
+cd apps/cli && HS_API_BASE_URL=http://localhost:8787 node bin/hs.mjs facets   # in another
+```
+
+See `apps/cli/README.md` for every command's flags and exact JSON output.
 
 Ops scripts (run from repo root, requires `nvm use 24.18.0` for wrangler's Node >=22):
 
@@ -147,13 +155,13 @@ TTL raw source-response archive, `ABUSE_LOGS` for the abuse/audit event
 log -- split into separate namespaces so IAM can scope read access
 narrowly, per a security review); the `hiring-signals-ingest` queue; and
 the `hiring-signals-jobs` Vectorize index + Workers AI binding for
-semantic search (write path only so far -- see Status). Raw payloads
+semantic search (write path only so far -- embeddings stored at ingestion, query route not yet wired). Raw payloads
 live in KV under TTL-based keys rather than R2, so the project doesn't
 require Cloudflare billing/a credit card on the account.
 
 CI (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 typecheck + lint + domain/adapters pure-logic tests (~45s total).
-Live-D1/db/api suites are manual-only (see Status).
+Live-D1/db/api suites are manual-only (require live `CF_TOKEN` against shared resources — see zero-mocks policy in `AGENTS.md`).
 
 ---
 

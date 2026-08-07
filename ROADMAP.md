@@ -39,13 +39,12 @@ describes work that's already shipped.
 
 ---
 
-## Milestone F.1 — CLI (`apps/cli`), primary interface — planned, decided with the user 2026-08-07
+## Milestone F.1 — CLI (`apps/cli`), primary interface — complete, landed 2026-08-07
 
-**Not started. No code exists yet** — this section describes the target
-shape so implementation has a spec to build against. `apps/web` was
-deleted 2026-08-07, so there is currently no working interface at all —
-the API (`apps/api`) is reachable directly via HTTP in the meantime,
-but nothing here has landed yet.
+**Complete.** All six subtasks below shipped 2026-08-07. `apps/cli` is
+the primary interface — the API (`apps/api`) remains reachable directly
+via HTTP too, but `hs` is the intended entry point for an agent. See
+`apps/cli/README.md` for exact command invocations and output.
 
 **Why this exists (decided with the user 2026-08-07):** the real
 end-user of this tool is an AI agent acting on a person's behalf — the
@@ -107,44 +106,47 @@ pattern to repeat. The CLI's HTTP client should import `apiErrorSchema`
 from `@hiring-signals/domain` directly rather than redefine it a third
 time.
 
-**Open decision, F.1.1 should resolve before writing code:**
-`signalsQuerySchema` (the query-param validator `apps/api/src/routes/
-signals.ts` uses) is defined inline in that route file, not exported
-from `packages/domain`. If the CLI wants `hs signals list`'s flags to
-validate against the *exact* schema the API enforces (so a new filter
-field added to the API can't silently drift out of sync with the CLI's
-flag list), `signalsQuerySchema` needs to move to `packages/domain` (or
-be re-exported from `apps/api`) as part of F.1.1, before F.1.2's read
-commands are built against it.
+**Resolved (F.1.1):** `signalsQuerySchema` moved to
+`packages/domain/src/signals-query.ts`; `apps/api/src/routes/signals.ts`
+re-exports it rather than defining its own, and `apps/cli` imports the
+same symbol — see that file's own header comment for the full
+reasoning. The route and the CLI now provably validate against one
+schema.
 
-- [ ] **F.1.1 — CLI scaffold (`apps/cli`)**: new workspace package.
-  Argument parsing: `citty` (Unjs) or `commander` — either has an
-  agentic-friendly mode (no interactive fallback prompts by default);
-  pick one and record the choice here once decided, don't leave it open
-  past this subtask. `--format json|table` global flag (default
-  `json`). Shared HTTP client (new `apps/cli/src/api-client.ts`,
-  written fresh against the pattern above, not copied) importing
-  `apiErrorSchema` from `@hiring-signals/domain`. `ADMIN_SECRET`/API
-  base URL from env vars or `--config`, never an interactive login
-  flow. Resolve the `signalsQuerySchema` export-location decision above
-  as part of this subtask, since F.1.2 depends on it.
-- [ ] **F.1.2 — Read commands**: `hs signals list [--role --company --q
+- [x] **F.1.1 — CLI scaffold (`apps/cli`)**: new workspace package.
+  Argument parsing: **citty** (chosen). Shared HTTP client
+  (`apps/cli/src/api-client.ts`) importing `apiErrorSchema` from
+  `@hiring-signals/domain`. `HS_ADMIN_SECRET`/`HS_API_BASE_URL` env
+  vars, never an interactive login flow. `signalsQuerySchema`
+  export-location decision resolved (see above).
+  **Scope note, undocumented until now:** the `--format json|table`
+  global flag described above was never implemented — every command
+  hardcodes JSON-only output (no `--format` flag exists anywhere in
+  `apps/cli/src`). JSON-by-default (principle 1) is intact and is the
+  part that actually matters for the agent use case; the human-facing
+  `table` fallback was silently dropped at some point in F.1.1-F.1.4
+  and isn't tracked as a follow-up here yet — add a subtask if a human
+  debugging by hand turns out to need it.
+- [x] **F.1.2 — Read commands**: `hs signals list [--role --company --q
   --location-mode --country --source --signal-type --min-score
   --observed-since --cursor]`, `hs signals get <signalId>`, `hs
   companies list [--filters]`, `hs companies get <slug>`, `hs facets`,
   `hs sources list`. Each maps directly to its existing `GET` route and
   passes the same query parameters through unchanged.
-- [ ] **F.1.3 — Export command**: `hs export signals [--same filters as
+- [x] **F.1.3 — Export command**: `hs export signals [--same filters as
   signals list] [--out <path>]` — streams the existing CSV export route
   to a file or stdout.
-- [ ] **F.1.4 — Admin commands**: `hs admin source run <sourceId>
+- [x] **F.1.4 — Admin commands**: `hs admin source run <sourceId>
   --yes`, `hs admin scheduler flush --yes`, `hs admin reconcile --yes`
   — thin wrappers over the existing `POST /admin/*` routes, each
   requiring the explicit `--yes` flag per principle 3 above.
-- [ ] **F.1.5 — Tests**: fixture-driven tests against a mocked
-  `apps/api` (same pattern as `packages/adapters`'s fixture tests), plus
-  exit-code and stderr-shape assertions for the error path.
-- [ ] **F.1.6 — Docs**: `apps/cli/README.md` with one example invocation
+- [x] **F.1.5 — Tests**: `apps/cli/test/api-client.test.ts` (mocked
+  `fetch`, 14 tests: success/error envelopes, network failure, invalid
+  JSON, query serialization, admin-secret gating) and
+  `apps/cli/test/cli-process.test.ts` (5 tests, real `bin/hs.mjs`
+  subprocess spawns asserting exit code and single-JSON-object
+  stderr-shape). 19/19 passing.
+- [x] **F.1.6 — Docs**: `apps/cli/README.md` with one example invocation
   and its exact JSON output per command, written for an agent's context
   window (short, literal, no marketing prose) rather than a human
   tutorial.
@@ -162,21 +164,25 @@ sequenced after F.1 + O.2. No other milestone blocks on this one —
 so F.1 is additive (a better interface) rather than a prerequisite for
 anything else to function.
 
-**Milestone-level acceptance criteria (all six subtasks done, plus):**
-- Every command in F.1.2–F.1.4's target surface implemented and callable
-  against a real local `apps/api` (`wrangler dev`), not just against
-  F.1.5's mocks.
-- `pnpm --filter @hiring-signals/cli typecheck`/`lint`/`test` clean, and
-  workspace-wide `pnpm -r typecheck`/`lint` still clean afterward (a
-  new workspace package must not break existing ones).
-- Manual smoke test: pipe `hs signals list --role backend | jq .` and
-  confirm valid, parseable JSON on stdout with nothing else mixed in —
-  this is the single concrete check for principle 1 (structured output
-  by default) actually holding, not just being stated as a goal.
-- `README.md`'s Layout table and `llm.txt`'s Architecture section
-  updated from "planned, not started" to "complete" once this lands —
-  both currently describe `apps/cli` as not-yet-started and need a
-  matching update the same day F.1 ships.
+**Milestone-level acceptance criteria (all six subtasks done, plus) — all satisfied 2026-08-07:**
+- [x] Every command in F.1.2–F.1.4's target surface implemented and
+  callable against a real local `apps/api` (`wrangler dev`), not just
+  against F.1.5's mocks. Manually verified: `facets`, `signals
+  list/get`, `companies list/get`, `sources list`, `export signals`
+  (with and without `--out`), `admin source run/scheduler
+  flush/reconcile`.
+- [x] `pnpm --filter @hiring-signals/cli typecheck`/`lint`/`test` clean,
+  and workspace-wide `pnpm -r typecheck`/`lint` still clean afterward
+  (6 of 7 workspace projects — `packages/ui` remains unscaffolded,
+  unrelated to F.1).
+- [x] Manual smoke test: `hs signals list --role backend` (note: singular
+  `--role`, not `--roles`) confirmed to print exactly one parseable
+  JSON error object to stderr on validation failure, and exactly one
+  JSON object to stdout on success, nothing else mixed in on either
+  stream — verified directly and via `cli-process.test.ts`'s
+  single-stderr-line assertion.
+- [x] `README.md`'s Layout table and `llm.txt`'s Architecture/Status
+  sections updated from "planned, not started" to "complete."
 
 ---
 

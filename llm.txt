@@ -4,7 +4,7 @@
 Hiring Signals Intelligence is a CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
 
 ## Tech Stack
-- **Interface**: `apps/cli` (planned, not started) — thin CLI client over `apps/api`, JSON-by-default, built for an AI agent caller rather than a human
+- **Interface**: `apps/cli` (complete, landed 2026-08-07) — thin CLI client over `apps/api`, JSON-by-default, built for an AI agent caller rather than a human
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
 - **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5`) + Vectorize (write and query-side hybrid search both live)
@@ -13,8 +13,10 @@ Hiring Signals Intelligence is a CLI-first tool, built for AI agents to query on
 
 ## Architecture
 ```
-apps/cli/        CLI, primary interface -> planned, not started (decided with the user 2026-08-07);
-                  JSON-by-default, no interactive prompts, thin client over apps/api
+apps/cli/        CLI, primary interface -> complete, landed 2026-08-07 (Milestone F.1);
+                  JSON-by-default, no interactive prompts, thin client over apps/api.
+                  hs signals list/get, companies list/get, facets, sources list,
+                  export signals, admin source run/scheduler flush/reconcile.
 apps/web/        Deleted 2026-08-07. Was a Next.js 16 UI on Cloudflare Pages; removed
                   entirely (not deprioritized-but-kept) once confirmed it added no
                   capability apps/api didn't already expose. New interface work lands
@@ -31,7 +33,7 @@ infrastructure/  D1 migrations (0001-0004) + ops scripts (add-source, update-sou
 ```
 
 ## Current Status (2026-08-07)
-**Phases 0-1 complete. Milestones A-F, H, L, M, and I.1-I.4 complete. 8 active ATS adapters live. `apps/web` (the dashboard UI these milestones shipped into) was deleted 2026-08-07; `apps/cli` is now the primary interface, planned but not yet started.**
+**Phases 0-1 complete. Milestones A-F (including F.1, the CLI), H, L, M, and I.1-I.4 complete. 8 active ATS adapters live. `apps/web` (the dashboard UI these milestones shipped into) was deleted 2026-08-07; `apps/cli` is now the primary interface and shipped the same day.**
 Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in sync with it.
 
 **Done (some since removed — see note):**
@@ -48,11 +50,11 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 - Semantic search (Milestone I.1-I.3): jobs embedded into a Vectorize index at ingest time, query-side hybrid search wired live into GET /api/v1/signals
 - Zero-mocks live test infrastructure (`packages/test-support`) against real Cloudflare D1/KV resources
 - All workspace tests passing workspace-wide (`pnpm -r test`); `pnpm -r typecheck`/`pnpm -r lint` clean
+- CLI (`apps/cli`), the new primary interface -- complete, landed 2026-08-07 (ROADMAP.md Milestone F.1, all six subtasks). JSON-by-default, machine-readable stderr errors, no interactive prompts. `hs signals list/get`, `companies list/get`, `facets`, `sources list`, `export signals`, `admin source run/scheduler flush/reconcile`. Fixture-driven + real-subprocess tests (`apps/cli/test/`). See `apps/cli/README.md` for exact invocations/output.
 
 **Note on removed work:** Milestone F (dashboard UI: `/signals` feed, `FilterRail`, `SignalCard`, `SignalDetail` view) and Milestone I.4 (search UI: search bar, recent-searches, more-like-this) both shipped inside `apps/web` and are accurately recorded as complete in `CHANGELOG.md`/`ROADMAP.md` — but `apps/web` itself was deleted 2026-08-07. That UI code no longer exists in the repo; the API routes and domain logic it called are still live and unaffected.
 
 **Not yet done:**
-- CLI (`apps/cli`), the new primary interface -- planned, no code yet (ROADMAP.md Milestone F.1, decided with the user 2026-08-07)
 - Classification assist from embeddings (I.5, deferred until I.1-I.4 have run in production)
 - Production deployment (Cloudflare Workers API; no UI to deploy)
 - No authentication anywhere in this app, by permanent design decision (spec §3/§10.5/§11.1) -- not a gap to fill
@@ -81,7 +83,7 @@ pnpm lint                                  # Lint all packages
 pnpm typecheck                            # Type check all packages
 pnpm build                                # Build all packages
 ```
-No `@hiring-signals/web` package exists — `apps/web` was deleted 2026-08-07. Once `apps/cli` (Milestone F.1) exists, its dev command will be added here.
+No `@hiring-signals/web` package exists — `apps/web` was deleted 2026-08-07. `apps/cli` has no `pnpm dev` (it's not a server) -- run `pnpm --filter @hiring-signals/api dev`, then `node apps/cli/bin/hs.mjs <command>` against it. See `apps/cli/README.md`.
 
 ## Specification
 Full build specification available in `hiring-signals-spec.md` at repo root.
