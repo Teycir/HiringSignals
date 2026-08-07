@@ -1,5 +1,5 @@
 /**
- * Admin routes (spec 13.5, ROADMAP Milestone admin-routes).
+ * Admin routes (spec 10.5, ROADMAP Milestone admin-routes).
  *
  * Three idempotent trigger surfaces. source-run enqueues a single source
  * immediately; scheduler-flush and reconcile delegate to the same named
@@ -37,7 +37,7 @@ adminRoute.use("*", adminAuth());
  * Immediately enqueue one source for ingestion, bypassing its polling
  * schedule. A new runId is minted per call, so repeated calls produce
  * separate runs (idempotency lives at the *consumer* level keyed on
- * runId — see ingest-consumer.ts header comment, spec §13.3).
+ * runId — see ingest-consumer.ts header comment, spec §10.3).
  *
  * Never fetches the provider inline: enqueues only.
  */

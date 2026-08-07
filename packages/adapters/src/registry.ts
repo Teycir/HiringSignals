@@ -13,7 +13,7 @@ import { breezyAdapter } from "./breezy";
  * Provider -> adapter lookup for the ingest consumer (ROADMAP.md
  * Milestone D). Covers all 8 providers in the ATS_PROVIDERS enum. A
  * source configured for a provider not in this map is a 4xx-style
- * configuration issue (spec §13.4's "4xx configuration issue" row), not
+ * configuration issue (spec §10.4's "4xx configuration issue" row), not
  * a schema mismatch or a transient failure -- getAdapterForProvider
  * throws a typed error so the consumer's failure-handling can route it
  * to the correct branch (mark source degraded, no hammering) instead of

@@ -70,7 +70,7 @@ export interface SignalRow {
 }
 
 // SignalListItem/SignalDetail moved to ./types.ts (see that file's header
-// comment) so type-only consumers like apps/web don't pull in D1Client.
+// comment) so type-only consumers don't pull in D1Client.
 // Re-exported here so existing imports of `{ SignalListItem } from
 // "./signals-repo"` (internal to this package) keep working unchanged.
 export type { SignalListItem, SignalDetail } from "./types";

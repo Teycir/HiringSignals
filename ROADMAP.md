@@ -93,7 +93,7 @@ reappearance → `active` + `reopened_job`). 24 tests, `pnpm --filter
 
 Spec: §7 (signal model/scoring), §7.3 (deduplication). Scoped to
 `new_job` only for v1 — the other signal types need historical volume
-baselines that don't exist until `new_job` has run for a while (spec §20
+baselines that don't exist until `new_job` has run for a while (spec §17
 Phase 1 step 5).
 
 `packages/db/src/signals-write-repo.ts` (`createSignal`,
@@ -121,8 +121,8 @@ Verify: `pnpm --filter @hiring-signals/domain test` 72/72 green,
 ## Milestone D — Scheduler, queue consumer, source-management scripts (`apps/api` + `infrastructure/scripts`)
 
 Spec: §5.1 (flow), §5.2 (cadence math — already fully specified, just
-needs implementing), §13.2 (middleware order), §13.3 (queue message,
-idempotency), §13.4 (failure handling table), §13.5 (source management
+needs implementing), §10.2 (middleware order), §10.3 (queue message,
+idempotency), §10.4 (failure handling table), §10.5 (source management
 is ops-only, no HTTP admin surface).
 
 This is the milestone that turns Milestones A–C from "code that exists"
@@ -137,19 +137,19 @@ tests).
 `apps/api/src/jobs/ingest-consumer.ts` runs the full pipeline (fetch →
 validate → normalize → upsert → observe → lifecycle → classify →
 signal) with idempotency on `(job_id, source_run_id)`/`runId`, and
-per-branch failure handling for every row in spec §13.4's table (429,
+per-branch failure handling for every row in spec §10.4's table (429,
 transient 5xx, config 4xx, schema mismatch, anti-bot, D1/KV transient).
-Structured logging per spec §16.1's field list, never logging
+Structured logging per spec §13.1's field list, never logging
 tokens/cookies/raw payloads. `ingest-consumer.test.ts` (10 tests)
 covers the happy path, idempotency, multi-run lifecycle transitions,
-and every §13.4 branch, using a hand-built in-memory `D1Client` fake
+and every §10.4 branch, using a hand-built in-memory `D1Client` fake
 (established pattern in this repo) rather than local-D1/miniflare — a
 real `wrangler dev --local` run against the actual Greenhouse fixture
 is still worth doing before production traffic.
 
 No `apps/api/src/routes/admin.ts` HTTP surface — confirmed removed
 (`protectedWriteTier`, `turnstile.ts`, `TURNSTILE_SECRET_KEY` all gone).
-**Superseded 2026-07-30 (spec §13.5a):** `routes/admin.ts` exists again
+**Superseded 2026-07-30 (spec §10.5a):** `routes/admin.ts` exists again
 as a *different* design — not a reversal. The removed piece was a
 cookie/Turnstile write-tier gate; what exists now is a narrow
 secret-bearer-token (`ADMIN_SECRET`, `Authorization: Bearer`, never a
@@ -187,7 +187,7 @@ three near-duplicate copies) landed as separate follow-up commits.
 
 ## Milestone E — Remaining P0 adapters
 
-Spec §20 Phase 3 step 1 groups these with "production hardening," after
+Spec §17 Phase 3 step 1 groups these with "production hardening," after
 the dashboard (Phase 2) — the spec's own priority order puts a working
 UI over adapter breadth. **Sequence this milestone after Milestone F
 (Phase 2 UI) unless there's a specific reason to front-load adapter
@@ -201,7 +201,7 @@ spec's ordering as absolute if it stops making sense in practice).
 Same contract every time (`AtsAdapter`: `provider`, `fetchBoard`,
 `normalize`), same fixture-test pattern as `greenhouse.ts`. Each
 provider verified against first-party API docs before writing its
-schema (spec §21: never invent endpoints, verify source contracts
+schema (spec §18: never invent endpoints, verify source contracts
 first) — several verifications (ashby, smartrecruiters, workable) hit
 a network-proxy block on live fetch and fell back to docs-plus-shape-
 reference instead, noted per-adapter rather than silently assumed.
@@ -242,15 +242,27 @@ AGENTS.md's roadmap status reflects the closed-at-8 scope.
 ## Milestone F — Dashboard UI (Phase 2, `apps/web`) — complete, deprioritized 2026-08-07
 
 **Status update, decided with the user 2026-08-07: the CLI (Milestone
-F.1, below) is now the primary interface. This milestone's code is
-built, tested, and stays in the repo — nothing here is being deleted —
-but it is no longer where new interface work lands.** Read this
-milestone as a historical record of what shipped, not an active area.
-Any future web-UI work needs the user to explicitly reopen it.
+F.1, below) is now the primary interface.** Read this milestone as a
+historical record of what shipped, not an active area.
 
-Spec §11 (Minimal Brutalist visual system), §12 (Next.js requirements),
-§10 (UX spec — route map, filters, signal cards, detail view, empty/
-loading/error states).
+**Update, same day: `apps/web` was subsequently deleted, not kept.**
+The "nothing here is being deleted" note directly below was accurate at
+the moment it was written (the decision was initially deprioritize-but-
+keep), then superseded within the same session once it was confirmed
+the CLI/API surface already covers everything the dashboard called —
+`apps/web` was a caller of `apps/api`'s existing routes, not a source
+of unique logic. See the Layout table in README.md for the deletion
+rationale. The checklist items below
+(F.1–F.7, and the later verification/CSP entries referencing `apps/web`)
+are left exactly as they were written — they are an accurate record of
+work that genuinely happened before deletion, not a claim that the code
+still exists today. Any future web-UI work needs the user to explicitly
+reopen it, and would start from git history rather than a live directory.
+
+Spec §11 (Minimal Brutalist visual system, historical — describes the
+now-deleted dashboard), §12 (Next.js requirements, historical), §10 (UX
+spec — route map, filters, signal cards, detail view, empty/loading/
+error states, historical).
 
 **UI/animation source of inspiration, decided with the user: `ArxivExplorer`**
 (same "single-page dense dashboard" shape; same reuse decision Milestone I
@@ -319,10 +331,12 @@ All subtasks F.1 through F.7 are fully implemented and passing across `apps/web`
 
 ## Milestone F.1 — CLI (`apps/cli`), primary interface — planned, decided with the user 2026-08-07
 
-**Not started. No code exists yet** — `apps/web`'s dashboard remains the
-only working interface until this milestone lands. This section
-describes the target shape so implementation has a spec to build
-against; it is not a record of anything shipped.
+**Not started. No code exists yet** — this section describes the target
+shape so implementation has a spec to build against; it is not a record
+of anything shipped. `apps/web` was deleted the same day this milestone
+was opened (see Milestone F's header note), so there is currently no
+working interface at all — the API (`apps/api`) is reachable directly
+via HTTP in the meantime, but nothing here has landed yet.
 
 **Why this exists (decided with the user 2026-08-07):** the real
 end-user of this tool is an AI agent acting on a person's behalf — the
@@ -332,8 +346,8 @@ browser directly. That reverses the usual CLI design priorities: no
 interactive prompts (an agent can't respond to a stdin prompt), no
 progress spinners or ANSI color as the primary output channel, no
 "friendly" reformatting that varies between runs. The dashboard
-(Milestone F) stays in the repo, tested, and unmodified, but new
-interface work lands here, not there — see Milestone F's status note.
+(Milestone F) was deleted, not kept — see Milestone F's header note —
+so this CLI is now the only planned path to a working interface.
 
 **Design principles, all in service of agentic (not human-interactive)
 use:**
@@ -493,7 +507,7 @@ workspace-wide.
 
 ## Open questions to resolve before Milestone D is "done" (not blocking earlier milestones)
 
-Carried over from spec §22 ("Open decisions to resolve before
+Carried over from spec §19 ("Open decisions to resolve before
 production") to the extent they affect write-path implementation
 choices — full list is in the spec, this is just the subset relevant to
 Milestones A–D:
@@ -865,7 +879,7 @@ never duplicates. Verify: happy-path + failure-path tests in
         first, unconditionally). Wrapped in the same log-and-continue
         try/catch as `embedAndUpsertJob` — Vectorize/AI unreachable must
         never block, retry, or degrade classification (spec §9.4's
-        guardrail, restated from §21). `autoClassified` may flip
+        guardrail, restated from §18). `autoClassified` may flip
         false→true only via the nudge crossing `AUTO_CLASSIFY_THRESHOLD`
         on a category a deterministic channel already matched — never
         independent of one.
@@ -1104,8 +1118,8 @@ the `CACHE` namespace).
 
 ## Milestone G — Hardening, deploy (Phase 3 remainder / Phase 4)
 
-Spec §14.1 (security controls), §15 (performance/reliability targets),
-§18 (CI/CD), §19 (acceptance criteria).
+Spec §11.1 (security controls), §12 (performance/reliability targets),
+§15 (CI/CD), §16 (acceptance criteria).
 
 Not a blank slate: `apps/api` already has a real middleware chain
 (request-id, client-ip, security-headers, `freeReadTier` rate limiting,
@@ -1113,17 +1127,17 @@ Not a blank slate: `apps/api` already has a real middleware chain
 namespace with 30-day auto-expiry, and adapter fetch targets hard-coded
 per provider in `registry.ts` (not DB-driven) — SSRF surface is small
 by construction already. G is mostly a **verification and gap-closing
-pass**: confirm what's built meets each spec §14.1/§15 bullet, then
+pass**: confirm what's built meets each spec §11.1/§12 bullet, then
 build only what's actually missing. No auth item: single-tenant,
-public, no login, ever (spec §22 preamble).
+public, no login, ever (spec §19 preamble).
 
 G.1 (security audit) runs first — it determines which of G.2's items
 are real gaps vs. already-satisfied. G.4/G.5 close the milestone once
 G.1–G.3 land.
 
-### G.1 — Security control audit against spec §14.1 (do this first) — ✅ done 2026-08-03
+### G.1 — Security control audit against spec §11.1 (do this first) — ✅ done 2026-08-03
 
-Final disposition of all 8 §14.1 bullets: 6 ✅ fully satisfied
+Final disposition of all 8 §11.1 bullets: 6 ✅ fully satisfied
 (unauthenticated public routes confirmed via `freeReadTier()`; SQL
 parameterization confirmed via full grep sweep of `packages/db/src/*.ts`
 — `where`/`args` built as parallel arrays, values always flow through
@@ -1177,7 +1191,7 @@ G.2, not duplicated in F.
       clean; G.1's SQL/log sweeps didn't need re-running since neither
       was touched by these changes.
 
-### G.3 — Performance targets verification (spec §15)
+### G.3 — Performance targets verification (spec §12)
 
 Mostly verification against already-built infrastructure (facet KV
 cache, cursor pagination, indexed queries) rather than new work.
@@ -1224,13 +1238,13 @@ verifiable now vs. blocked on real source volume.
       `requisitionId` gap is new scope, not part of this verification
       item, and isn't tracked as a separate task here since it's a
       minor, spec-flagged approximation rather than a functional bug.
-- [ ] Verify: record actual measured numbers against each spec §15
+- [ ] Verify: record actual measured numbers against each spec §12
       target, dated, so drift is detectable later — done for the
       "≤ 50 rows" target above; the rest wait on real source traffic.
 
-### G.4 — CI/CD hardening (spec §18)
+### G.4 — CI/CD hardening (spec §15)
 
-Spec §18 describes a 4-environment model (Local/Preview/Staging/
+Spec §15 describes a 4-environment model (Local/Preview/Staging/
 Production) and a 7-step deployment sequence. Current CI
 (`.github/workflows/ci.yml`) covers typecheck/lint/fast-tests only — no
 deploy automation exists yet per this session's read of the workflow
@@ -1273,12 +1287,12 @@ file.
       this enforceable. Verified: `pnpm -r typecheck`/`lint` clean
       across all 6 workspace packages after the change.
 - [ ] If any deploy automation is added: never point preview/staging at
-      production secrets or write bindings (spec §18.1) — mostly moot
+      production secrets or write bindings (spec §15.1) — mostly moot
       now that G.4's environment-scope decision (above) rules out a
       separate preview/staging tier, but leaving this as an explicit
       guardrail rather than deleting it: if that decision is ever
       revisited, this constraint still applies.
-- [x] **Rollback readiness (spec §18.3) — audited 2026-08-06, corrected
+- [x] **Rollback readiness (spec §15.3) — audited 2026-08-06, corrected
       same day after token scope was widened.** Initial pass found
       `CF_TOKEN` lacked Workers Scripts permission, blocking
       `wrangler versions list`/`deployments list`, and concluded
@@ -1300,7 +1314,7 @@ file.
       exist (8 real entries), so a rollback (`wrangler rollback` or
       `wrangler deploy` to a prior version) is mechanically available
       and testable once we're deploying again — not yet exercised.
-- [x] **Feature-flag pattern for scoring formula changes (spec §18.3) —
+- [x] **Feature-flag pattern for scoring formula changes (spec §15.3) —
       audited, partial gap found, 2026-08-06.** This item's own
       original premise was wrong and is corrected here: `packages/db`'s
       schema has no `velocity_score_version` column at all — grepped
@@ -1308,11 +1322,11 @@ file.
       (the hiring-velocity-score feature that field would belong to) is
       entirely unbuilt (0/3 items, not started), so a version column
       for it can't exist yet. `score_version` (spec §7.2's existing
-      signal score) is real and does exactly one of spec §18.3's two
+      signal score) is real and does exactly one of spec §15.3's two
       asks: every scored signal persists `SCORE_FORMULA_VERSION`
       (`packages/domain/src/signal-score.ts`, currently `"v2"`), so old
       and new-formula rows stay distinguishable after a change — that
-      part is genuinely satisfied. **What's missing:** spec §18.3 asks
+      part is genuinely satisfied. **What's missing:** spec §15.3 asks
       to "feature-flag new scoring formulas and compare output before
       making them default" — `SCORE_FORMULA_VERSION` is a hardcoded
       module constant with no runtime toggle; the deployed code always
@@ -1328,18 +1342,18 @@ file.
       building unneeded infrastructure or checking this off as fully
       satisfied.
 
-### G.5 — Acceptance criteria sign-off (spec §19)
+### G.5 — Acceptance criteria sign-off (spec §16)
 
 Run this last, after G.1–G.4 and Milestone F are both complete — several
-§19 items are UI-dependent (F) and several are backend-dependent (G).
+§16 items are UI-dependent (F) and several are backend-dependent (G).
 Don't attempt this checklist until both are done; it's a joint
 sign-off, not a G-only task.
 
-- [ ] Walk every checkbox in spec §19.1 (functional), §19.2 (visual/
-      interaction), §19.3 (security/operations) and mark pass/fail with
+- [ ] Walk every checkbox in spec §16.1 (functional), §16.2 (visual/
+      interaction), §16.3 (security/operations) and mark pass/fail with
       a one-line note on how it was verified (manual test, automated
-      test, code audit). §19.3 items are mostly backend/G; §19.2 items
-      are entirely F; §19.1 is mixed.
+      test, code audit). §16.3 items are mostly backend/G; §16.2 items
+      are entirely F; §16.1 is mixed.
 - [ ] Any failing item gets its own follow-up task here rather than
       being silently marked "close enough."
 
@@ -1347,7 +1361,7 @@ sign-off, not a G-only task.
 
 ## Milestone K — `still_active` signal + detection-latency metric
 
-Spec §1.4 (`still_active` defined but never generated), §15 (detection
+Spec §1.4 (`still_active` defined but never generated), §12 (detection
 latency is primary metric, not tracked), §7.1 (signal type table).
 Shared: both reuse H.5's daily reconciliation cron.
 
@@ -1387,7 +1401,7 @@ spec §1.1 — without measuring it, cadence tuning is guesswork.
   - `source-health.mjs` gained a `p50 latency` column, computed via a
     correlated scalar subquery duplicating the repo function's query
     shape by hand (ops scripts shell out through `wrangler d1 execute`
-    and can't import `@hiring-signals/db` directly). Spec §20 Phase 3
+    and can't import `@hiring-signals/db` directly). Spec §17 Phase 3
     step 6's concrete output.
   - Verified: `jobs-repo.test.ts` (12 tests, live D1) covers null/zero
     baseline, MIN-observation grouping, and source/company filtering;
@@ -1402,8 +1416,7 @@ expire after 24h in KV). Listed "not yet built" in README. Only P0
 spec-required feature with no prior milestone.
 
 **Why this adds value:** secondary audience (investors, recruiters)
-needs filtered signal export for offline analysis. Without export, the
-dashboard is read-only.
+needs filtered signal export for offline analysis.
 
 `GET /api/v1/export/signals.csv` (`apps/api/src/routes/export.ts`)
 accepts the same query params as `GET /api/v1/signals` and returns
@@ -1414,8 +1427,12 @@ extra columns (`canonical_url`, `source_platform`) resolved via a
 "most-recently-observed evidence" LEFT JOIN. Company-level signals
 (hiring_burst etc.) with no job-linked evidence render those columns
 as empty cells, not an error. `lib/text/csv.ts` is a small dependency-free
-RFC 4180 encoder. `ExportButton` in the dashboard (`apps/web`) builds
-the download URL from current search params via `buildExportUrl`.
+RFC 4180 encoder. The dashboard's `ExportButton`/`buildExportUrl` caller
+(`apps/web`) was deleted 2026-08-07 alongside the rest of the dashboard
+(see Milestone F's header note); the export route itself is unaffected
+since it's a plain `GET` accepting the same query params as
+`GET /api/v1/signals` — any caller, including `apps/cli` once it exists,
+can hit it directly with filter flags.
 No dedicated route-level HTTP test (same gap I.3 already notes); the
 route has no logic beyond parse/call/serialize. Verify: `packages/db`
 export-repo tests 5/5 against live D1, `pnpm -r typecheck` clean.
@@ -1424,7 +1441,7 @@ export-repo tests 5/5 against live D1, `pnpm -r typecheck` clean.
 
 ## Milestone M — Bulk source onboarding (CSV import)
 
-Spec §2.2 (P1: "Manual company/source onboarding from a CSV"), §22
+Spec §2.2 (P1: "Manual company/source onboarding from a CSV"), §19
 open decision 2 (registry growth bottleneck). Removes the
 one-invocation-per-source friction of `add-company.mjs`/`add-source.mjs`
 — a prerequisite for registry growth.
@@ -1442,30 +1459,47 @@ execute` pattern as every other ops script.
 
 ---
 
-## Milestone N — Saved filters (client-side, no backend)
+## Milestone N — Saved filters (local config file, no backend)
 
 Spec §2.2 (P1: "Saved role/location filter profiles"). Deliberately
-client-side `localStorage` only — no backend, no accounts, no new API
-surface. Spec P1 says "saved dashboard view," not "server-persisted
-profile"; product has no login, so client-side only option consistent
-with §14.1.
+local-only — no backend, no accounts, no new API surface. Spec P1 says
+"saved dashboard view," which assumed `apps/web`'s `localStorage`
+mechanism at the time it was written; `apps/web` was deleted
+2026-08-07, so this milestone has been rewritten against `apps/cli`
+(Milestone F.1) instead. The `localStorage` mechanism doesn't port —
+a CLI is a Node process with no browser storage API — but the
+underlying value (don't re-type role/location every invocation) maps
+cleanly onto a local config file, which is the CLI-native equivalent.
 
 **Why this adds value:** passive job seeker re-enters role/location
-preferences every visit without this. Lowest-effort high-retention
+preferences every invocation without this. Lowest-effort high-retention
 feature available.
 
-- [ ] **N.1 — Filter profile save/load** (`apps/web`)
-  - "SAVE FILTERS" button in filter rail (spec §10.2 layout) writes
-    current URL filter params to `localStorage` under
-    `hiring-signals:saved-filters`. On page load, if saved filters
-    exist AND no URL params present, offer single-line dismissible
-    "RESTORE SAVED FILTERS" banner. Don't silently apply saved
-    filters — URL is source of truth (spec §12.2).
-  - Storage format: plain JSON of `signalsQuerySchema` params. No
-    v1 versioning — if Zod parse fails on load, silently discard
-    stored value + show prompt to re-save.
-  - "CLEAR SAVED FILTERS" button alongside when profile exists.
-  - **Sequence after Milestone F.**
+- [ ] **N.1 — Filter profile save/load** (`apps/cli`)
+  - `hiring-signals signals list --role backend --location london --save`
+    writes the current filter flags to a local config file
+    (`~/.hiring-signals/config.json` or `$XDG_CONFIG_HOME` equivalent)
+    under a `savedFilters` key. Plain JSON of `signalsQuerySchema`
+    params — same schema Milestone N originally specified, just a
+    different storage location.
+  - `hiring-signals signals list` with **no** filter flags and a saved
+    profile present: use the saved filters automatically (a CLI has no
+    URL to treat as source of truth the way a browser tab does, so
+    "no flags supplied" is the CLI's equivalent of "no URL params" —
+    apply the saved profile rather than defaulting to unfiltered).
+    Print a one-line stderr note (`Using saved filters: role=backend,
+    location=london`) so the behavior is visible, not silent — this
+    preserves the original "don't silently apply saved filters"
+    intent even though there's no banner UI to show it in.
+  - `hiring-signals signals list --clear-saved` removes the saved
+    profile.
+  - No v1 versioning — if the stored JSON fails `signalsQuerySchema`
+    parsing on load, silently discard it and proceed unfiltered (same
+    fallback behavior originally specified, adapted from "show
+    re-save prompt" to "just proceed," since a CLI has no persistent
+    UI to show a prompt in between invocations).
+  - **Sequence after Milestone F.1**, not Milestone F — this now
+    depends on the CLI existing, not the deleted dashboard.
 
 ---
 
@@ -1480,7 +1514,7 @@ structured, timestamped, evidence-backed record of *how a specific
 company's hiring composition changed over time*. Already being
 collected by ingestion; just needs a dedicated read path + legible
 page. Constraint: never claim to represent intent/budget/confirmed
-decisions — only observable public evidence (spec §14.3).
+decisions — only observable public evidence (spec §11.3).
 
 ### O.1 — Company hiring timeline API endpoint
 
@@ -1509,7 +1543,7 @@ signals.
 - [ ] New route `GET /api/v1/companies/:slug/timeline` in
       `apps/api/src/routes/companies.ts`. Query params: `since`
       (default 90d ago), `until` (default now), `roles`, `bucketDays`
-      (7/14/30 default 14). Public/unauthenticated per §14.1.
+      (7/14/30 default 14). Public/unauthenticated per §11.1.
       Envelope: `{ data: { company, buckets }, meta: { requestId } }`.
 
 ### O.2 — Company page: hiring timeline view (`/companies/[slug]`)
@@ -1609,15 +1643,22 @@ Adds read paths only — no new ingestion, no new schema beyond existing
     varying role counts + sort order assertion; route test asserting
     industry filter; `pnpm -r typecheck`/`lint`/`test` clean.
 
-- [ ] **P.3 — Trends surface in dashboard UI** (`apps/web`)
-  - `/trends` route (add to spec §10.1): role selector chip-toggle at
-    top, optional industry/country filter, ranked company list below.
-    Each row: company name, role count, acceleration indicator
-    (▲ / — / ▼), top location, latest signal type, timestamp,
-    `[VIEW COMPANY →]` linking to `/companies/[slug]` (O.2).
-  - No charts on page — the table is the product. Charts P2, require
-    historical data that won't exist until weeks of running.
-  - **Sequence after Milestone F + O.2.**
+- [ ] **P.3 — Trends surface — needs rescoping, `apps/web` deleted**
+  - **This subtask was written against `apps/web` (a `/trends` route
+    per spec §10.1: role selector chip-toggle, industry/country
+    filter, ranked company list, `[VIEW COMPANY →]` links). `apps/web`
+    was deleted 2026-08-07 (see Milestone F's header note), so there
+    is no dashboard route to add this to.** P.1/P.2 already deliver
+    the actual product value — `GET /api/v1/trends/hiring` is a
+    working, queryable endpoint independent of any UI. P.3 was purely
+    about surfacing it for a human browsing a table.
+  - Once `apps/cli` (Milestone F.1) exists, the CLI-native equivalent
+    is a `hiring-signals trends hiring --role backend` subcommand
+    printing the same ranked list as a table (or JSON, per the CLI's
+    `--format` convention) — same data, no charts, same "table is the
+    product" framing as originally intended.
+  - **Sequence after Milestone F.1 + O.2**, not Milestone F — this now
+    depends on the CLI existing, not the deleted dashboard.
 
 ---
 
@@ -1676,7 +1717,7 @@ data already collected; no new ingestion beyond one migration.
     monospace/chartreuse-at-80+ treatment as signal score badge (spec
     §11.4). Label "HIRING VELOCITY" with disclaimer: "Based on pace,
     breadth, and persistence of public hiring activity. Not a
-    prediction of intent or budget." (spec §14.3).
+    prediction of intent or budget." (spec §11.3).
   - Verify: route tests asserting fields present in both endpoints.
 
 ---
@@ -1684,18 +1725,24 @@ data already collected; no new ingestion beyond one migration.
 ## Milestone R — RSS feed (`GET /api/v1/feed.rss`)
 
 Closes the notification gap identified in the usefulness analysis
-(2026-08-06): passive job seekers who must actively check the dashboard
-will default to LinkedIn instead. RSS delivers push-style alerts via
-any feed reader (Feedly, NetNewsWire, etc.) with no accounts, no
-personal data, and no new infrastructure. Per-saved-search filtering
-via URL params means one feed URL per role/location combination —
-better UX than a single email digest for the target IT-specialist
-audience.
+(2026-08-06): a passive job seeker who has to actively invoke the CLI
+(or ask their agent to) will get less consistent coverage than someone
+using a feed reader with push-style delivery. RSS delivers push-style
+alerts via any feed reader (Feedly, NetNewsWire, etc.) with no
+accounts, no personal data, and no new infrastructure. Per-saved-search
+filtering via URL query params means one feed URL per role/location
+combination — better UX than a single email digest for the target
+IT-specialist audience, and it's a pure `apps/api` route, independent
+of whether a dashboard or CLI exists to construct the URL by hand.
 
-**Dependencies:** Milestone F complete (dashboard + filter URL params
-established). No new schema or migrations — pure read path over
+**Dependencies:** No new schema or migrations — pure read path over
 existing `signals-repo.ts`. Sequence after Milestone L (CSV export)
-since the route pattern is identical.
+since the route pattern is identical. Not actually gated on Milestone F
+(dashboard) or F.1 (CLI) — the feed URL's query params are constructed
+directly by whoever wants a feed (originally noted as depending on the
+dashboard's URL-param UI for *building* the URL for a user, but a
+feed URL is short enough to write by hand or generate with a template,
+so this was never a hard technical dependency).
 
 ### R.1 — RSS serializer (`lib/text/rss.ts`)
 
@@ -1771,29 +1818,34 @@ Verify: `pnpm --filter @hiring-signals/api typecheck`/`lint` clean;
 manual `curl` confirming valid XML, correct `Content-Type`, and `304`
 on repeat request with matching `If-None-Match`.
 
-### R.3 — Feed URL builder + link in dashboard (`apps/web`)
+### R.3 — Feed URL discoverability — needs rescoping, `apps/web` deleted
 
-`buildFeedUrl(state: FilterState, now = new Date()): string` — add it
-to `apps/web/src/lib/searchParams.ts`, next to the real
-`buildExportUrl` (confirmed at `searchParams.ts:222`, not a standalone
-`lib/exportUrl.ts` — there's no such file, so `feedUrl.ts` as a
-separate module would be inventing a split that doesn't exist
-anywhere else in `apps/web/src/lib/`). Same signature shape as
-`buildExportUrl` for consistency. Produces
-`/api/v1/feed.rss?role=backend&location=london&...` from current
-filter state.
+**This subtask was written against `apps/web` (a `buildFeedUrl` helper
+in `searchParams.ts`, a `[RSS ↗]` link in the filter rail, an
+auto-discovery `<link>` tag in `layout.tsx`'s `<head>`) — all three
+target files were deleted with `apps/web` on 2026-08-07. None of that
+plan is directly portable; the underlying value it was delivering (make
+`/api/v1/feed.rss?role=...&location=...` easy to construct without
+hand-writing query params) still matters, but the delivery mechanism
+needs a fresh decision, not a file-path relabel.**
 
-Add a `[RSS ↗]` link in the filter rail (spec §10.2 layout), alongside
-the existing `components/export-button.tsx`. Mirror that component's
-actual pattern exactly: `href={buildFeedUrl(filterState)}` computed
-directly on render, no memoization — `export-button.tsx` doesn't use
-`useMemo` (checked; it calls `buildExportUrl(filterState)` plain), so
-don't introduce one here either.
+R.1/R.2 already deliver the actual product value here — a working,
+filterable feed URL is just query params on an existing route, and that
+works today with or without R.3. R.3 was purely about *discoverability*
+for a human who doesn't want to construct the URL by hand.
 
-Add `<link rel="alternate" type="application/rss+xml" href="/api/v1/feed.rss">`
-in `apps/web/src/app/layout.tsx`'s `<head>` (confirmed exact path)
-pointing at the unfiltered feed URL so browsers and feed readers
-auto-discover it.
+Two ways to recover that once `apps/cli` (Milestone F.1) exists,
+neither committed to yet:
 
-Verify: `pnpm --filter @hiring-signals/web typecheck`/`lint`/`build`
-clean; confirm `<link>` tag present in page source.
+1. A `hiring-signals feed-url --role backend --location london` CLI
+   subcommand that prints the constructed URL to stdout (fits the CLI's
+   own JSON-by-default convention if wrapped as `{"url": "..."}`).
+2. Skip it — an agent invoking the CLI on someone's behalf can
+   construct the query string itself from the same filter flags it
+   already uses for `signals list`; a URL-printing subcommand adds a
+   feature only a human copying a link into a feed reader would need,
+   and the target user for this whole product is an agent, not a human
+   subscribing to RSS.
+
+Revisit once F.1 has actually shipped and the CLI's flag surface is a
+known reference to build (1) against, if there's a reason to want it.

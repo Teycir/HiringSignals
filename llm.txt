@@ -1,40 +1,44 @@
 # Hiring Signals Intelligence
 
 ## Project Summary
-Hiring Signals Intelligence is a web dashboard that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
+Hiring Signals Intelligence is a CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
 
 ## Tech Stack
-- **Frontend**: Next.js 16, TypeScript 5.x, Tailwind CSS
+- **Interface**: `apps/cli` (planned, not started) — thin CLI client over `apps/api`, JSON-by-default, built for an AI agent caller rather than a human
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
-- **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5`) + Vectorize (write path only so far)
+- **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5`) + Vectorize (write and query-side hybrid search both live)
 - **Package Manager**: pnpm workspace
-- **Deployment**: Cloudflare Pages (UI) + Cloudflare Workers (API)
+- **Deployment**: Cloudflare Workers (API only — no UI deployment; `apps/web`/Cloudflare Pages was deleted 2026-08-07)
 
 ## Architecture
 ```
-apps/web/        Next.js 16 UI -> Cloudflare Pages (still near-scaffold, no dashboard yet)
+apps/cli/        CLI, primary interface -> planned, not started (decided with the user 2026-08-07);
+                  JSON-by-default, no interactive prompts, thin client over apps/api
+apps/web/        Deleted 2026-08-07. Was a Next.js 16 UI on Cloudflare Pages; removed
+                  entirely (not deprioritized-but-kept) once confirmed it added no
+                  capability apps/api didn't already expose. New interface work lands
+                  in apps/cli/ instead. See ROADMAP.md Milestone F's header note.
 apps/api/        Cloudflare Worker API: routes, cron scheduler, queue consumer,
                   daily reconciliation job, semantic-search service
 packages/domain/ Zod schemas, taxonomies, classification, lifecycle,
                   signal scoring (v2), embedding-text, search-merge
-packages/adapters/ AtsAdapter interface; greenhouse + lever implemented, 9 more P0 pending
+packages/adapters/ AtsAdapter interface; 8 P0 providers implemented (coverage closed at 8,
+                  decided with the user 2026-08-04)
 packages/db/     D1 client + read/write repository functions
 packages/ui/     Optional shared UI primitives
 infrastructure/  D1 migrations (0001-0004) + ops scripts (add-source, update-source,
                   add-company, source-health, backfill-embeddings)
 ```
 
-## Current Status (2026-08-05)
-**Phases 0-1 complete. Milestones A-F, H, L, M, and I.1-I.2 complete. 8 active ATS adapters live. Dashboard UI complete at `/signals` and `/signals/[signalId]`.**
+## Current Status (2026-08-07)
+**Phases 0-1 complete. Milestones A-F, H, L, M, and I.1-I.4 complete. 8 active ATS adapters live. `apps/web` (the dashboard UI these milestones shipped into) was deleted 2026-08-07; `apps/cli` is now the primary interface, planned but not yet started.**
 Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in sync with it.
 
-**Done:**
+**Done (some since removed — see note):**
 - pnpm workspace, strict TypeScript base config, Prettier, shared ESLint base
-- Next.js 16 Minimal Brutalist dashboard UI (`apps/web`): `/signals` feed route with responsive `FilterRail` (roles, company combobox with debounced autocomplete, preset score thresholds, sources, signal types, work modes, recency), `SignalCard` list with cursor pagination, loading/error/empty states, and bi-directional URL state sync
-- Signal Detail view (`/signals/[signalId]`) displaying evidence table, score breakdown (V/A/B), and 7/30/90-day trend blocks
 - Hono Worker with full middleware chain, real cron scheduler, real queue consumer, daily reconciliation cron
-- 8 P0 ATS adapters implemented with fixture-driven tests & location inference: Greenhouse, Lever, Ashby, Recruitee, Breezy, Personio, SmartRecruiters, Workable (Teamtailor, JazzHR, BambooHR marked as standing wont-builds due to unauthenticated API constraints)
+- 8 P0 ATS adapters implemented with fixture-driven tests & location inference: Greenhouse, Lever, Ashby, Recruitee, Breezy, Personio, SmartRecruiters, Workable (coverage closed at 8, decided with the user 2026-08-04)
 - Full D1 schema with indexes, migrations 0001-0004
 - Parameterized D1 client wrapper with read (signals/companies/facets/export) and write (sources/jobs/signals/companies) repositories
 - API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources, /export/signals.csv
@@ -42,22 +46,24 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 - Bulk source onboarding ops script (`infrastructure/scripts/import-sources.mjs`)
 - Security hardening: `safeRateLimitIdentifier()` SHA-256 base64url hashing in `rate-limit.ts` (prevents IPv6 colon injection and scrubs IP PII) and trusted-first IP extraction in `client-ip.ts`
 - Domain lifecycle refinement: 3-day absence threshold (`daysSinceLastSeen >= 3`) before flagging reopened roles
-- Jobs embedded into a Vectorize index at ingest time (semantic search write path); query-side hybrid search service & merge logic implemented
+- Semantic search (Milestone I.1-I.3): jobs embedded into a Vectorize index at ingest time, query-side hybrid search wired live into GET /api/v1/signals
 - Zero-mocks live test infrastructure (`packages/test-support`) against real Cloudflare D1/KV resources
 - All workspace tests passing workspace-wide (`pnpm -r test`); `pnpm -r typecheck`/`pnpm -r lint` clean
 
+**Note on removed work:** Milestone F (dashboard UI: `/signals` feed, `FilterRail`, `SignalCard`, `SignalDetail` view) and Milestone I.4 (search UI: search bar, recent-searches, more-like-this) both shipped inside `apps/web` and are accurately recorded as complete in `CHANGELOG.md`/`ROADMAP.md` — but `apps/web` itself was deleted 2026-08-07. That UI code no longer exists in the repo; the API routes and domain logic it called are still live and unaffected.
+
 **Not yet done:**
-- Query-side hybrid search wiring into live GET /api/v1/signals route, embedding backfill run, search UI (Milestone I.3/I.4)
-- Classification assist from embeddings (I.5, deferred until I.3/I.4 ship)
-- Production deployment (Cloudflare Pages + Workers)
-- No authentication anywhere in this app, by permanent design decision (spec §3/§13.5/§14.1) -- not a gap to fill
+- CLI (`apps/cli`), the new primary interface -- planned, no code yet (ROADMAP.md Milestone F.1, decided with the user 2026-08-07)
+- Classification assist from embeddings (I.5, deferred until I.1-I.4 have run in production)
+- Production deployment (Cloudflare Workers API; no UI to deploy)
+- No authentication anywhere in this app, by permanent design decision (spec §3/§10.5/§11.1) -- not a gap to fill
 
 ## Key Features
 - **Role-level signals**: New matching roles, reopened roles, still active roles
 - **Company-level signals**: Hiring bursts, demand acceleration, multi-location expansion, persistent demand
 - **Evidence trails**: Source platform, canonical public URL, source job identifier, timestamps
 - **Filtering**: By role, location mode, country, source, signal type, score, and company; keyword search on company/headline/summary
-- **Export**: CSV export of filtered signal list (spec §10.6, not yet built)
+- **Export**: CSV export of filtered signal list (`GET /api/v1/export/signals.csv`, spec §10.6, live)
 - **Scheduled ingestion**: Cloudflare Worker cron triggers (15-min source scheduler, daily reconciliation) with adaptive cadence per provider
 
 ## Non-goals for v1
@@ -71,12 +77,12 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 ## Development Commands
 ```bash
 pnpm install
-pnpm --filter @hiring-signals/web dev     # Next.js dev server
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
 pnpm lint                                  # Lint all packages
 pnpm typecheck                            # Type check all packages
 pnpm build                                # Build all packages
 ```
+No `@hiring-signals/web` package exists — `apps/web` was deleted 2026-08-07. Once `apps/cli` (Milestone F.1) exists, its dev command will be added here.
 
 ## Specification
 Full build specification available in `hiring-signals-spec.md` at repo root.

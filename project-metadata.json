@@ -1,6 +1,6 @@
 {
   "name": "Hiring Signals Intelligence",
-  "description": "Web dashboard that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers",
+  "description": "CLI-first tool, built for AI agents, that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers",
   "version": "0.0.0",
   "author": "Teycir Ben Soltane",
   "license": "MIT",
@@ -8,16 +8,15 @@
   "packageManager": "pnpm@11.17.0",
   "nodeVersion": ">=24.18.0",
   "primaryLanguage": "TypeScript",
-  "framework": "Next.js 16",
+  "framework": "none (CLI-first, apps/web deleted 2026-08-07)",
   "backendFramework": "Hono",
   "database": "Cloudflare D1 (SQLite)",
-  "search": "Workers AI (@cf/baai/bge-base-en-v1.5) + Vectorize -- write path (embed-at-ingest) live, query-side hybrid search implemented but not yet wired into GET /api/v1/signals",
+  "search": "Workers AI (@cf/baai/bge-base-en-v1.5) + Vectorize -- write path (embed-at-ingest) and query-side hybrid search both live on GET /api/v1/signals",
   "deployment": {
-    "frontend": "Cloudflare Pages",
     "backend": "Cloudflare Workers"
   },
   "architecture": {
-    "apps/web": "Next.js 16 UI -> Cloudflare Pages (Minimal Brutalist dashboard shell: /signals feed & /signals/[signalId] detail view)",
+    "apps/cli": "CLI, primary interface -> planned, not started (decided with the user 2026-08-07); JSON-by-default, no interactive prompts, thin client over apps/api",
     "apps/api": "Cloudflare Worker API: routes, cron scheduler, queue consumer, daily reconciliation job, semantic-search service, CSV export route (Hono)",
     "packages/domain": "Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge",
     "packages/adapters": "AtsAdapter interface; 8 active ATS adapters (greenhouse, lever, ashby, recruitee, breezy, personio, smartrecruiters, workable)",
@@ -27,13 +26,13 @@
     "infrastructure": "D1 migrations (0001-0004) + ops scripts (add-source, update-source, add-company, source-health, backfill-embeddings, import-sources)"
   },
   "status": {
-    "phase": "Milestones A-F, H, L, M, and I.1-I.2 complete",
-    "phaseDescription": "Full Minimal Brutalist dashboard shell live at /signals and /signals/[signalId]. 8 active ATS adapters live. CSV export and bulk onboarding complete. Ingestion, scoring, reconciliation running end-to-end. Full task-by-task detail in ROADMAP.md.",
-    "asOf": "2026-08-05",
+    "phase": "Milestones A-F, H, L, M, and I.1-I.4 complete",
+    "phaseDescription": "CLI-first: apps/web deleted 2026-08-07 (decided with the user), primary interface is now apps/cli (planned, not started -- see ROADMAP.md Milestone F.1). 8 active ATS adapters live. CSV export and bulk onboarding complete. Ingestion, scoring, reconciliation running end-to-end. Full task-by-task detail in ROADMAP.md.",
+    "asOf": "2026-08-07",
     "completed": [
       "pnpm workspace setup, strict TypeScript base config, Prettier, shared ESLint base",
-      "Next.js 16 Minimal Brutalist dashboard UI (apps/web): /signals feed with FilterRail, SignalCard list, cursor pagination, loading/error/empty states, URL searchParams sync",
-      "Signal Detail view (/signals/[signalId]) displaying evidence table, score breakdown (V/A/B), and 7/30/90-day trend blocks",
+      "Next.js 16 Minimal Brutalist dashboard UI (apps/web): /signals feed with FilterRail, SignalCard list, cursor pagination, loading/error/empty states, URL searchParams sync -- shipped, then apps/web was deleted 2026-08-07 (CLI-first decision); this entry records completed work, the code no longer exists",
+      "Signal Detail view (/signals/[signalId]): shipped inside apps/web, removed with it 2026-08-07 -- see prior entry",
       "Hono Worker with full middleware chain, real cron scheduler, real queue consumer, daily reconciliation cron",
       "role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas",
       "full D1 schema with indexes, migrations 0001-0004",
@@ -48,18 +47,19 @@
       "reopened role lifecycle refinement with 3-day absence threshold (daysSinceLastSeen >= 3)",
       "security hardening: safeRateLimitIdentifier() SHA-256 base64url hashing (rate-limit.ts) and trusted-first IP extraction (client-ip.ts)",
       "Vectorize index (hiring-signals-jobs, 768-dim, cosine) + Workers AI binding provisioned; jobs embedded and upserted at ingest time, best-effort/non-blocking",
-      "query-side semantic-search service and merge logic implemented (apps/api/src/services/semantic-search.ts, packages/domain/src/signal-search-merge.ts)",
+      "query-side semantic-search service and merge logic implemented and wired live into GET /api/v1/signals (apps/api/src/services/semantic-search.ts, packages/domain/src/signal-search-merge.ts)",
+      "search UI (search bar, recent-searches, more-like-this): shipped inside apps/web (Milestone I.4), removed with it 2026-08-07",
       "bulk source onboarding ops script (infrastructure/scripts/import-sources.mjs)",
       "zero-mocks live test infrastructure (packages/test-support) running against real Cloudflare D1/KV resources",
       "all workspace tests passing workspace-wide (pnpm -r test); pnpm -r typecheck and pnpm -r lint clean across all workspaces"
     ],
     "pending": [
-      "query-side hybrid search wiring into GET /api/v1/signals, embedding backfill run, search UI (Milestone I.3/I.4)",
-      "classification assist from embeddings (I.5, explicitly deferred until I.3/I.4 ship)",
-      "production deployment (Cloudflare Pages + Workers)"
+      "apps/cli (Milestone F.1), the new primary interface -- planned, no code yet",
+      "classification assist from embeddings (I.5, explicitly deferred until I.1-I.4 have run in production)",
+      "production deployment (Cloudflare Workers API; no UI to deploy)"
     ],
     "explicitlyNotPlanned": [
-      "authentication of any kind -- the app is public/free permanently by deliberate design decision (spec sections 3, 13.5, 14.1), not a gap awaiting Cloudflare Access or similar"
+      "authentication of any kind -- the app is public/free permanently by deliberate design decision (spec sections 3, 10.5, 11.1), not a gap awaiting Cloudflare Access or similar"
     ]
   },
   "features": {
@@ -79,7 +79,7 @@
       ]
     },
     "filtering": ["by role", "by location mode", "by country", "by source", "by signal type", "by score", "by company", "keyword search on company/headline/summary"],
-    "export": "CSV export of filtered signal list (spec section 10.6, not yet built)",
+    "export": "CSV export of filtered signal list (GET /api/v1/export/signals.csv, spec section 10.6, live)",
     "ingestion": "Cloudflare Worker cron triggers (15-min source scheduler, daily reconciliation) with adaptive cadence per provider"
   },
   "nonGoals": [
@@ -93,7 +93,6 @@
   "commands": {
     "install": "pnpm install",
     "dev": {
-      "web": "pnpm --filter @hiring-signals/web dev",
       "api": "pnpm --filter @hiring-signals/api dev"
     },
     "lint": "pnpm lint",
@@ -186,20 +185,19 @@
     "ats",
     "job-seeker",
     "cloudflare-workers",
-    "nextjs",
     "typescript",
-    "dashboard",
+    "cli",
     "job-monitoring",
     "recruitment"
   ],
   "aiAgentDiscovery": {
     "primaryUseCase": "Job discovery and hiring intelligence platform",
-    "targetAudience": "Job seekers, IT specialists, recruitment researchers",
+    "targetAudience": "Job seekers, IT specialists, recruitment researchers -- specifically AI agents querying on a person's behalf, per apps/cli's design",
     "keyDifferentiators": [
       "Direct ATS API integration",
       "Real-time signal detection",
       "Evidence-based job verification",
-      "Minimal brutalist design",
+      "CLI-first, JSON-by-default, built for agent callers",
       "Pull-only delivery model"
     ],
     "implementationPatterns": [

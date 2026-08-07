@@ -10,7 +10,7 @@
  * fail-closed policy there.
  *
  * Source write-path management (add/edit source) still lives as a local
- * ops script against D1 (infrastructure/scripts/, spec §13.5); admin
+ * ops script against D1 (infrastructure/scripts/, spec §10.5); admin
  * routes only expose the scheduling surfaces as idempotent triggers.
  */
 export interface Bindings {
@@ -41,7 +41,7 @@ export interface Bindings {
   ADMIN_SECRET: string;
 }
 
-/** Per-request context values set by middleware (spec 13.2), e.g. requestId. */
+/** Per-request context values set by middleware (spec 10.2), e.g. requestId. */
 export interface Variables {
   requestId: string;
   /** IP used for rate-limiting / abuse-signal attribution (CF-Connecting-IP, falls back to x-forwarded-for). */

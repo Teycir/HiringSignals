@@ -1,8 +1,7 @@
 # Hiring Signals Intelligence
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
-[![Cloudflare](https://img.shields.io/badge/Cloudflare-Pages-orange?logo=cloudflare)](https://pages.cloudflare.com/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-orange?logo=cloudflare)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-Manager-red?logo=pnpm)](https://pnpm.io/)
 [![D1 Database](https://img.shields.io/badge/D1-Database-FF8C00?logo=cloudflare)](https://developers.cloudflare.com/d1/)
@@ -18,12 +17,12 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 ### Primary Use Case
 
-**Job Discovery & Hiring Intelligence** - A web dashboard that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
+**Job Discovery & Hiring Intelligence** - A CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
 
 ### Target Users
 
 - **Job seekers (IT specialists)**: See genuine, matching, still-open postings as soon as possible after they go live
-- **Passive job seekers**: Maintain saved role/location filters and periodically check a dashboard
+- **Passive job seekers**: Ask their AI assistant to check saved role/location filters periodically via the CLI
 - **Administrators**: Manage source coverage, retention, and system health
 
 | Scenario | What happens without Hiring Signals | What Hiring Signals does |
@@ -65,7 +64,8 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 | Directory | Purpose | Status & Details |
 |-----------|---------|-----------------|
-| `apps/web/` | Next.js 16 UI dashboard | **Complete** → Deploys to Cloudflare Pages. Full signal feed (`/signals`) with filter rail, signal cards, loading/error/empty states. Signal detail page (`/signals/[signalId]`) with evidence table, score breakdown, and trend blocks. App shell + Brutalist design tokens + base primitives all complete. |
+| `apps/cli/` | CLI, primary interface | **Planned, not started** → decided with the user 2026-08-07. The real end-user is an AI agent, not a human typing commands, so it's JSON-by-default, no interactive prompts, machine-readable errors, thin client over `apps/api`'s existing routes. See ROADMAP.md Milestone F.1 for the full spec. |
+| `apps/web/` | *Deleted 2026-08-07* | **Removed, not deprioritized** → the Next.js/Cloudflare Pages dashboard was fully deleted (not left in place) once the CLI-first decision confirmed it added no capability the CLI/API surface didn't already have — every route it called is one of the same 7 `apps/api` endpoints the CLI will use. See ROADMAP.md Milestone F's status note for the deletion rationale. |
 | `apps/api/` | Cloudflare Worker API | **Complete** → Routes, middleware, cron scheduler, queue consumer, reconciliation job, semantic-search service, CSV export route, secret-bearer-token admin triggers. |
 | `packages/domain/` | Core domain logic | **Complete** → Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge logic. |
 | `packages/adapters/` | ATS provider integrations | **8 P0 providers built** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio, breezy. |
@@ -77,12 +77,12 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 ## 🛠 Tech Stack
 
-- **Frontend**: Next.js 16, TypeScript 5.x, Tailwind CSS
+- **CLI**: Node, TypeScript 5.x (planned — not yet scaffolded, see Layout table above)
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
 - **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize (semantic search, write path only -- query path not yet wired into the live route)
 - **Package Manager**: pnpm workspace
-- **Deployment**: Cloudflare Pages (UI) + Cloudflare Workers (API)
+- **Deployment**: Cloudflare Workers (API only — no separate frontend deployment target)
 - **Validation**: Zod schemas
 - **Code Quality**: ESLint, Prettier, strict TypeScript
 
@@ -99,15 +99,14 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 - **Multi-ATS integration**: Official documented ATS API adapters (no scraping) — 8 of 11 P0 providers built
 - **Real-time monitoring**: Scheduled ingestion with adaptive cadence per provider
-- **Filtering**: By role, location, source, signal type, and company (URL-param + UI filter rail live at `/signals`; keyword `q` search on company/headline/summary works today; semantic search is write-path only — see Status)
-- **Dashboard UI**: Full signal feed at `/signals` with paginated cards, filter rail (role/company/score/source/signal-type/work-mode/recency), and loading/error/empty states. Signal detail page at `/signals/[signalId]` with evidence table, score breakdown, trend block.
-- **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; UI export button pending)
+- **Filtering**: By role, location, source, signal type, and company via `GET /api/v1/signals` query params; keyword `q` search on company/headline/summary works today; semantic search is write-path only — see Status. CLI exposure of these filters as flags is planned (Milestone F.1), not yet built.
+- **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; CLI export flag pending)
 - **Bulk onboarding**: CSV import (`import-sources.mjs`) for batch source/company onboarding
 - **Health isolation**: Per-source error isolation prevents cascading failures
 
 ### Design Philosophy
 
-- **Minimal Brutalist**: Strict black/white system, dense information, hard edges
+- **Structured, scriptable output**: JSON by default, no interactive prompts, machine-readable errors — designed for an AI agent caller, not a human clicking through a UI
 - **Pull-only**: No push notifications, email digests, or webhook alerting (v1)
 - **Evidence-based**: Every signal includes verifiable public evidence
 - **Privacy-first**: No personal data collection, no social network scraping
@@ -116,9 +115,10 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 ```bash
 pnpm install
-pnpm --filter @hiring-signals/web dev     # Next.js dev server (dashboard at /signals)
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
 ```
+
+There is no local dev command for the CLI yet — `apps/cli` is planned (Milestone F.1) but not scaffolded. Once it exists, exercise the API locally by calling the wrangler dev origin directly (e.g. `curl localhost:8787/api/v1/signals`).
 
 Ops scripts (run from repo root, requires `nvm use 24.18.0` for wrangler's Node >=22):
 

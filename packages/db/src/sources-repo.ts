@@ -7,7 +7,7 @@ import { isUniqueConstraintError } from "../../../lib/d1/unique-constraint";
  * board_token)` constraint (migration 0001). Framework-agnostic on
  * purpose -- packages/db must not depend on hono (see AGENTS.md "How to
  * work in this repo"). Caught by the local ops source-management script
- * (ROADMAP.md Milestone D, spec §13.5) and printed as a clear message
+ * (ROADMAP.md Milestone D, spec §10.5) and printed as a clear message
  * instead of a raw D1 constraint error -- there is no HTTP admin route
  * to map this to a status code, source management is not a Worker route.
  */
@@ -124,7 +124,7 @@ export interface CreateSourceInput {
  * Inserts a new source. Duplicate `(provider, board_token)` throws
  * DuplicateSourceError instead of letting the raw D1 constraint error
  * surface -- the ops source-management script (ROADMAP.md Milestone D,
- * spec §13.5) catches it and prints a clear message. There is no HTTP
+ * spec §10.5) catches it and prints a clear message. There is no HTTP
  * route in front of this; source management is a local script, not a
  * Worker endpoint.
  *
@@ -175,7 +175,7 @@ export interface UpdateSourcePatch {
 
 /**
  * Partial update for the ops source-management script (enable/disable,
- * change schedule) -- spec §13.5, not an HTTP admin route.
+ * change schedule) -- spec §10.5, not an HTTP admin route.
  * Only touches columns present in `patch` -- callers pass just what
  * changed, same convention as the rest of this repo's write functions.
  * Returns false if no row matched `sourceId` (the script prints a "not
@@ -279,7 +279,7 @@ export async function recordSourceRunStart(
  * the same logical run share one row instead of each attempt creating a
  * new one via recordSourceRunStart's crypto.randomUUID() -- this keeps
  * job_observations' UNIQUE(job_id, source_run_id) idempotency key
- * (migration 0004) meaningful across retries (spec §13.3: "A retry for
+ * (migration 0004) meaningful across retries (spec §10.3: "A retry for
  * the same sourceId + runId must not create duplicate observations").
  *
  * Distinct from recordSourceRunStart above: that function always mints a
@@ -316,7 +316,7 @@ export async function resolveSourceRun(
  * Max length for error_message_safe before truncation. Chosen to be
  * generous enough for a human-readable diagnostic while making it
  * structurally impossible to accidentally paste in a full raw response
- * body (spec §16.1: "never include ... full raw payloads").
+ * body (spec §13.1: "never include ... full raw payloads").
  */
 const ERROR_MESSAGE_SAFE_MAX_LENGTH = 500;
 
@@ -411,7 +411,7 @@ export async function markSourceSuccess(
  * *successful* run that doesn't see the job (jobs-repo.ts).
  *
  * Does not touch next_poll_at here -- the failure-handling branches in
- * the ingest-consumer (ROADMAP.md Milestone D, spec §13.4) decide the
+ * the ingest-consumer (ROADMAP.md Milestone D, spec §10.4) decide the
  * retry/backoff schedule per failure type (429, transient 5xx, config
  * error, etc.) and call updateSource with the resulting next_poll_at
  * themselves, rather than this function guessing a single backoff policy

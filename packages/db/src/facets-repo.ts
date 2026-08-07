@@ -1,6 +1,6 @@
 import type { D1Client } from "./d1-client";
 
-// FacetCount/Facets moved to ./types.ts so type-only consumers (apps/web)
+// FacetCount/Facets moved to ./types.ts so type-only consumers
 // don't pull in D1Client -- see that file's header comment.
 export type { FacetCount, Facets } from "./types";
 import type { Facets } from "./types";

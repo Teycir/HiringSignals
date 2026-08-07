@@ -6,7 +6,7 @@ import { escapeLikePattern } from "../../../lib/d1/like-pattern";
  * Thrown when INSERT into `companies` violates the `slug` UNIQUE
  * constraint (migration 0001). Same pattern as sources-repo.ts's
  * DuplicateSourceError -- caught by the ops source-management script
- * (ROADMAP.md Milestone D open item, spec §13.5) and printed as a clear
+ * (ROADMAP.md Milestone D open item, spec §10.5) and printed as a clear
  * message instead of a raw D1 constraint error; there is no HTTP route
  * to map this to a status code.
  */
@@ -28,7 +28,7 @@ export interface CompanyRow {
   updated_at: string;
 }
 
-// CompanySummary moved to ./types.ts so type-only consumers (apps/web)
+// CompanySummary moved to ./types.ts so type-only consumers (apps/cli)
 // don't pull in D1Client -- see that file's header comment.
 export type { CompanySummary } from "./types";
 import type { CompanySummary } from "./types";
@@ -134,7 +134,7 @@ export interface CreateCompanyInput {
  * instead of letting the raw D1 constraint error surface (same pattern
  * as sources-repo.ts's createSource -- see DuplicateCompanyError above).
  * There is no HTTP route in front of this; company creation is a local
- * ops script, not a Worker endpoint (spec §13.5, same as source
+ * ops script, not a Worker endpoint (spec §10.5, same as source
  * management -- companies and sources are both write-path config, not
  * public-facing mutation surfaces).
  *

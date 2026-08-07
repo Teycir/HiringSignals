@@ -57,7 +57,7 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  *      + write source_run metrics
  *
  * Must be idempotent per (sourceId, runId): a retry must not create
- * duplicate observations or duplicate signals (spec 13.3). The
+ * duplicate observations or duplicate signals (spec 10.3). The
  * idempotency key for job_observations is enforced at the schema level
  * (migration 0004, UNIQUE(job_id, source_run_id)) -- a retried message
  * re-inserting an observation for a (job, run) pair already recorded
@@ -96,7 +96,7 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  *   2. insertObservationIdempotent's entire idempotency contract depends
  *      on catching a UNIQUE(job_id, source_run_id) violation (migration
  *      0004) from ITS OWN statement in isolation and treating it as a
- *      no-op "already recorded" continue (spec §13.3). Put that insert
+ *      no-op "already recorded" continue (spec §10.3). Put that insert
  *      in a batch alongside applyLifecycleTransition's UPDATE and a
  *      legitimate idempotent-retry collision would roll the lifecycle
  *      UPDATE back too -- turning a correct retry into a lost write.
@@ -115,15 +115,15 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  * schema constraint (job_observations), upsertJob's own natural-key
  * upsert semantics, and findActiveSignal's read-before-write pattern for
  * signals -- a retried message re-running this pipeline from the top is
- * safe (spec §13.4 row 6) even without wrapping the sequence in a single
+ * safe (spec §10.4 row 6) even without wrapping the sequence in a single
  * transaction, because each individual write is independently safe to
  * repeat, not because the sequence as a whole is atomic.
  */
 
-/** Max retry attempts before a failure is treated as final (spec §13.4: "e.g. 5"). */
+/** Max retry attempts before a failure is treated as final (spec §10.4: "e.g. 5"). */
 const MAX_RETRY_ATTEMPTS = 5;
 
-/** Capped exponential backoff for transient 5xx/timeout (spec §13.4 row 2). */
+/** Capped exponential backoff for transient 5xx/timeout (spec §10.4 row 2). */
 const BASE_BACKOFF_SECONDS = 30;
 const MAX_BACKOFF_SECONDS = 15 * 60;
 
@@ -162,7 +162,7 @@ function errorMessage(err: unknown): string {
  * Deliberately conservative: only classifies well-known JS "this is a
  * bug in our code" error constructors as non-transient. Everything else
  * (D1 errors, network errors, a plain `Error` thrown by a dependency)
- * is treated as transient and retried, matching spec §13.4 row 6's
+ * is treated as transient and retried, matching spec §10.4 row 6's
  * "D1/KV transient error or any other uncaught failure: retry, preserve
  * idempotency" -- this function only carves out the specific classes the
  * spec's own retry policy was never meant to cover.
@@ -246,7 +246,7 @@ export async function handleIngestMessage(
       adapter = getAdapterForProvider(provider);
     } catch (err) {
       if (err instanceof UnsupportedProviderError) {
-        // 4xx-style configuration issue (spec §13.4 row 3): mark source
+        // 4xx-style configuration issue (spec §10.4 row 3): mark source
         // degraded, no automatic hammering. Not retryable -- the adapter
         // simply doesn't exist yet.
         await finalizeConfigError(
@@ -292,7 +292,7 @@ export async function handleIngestMessage(
       },
     );
 
-    // --- Failure branches per spec §13.4, one branch each (not collapsed) ---
+    // --- Failure branches per spec §10.4, one branch each (not collapsed) ---
 
     if (fetchResult.httpStatus === 429) {
       const retrySeconds = fetchResult.retryAfterSeconds ?? backoffSeconds(attempt);
@@ -335,7 +335,7 @@ export async function handleIngestMessage(
 
     if (fetchResult.httpStatus >= 400) {
       // 4xx configuration issue: mark degraded, no automatic hammering
-      // (spec §13.4 row 3) -- disable further polling until an operator
+      // (spec §10.4 row 3) -- disable further polling until an operator
       // investigates, rather than retrying a request that will keep failing.
       await finalizeConfigError(
         client,
@@ -362,7 +362,7 @@ export async function handleIngestMessage(
     } catch (err) {
       if (err instanceof GreenhouseSchemaError || isAdapterSchemaError(err)) {
         // Schema mismatch: store safe diagnostic, mark adapter warning
-        // (spec §13.4 row 4) -- caught specifically so it never falls
+        // (spec §10.4 row 4) -- caught specifically so it never falls
         // through to a generic failure path.
         await finalizeConfigError(
           client,
@@ -451,7 +451,7 @@ export async function handleIngestMessage(
     // against a live pipeline (code-review P1 finding -- see
     // isProgrammerError's header comment for the full reasoning).
     // Everything else (D1/KV transient error or any other uncaught
-    // failure) retries with idempotency preserved, per spec §13.4 row 6
+    // failure) retries with idempotency preserved, per spec §10.4 row 6
     // -- everything above already uses idempotent writes (ON CONFLICT
     // upsert, UNIQUE-constrained observations), so a retry from the top
     // is safe.
@@ -498,7 +498,7 @@ export async function handleIngestMessage(
 
     if (attempt >= MAX_RETRY_ATTEMPTS) {
       // Retry exhaustion -> persistent failure record for human review
-      // (spec §13.4: "a persistent failure table with a human-review
+      // (spec §10.4: "a persistent failure table with a human-review
       // workflow" -- a source_runs row with status='failed_final' is
       // sufficient for v1, per ROADMAP.md Milestone D).
       try {
@@ -1116,7 +1116,7 @@ interface EmbedJobParams {
  * and MUST NOT throw out of this function. A Workers AI or Vectorize
  * outage means this job stays fully ingested/classified/scored, just not
  * semantically searchable until a later backfill (I.3) picks it up --
- * this is a deliberate asymmetry from spec §13.4's ATS-fetch failure
+ * this is a deliberate asymmetry from spec §10.4's ATS-fetch failure
  * handling (which does retry the whole message), because losing an
  * embedding loses nothing a job already has, while losing an ATS fetch
  * loses the job's data entirely.
@@ -1301,7 +1301,7 @@ async function applyCentroidNudge(
     });
     return nudgedConfidence;
   } catch (error) {
-    // Log-and-continue, never throw: spec §9.4/§21 guardrail -- Vectorize/AI
+    // Log-and-continue, never throw: spec §9.4/§18 guardrail -- Vectorize/AI
     // unreachable during the nudge lookup must never block, retry, or
     // degrade classification. The deterministic classifyJob result this
     // function was called with already stands on its own.
@@ -1365,7 +1365,7 @@ async function processMissingJobs(
  * Insert a job_observation, treating a UNIQUE(job_id, source_run_id)
  * constraint violation (migration 0004) as "already recorded by a prior
  * attempt of this same run" rather than a hard failure -- the idempotency
- * contract spec §13.3 requires. Uses the shared isUniqueConstraintError
+ * contract spec §10.3 requires. Uses the shared isUniqueConstraintError
  * helper (lib/d1/unique-constraint.ts) rather than its own inline regex
  * copy -- code review flagged this as the third of three near-identical
  * copies (the other two, in sources-repo.ts/companies-repo.ts, were
@@ -1414,7 +1414,7 @@ async function finalizeConfigError(
     errorMessageSafe: message,
     durationMs: Date.now() - startTime,
   });
-  // "Mark source degraded" (spec §13.4): disable further automatic
+  // "Mark source degraded" (spec §10.4): disable further automatic
   // polling until an operator investigates via the ops script, rather
   // than repeatedly hammering an endpoint that will keep failing the
   // same way. companyId passed through -- every call site runs inside
@@ -1447,7 +1447,7 @@ async function finalizeRetryable(
 /**
  * Requeues with a Queue-level delay for retryable failures (429, transient
  * 5xx), or gives up and records a final failure once MAX_RETRY_ATTEMPTS is
- * reached -- spec §13.4: "After exhaustion, send to a dead-letter queue or
+ * reached -- spec §10.4: "After exhaustion, send to a dead-letter queue or
  * persistent failure table." A source_runs row with status='failed_final'
  * is the v1 persistent-failure record; a formal dead-letter queue can wait
  * for real failure volume (ROADMAP.md Milestone D).

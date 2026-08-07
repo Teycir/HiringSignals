@@ -302,7 +302,7 @@ export interface InsertJobObservationInput {
 /**
  * One row per (job, source_run) per spec §8.2's job_observations table.
  *
- * Idempotency (spec §13.3): `idx_job_observations_idempotency` (migration
+ * Idempotency (spec §10.3): `idx_job_observations_idempotency` (migration
  * 0004) enforces UNIQUE(job_id, source_run_id) at the schema level, so a
  * retried queue message calling this function twice for the same pair
  * throws a D1 UNIQUE constraint error on the second call instead of
@@ -389,7 +389,7 @@ export async function getJobsMissingFromRun(
 export interface DetectionLatencyStats {
   /** Median minutes between a source_run starting and the FIRST
    * job_observations row it produced for a given job (i.e. the run that
-   * first discovered that job) -- p50 of spec §15's "posting live ->
+   * first discovered that job) -- p50 of spec §12's "posting live ->
    * visible in dashboard" detection-latency metric. `null` when there
    * are zero qualifying samples (e.g. a brand-new source/company with
    * no first-observation history yet). */
@@ -405,7 +405,7 @@ export interface DetectionLatencyStats {
 }
 
 /**
- * Detection-latency percentiles (ROADMAP.md K.2, spec §15's primary
+ * Detection-latency percentiles (ROADMAP.md K.2, spec §12's primary
  * optimization-target metric: "posting live -> visible in dashboard,
  * p50 <= effective per-source pollIntervalMinutes"). Needs no schema
  * change -- entirely derived from `first_seen_at` (jobs), `started_at`
@@ -435,7 +435,7 @@ export interface DetectionLatencyStats {
  * Percentiles computed in SQLite via `PERCENTILE_CONT`-equivalent
  * (SQLite has no native percentile function) using a
  * ROW_NUMBER/COUNT-based nearest-rank approximation over the ordered
- * latency values -- adequate for an ops-visibility metric (spec §16.2),
+ * latency values -- adequate for an ops-visibility metric (spec §13.2),
  * not a statistical guarantee; a few hundred to low-thousands of
  * samples per source is the expected v1 scale, where nearest-rank and
  * true percentile-continuous rarely diverge meaningfully.

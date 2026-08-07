@@ -18,7 +18,7 @@
  * /api/v1/admin/* (spec 13.5a), an operator-only, secret-gated trigger
  * surface guarded instead by its own middleware (adminAuth(), see
  * middleware/admin-auth.ts -- a 3-strike/60s lockout on failed auth
- * attempts, not this file's per-IP request-volume limiter); apps/web
+ * attempts, not this file's per-IP request-volume limiter); apps/cli
  * never calls it and it is never a login a user sees. Source *write*
  * management (add/edit a source) still stays a local ops script
  * against D1, not a Worker route (spec 13.5, see

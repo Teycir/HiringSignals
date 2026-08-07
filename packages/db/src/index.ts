@@ -6,11 +6,11 @@
 
 export * from "./d1-client";
 // Type-only barrel with no D1Client dependency -- consumers that only need
-// SignalListItem/SignalDetail/CompanySummary/Facets (e.g. apps/web, a
-// browser bundle with no D1 binding) should import from
-// "@hiring-signals/db/src/types" directly instead of this root barrel, to
-// avoid tsc resolving d1-client.ts's D1Database-typed internals. See
-// types.ts's header comment.
+// SignalListItem/SignalDetail/CompanySummary/Facets and have no D1
+// binding of their own should import from "@hiring-signals/db/src/types"
+// directly instead of this root barrel, to avoid tsc resolving
+// d1-client.ts's D1Database-typed internals. See types.ts's header
+// comment.
 export * from "./types";
 export * from "./signals-repo";
 export * from "./companies-repo";

@@ -1,16 +1,16 @@
 # Hiring Signals Intelligence — Build Specification
 
-> **Product:** A web dashboard that surfaces genuine, matching IT job postings the moment they appear publicly — built for a job seeker who wants to see the opening before the rest of the crowd does.
+> **Product:** A CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings the moment they appear publicly — built for a job seeker who wants to see the opening before the rest of the crowd does. Decided with the user 2026-08-07: the real end-user is an AI agent invoking the CLI, not a human browsing a UI (see ROADMAP.md Milestone F.1).
 >
-> **Primary outcome:** detect a new, real, still-open job posting that matches the user's saved role/location filters within minutes-to-hours of it going live, and show it with full public evidence. Company-level hiring trends (bursts, acceleration) are kept as secondary context, not the primary product.
+> **Primary outcome:** detect a new, real, still-open job posting that matches the user's saved role/location filters within minutes-to-hours of it going live, and return it with full public evidence. Company-level hiring trends (bursts, acceleration) are kept as secondary context, not the primary product.
 >
-> **Optimization target:** speed-to-signal and long-run reliability over breadth of interpretation. The system is judged on (1) how soon after posting a matching job appears in the dashboard, and (2) how long it runs unattended without breaking or requiring correction — not on how many analytical angles it can compute per company.
+> **Optimization target:** speed-to-signal and long-run reliability over breadth of interpretation. The system is judged on (1) how soon after posting a matching job is queryable via the CLI, and (2) how long it runs unattended without breaking or requiring correction — not on how many analytical angles it can compute per company.
 >
-> **Delivery model:** pull-only. The user opens the dashboard and it is current as of the last successful poll. No push notifications, no email/webhook alerting, no popups. This is a deliberate simplicity choice: every delivery channel is a class of thing that can break silently, and none is worth the fragility for v1.
+> **Delivery model:** pull-only. An agent invokes the CLI and gets results current as of the last successful poll. No push notifications, no email/webhook alerting, no interactive prompts. This is a deliberate simplicity choice: every delivery channel is a class of thing that can break silently, and none is worth the fragility for v1.
 >
-> **Deployment target:** Cloudflare Pages for the Next.js user interface, with Cloudflare Workers for scheduled ingestion and server-side API access.
+> **Deployment target:** Cloudflare Workers for the API and scheduled ingestion; the CLI (`apps/cli`) is a thin Node client over that API, run locally or invoked by an agent.
 >
-> **Design direction:** Minimal Brutalist — strict black/white system, dense information, hard edges, visible grid, monospace data, one accent color used only for intentional actions and high-priority states.
+> **Design direction (API/CLI):** structured output by default (JSON), no interactive prompts, machine-readable errors, deterministic and scriptable — the same priorities as any tool built for a caller that can't respond to a stdin prompt.
 
 ---
 
@@ -27,7 +27,7 @@ The application converts public job-board changes into a role-level feed: "this 
 | User                                   | Job to be done                                                                                                                   | Priority |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------: |
 | Job seeker (IT specialist)             | See genuine, matching, still-open postings as soon as possible after they go live, with enough evidence to trust and act on them |       P0 |
-| Job seeker, passive                    | Maintain saved role/location filters and periodically check a dashboard without needing to actively job-search daily             |       P0 |
+| Job seeker, passive                    | Ask their AI assistant to check saved role/location filters periodically via the CLI, without needing to actively job-search daily | P0 |
 | Administrator (may be the same person) | Manage source coverage, retention, and system health so ingestion keeps running without manual correction                        |       P1 |
 
 _B2B sales/recruiting use of company-level signals is retained as a secondary, lower-priority audience (see §1.4) — it reuses the same ingestion pipeline but is not the product's design center._
@@ -37,7 +37,7 @@ _B2B sales/recruiting use of company-level signals is retained as a secondary, l
 - No collection of private profiles, contact data, or personal data from social networks.
 - No bypassing logins, CAPTCHAs, rate limits, robots directives, or anti-bot controls — speed is pursued through polling frequency and source breadth, never through evasive fetching. A source that requires evasion is disabled, not defeated.
 - No general-purpose HTML scraping of arbitrary career pages. Coverage growth is spent on adding more _official, documented ATS APIs_, not on scraping fragile rendered pages — scraping is the more brittle path and works directly against the "set and forget, nothing breaks" requirement.
-- No push notifications, email digests, or webhook alerting in v1. The dashboard is pull-only; see the delivery model above.
+- No push notifications, email digests, or webhook alerting in v1. The CLI is pull-only; see the delivery model above.
 - No automated sending of cold email, LinkedIn messages, or enrichment of individuals.
 - No claims that a job posting represents a confirmed project, budget, or purchasing decision.
 - No real-time stream guarantee; freshness is scheduled and source-dependent, but the schedule should be tight enough that "scheduled" and "real-time-ish" are not far apart in practice (see §5.2).
@@ -70,19 +70,19 @@ Every signal shown to users must retain an evidence trail: source platform, cano
 2. Normalize companies, jobs, locations, and IT role categories.
 3. Detect new-matching-role and reopened-role signals at the role level (primary); detect burst/acceleration at the company level (secondary context).
 4. Persist snapshots and signal events in Cloudflare D1.
-5. Display a searchable, filterable dashboard, pull-only, refreshed on visit.
+5. Provide a searchable, filterable signal list via the CLI (`hs signals list`), pull-only, current as of the last successful poll.
 6. Filter by **role** and **location** as the primary axes for the job-seeker feed; filter by **company** as a secondary lens.
-7. Provide a signal-detail drawer/page with public evidence links.
+7. Provide a signal-detail command (`hs signals get <id>`) with public evidence links.
 8. Provide CSV export of the currently filtered signal list.
 9. Run scheduled ingestion via Cloudflare Worker cron triggers, on a **tight, per-provider adaptive cadence** (see §5.2) — this is the core lever for detection speed and is P0, not a later optimization.
-10. The app itself has no login and is free/public for anyone to use — no authentication step in front of it, ever (see §13.5/§14.1).
-11. Per-source health isolation: one broken/degraded adapter must never affect ingestion of any other source (see §13.4) — required for "set and forget" at a tighter polling cadence.
+10. The app itself has no login and is free/public for anyone to use — no authentication step in front of it, ever (see §10.5/§11.1).
+11. Per-source health isolation: one broken/degraded adapter must never affect ingestion of any other source (see §10.4) — required for "set and forget" at a tighter polling cadence.
 
 ### 2.2 P1
 
-- Saved role/location filter profiles (no alerting attached — just a saved dashboard view).
+- Saved role/location filter profiles (no alerting attached — just a saved CLI query).
 - Company watchlists.
-- Source-health interface as a local ops script (§13.5), not an in-app admin page.
+- Source-health interface as a local ops script (§10.5), not an in-app admin page.
 - Manual company/source onboarding from a CSV.
 - Role taxonomy editor and title-rule review queue.
 - Change log showing why a signal or score changed.
@@ -101,32 +101,26 @@ Every signal shown to users must retain an evidence trail: source platform, cano
 
 ### 3.1 Recommended topology
 
-Use a split deployment rather than placing long-running ingestion inside a Next.js request:
+Use a split deployment: the CLI never does long-running ingestion itself.
 
 ```text
-Browser
+Agent / person's terminal
   │
-  ├── HTTPS ──> Cloudflare Pages
-  │              Next.js 16 UI, statically generated where possible
-  │
-  └── HTTPS ──> Cloudflare Worker API /api/*
-                  ├── D1: canonical data, snapshots, signals, users
-                  ├── KV: cached filter metadata, rate-limit counters,
-                  │      and TTL-based raw source-response archive
-                  ├── Queues: ingestion jobs and retry isolation
-                  └── Cron Trigger: schedules discovery / reconciliation
+  └── invokes ──> CLI (apps/cli, thin Node client)
+                    │
+                    └── HTTPS ──> Cloudflare Worker API /api/*
+                                    ├── D1: canonical data, snapshots, signals
+                                    ├── KV: cached filter metadata, rate-limit counters,
+                                    │      and TTL-based raw source-response archive
+                                    ├── Queues: ingestion jobs and retry isolation
+                                    └── Cron Trigger: schedules discovery / reconciliation
 ```
 
 ### 3.2 Why this split is required
 
-Cloudflare Pages should serve the application frontend. The scheduled ingestion service should be a dedicated Worker, because it needs cron execution, durable storage bindings, retries, rate limiting, and isolation from browser traffic. Next.js is used for UI composition, routing, metadata, and client interactions; it is **not** the authority for secrets or source crawling.
+The scheduled ingestion service must be a dedicated Worker, because it needs cron execution, durable storage bindings, retries, rate limiting, and isolation from the CLI's request/response cycle. The CLI is used for composition of queries and results, not for crawling or holding secrets.
 
-Use either of these UI delivery modes after confirming current adapter compatibility during implementation:
-
-1. **Preferred for the MVP:** statically export the Next.js application and deploy it to Pages. Browser calls the versioned Worker API. This has the least runtime coupling.
-2. **If SSR is truly needed:** use the currently supported OpenNext Cloudflare adapter and deploy the Next runtime as a Cloudflare Worker. Do not assume legacy `next-on-pages` supports the chosen Next.js version. Keep ingestion as its own Worker regardless.
-
-The delivery requirement remains: the public UI is deployed to Cloudflare Pages. A separate Worker is an intentional backend component.
+The delivery requirement remains: the CLI is a thin client, and a separate Worker owns ingestion, storage, and business logic. This keeps exactly one source of truth for business logic instead of duplicating it into the CLI (decided with the user 2026-08-07).
 
 ### 3.3 Monorepo layout
 
@@ -135,16 +129,10 @@ Use `pnpm` workspaces and TypeScript with strict mode enabled.
 ```text
 hiring-signals/
 ├── apps/
-│   ├── web/                         # Next.js 16 + Tailwind UI -> Pages
-│   │   ├── app/
-│   │   │   ├── page.tsx
-│   │   │   ├── signals/page.tsx
-│   │   │   ├── signals/[signalId]/page.tsx
-│   │   │   ├── companies/[slug]/page.tsx
-│   │   │   └── admin/page.tsx
-│   │   ├── components/
-│   │   ├── lib/api-client.ts
-│   │   └── next.config.ts
+│   ├── cli/                         # CLI, primary interface (decided with the user 2026-08-07)
+│   │   ├── src/commands/
+│   │   ├── src/lib/api-client.ts
+│   │   └── package.json
 │   └── api/                         # Cloudflare Worker, Hono recommended
 │       ├── src/index.ts
 │       ├── src/routes/
@@ -155,7 +143,7 @@ hiring-signals/
 │   ├── domain/                      # Zod schemas, types, scoring constants
 │   ├── adapters/                    # ATS adapter interface and implementations
 │   ├── db/                          # migrations and query helpers
-│   └── ui/                          # optional shared presentational primitives
+│   └── ui/                          # optional shared presentational primitives (not yet scaffolded)
 ├── infrastructure/
 │   ├── d1/migrations/
 │   └── scripts/
@@ -168,9 +156,7 @@ hiring-signals/
 
 | Area                           | Choice                                      | Reason                                                                                                                                                 |
 | ------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| UI                             | Next.js 16, App Router, TypeScript          | Requested framework; strong routing and component model                                                                                                |
-| Styling                        | Tailwind CSS, CSS variables                 | Fast implementation of deliberate visual tokens                                                                                                        |
-| Component state                | URL search parameters + React state         | Filters are shareable and back-button safe                                                                                                             |
+| CLI                             | Node.js, TypeScript                        | Thin client over the Worker API; JSON-by-default, no interactive prompts (decided with the user 2026-08-07)                                            |
 | Validation                     | Zod                                         | Validate all API boundaries and source payloads                                                                                                        |
 | API                            | Cloudflare Worker + Hono or native `fetch`  | Lightweight, Workers-native, typed middleware                                                                                                          |
 | Primary database               | Cloudflare D1                               | Relational joins and filtering fit signals/jobs well                                                                                                   |
@@ -180,12 +166,12 @@ hiring-signals/
 
 The product is public and free to use: no login, no accounts, no
 per-user access control. Every data endpoint (`/api/v1/signals`,
-`/api/v1/companies`, `/api/v1/facets`, the dashboard itself) is reachable
+`/api/v1/companies`, `/api/v1/facets`) is reachable
 by anyone, unauthenticated, as its permanent operating mode -- not a
 temporary demo posture ahead of an auth rollout. Source management
 (adding/editing ATS sources, triggering a manual ingestion run, viewing
 source health) is an operator task done directly against D1 via a local
-script, not an HTTP surface exposed by the deployed Worker -- see §13.5.
+script, not an HTTP surface exposed by the deployed Worker -- see §10.5.
 
 ---
 
@@ -209,7 +195,7 @@ All P0 sources are official, documented ATS APIs. Breadth of coverage is pursued
 
 Adding a new provider is a small, well-scoped unit of work precisely because every adapter obeys the same contract (§5.3): confirm the endpoint is public and documented, write the Zod schema for its payload shape, write the normalizer, write fixture tests. There is no legal-review gate blocking onboarding a new official API adapter in v1 — the trade-off in §1.3/§2.1 accepts that posture deliberately in exchange for speed of coverage. The technical courtesies in §4.3 (rate limits, `User-Agent`, backoff) remain mandatory regardless — they are what keeps a source from banning the product, which is a robustness requirement, not a legal one.
 
-**If a provider's public API becomes unreliable, unstable, or disappears, disable that one adapter and show its source as degraded/disabled in the health page (§16.2).** Never fall back to scraping that provider's rendered pages to compensate — a disabled source that clearly says so is more reliable, long-run, than a scraped one that silently breaks.
+**If a provider's public API becomes unreliable, unstable, or disappears, disable that one adapter and show its source as degraded/disabled in the ops health script output (§13.2).** Never fall back to scraping that provider's rendered pages to compensate — a disabled source that clearly says so is more reliable, long-run, than a scraped one that silently breaks.
 
 ### 4.2 Source registry is curated, not discovered by uncontrolled crawling
 
@@ -235,7 +221,7 @@ The system needs an explicit registry of company job-board identities:
 Initial registry population options:
 
 1. Administrator imports a vetted CSV of target companies and known ATS board tokens.
-2. Administrator adds sources in an internal UI.
+2. Administrator adds sources via a local ops script (`infrastructure/scripts/add-source.mjs`).
 3. A future discovery tool may propose candidates, but must require human review before polling.
 
 This avoids unreliable company matching and prevents indiscriminate web collection.
@@ -251,7 +237,7 @@ This avoids unreliable company matching and prevents indiscriminate web collecti
 - Do not circumvent access restrictions; immediately disable adapters returning anti-bot/CAPTCHA responses.
 - Store the minimum raw data needed for debugging. Avoid storing applicant data even if accidentally present.
 - Retain raw payloads for $30$ days by default; retain normalized business records per product retention policy.
-- Show source attribution and a link to the canonical job post in the UI.
+- Show source attribution and a link to the canonical job post in the output.
 
 ### 4.4 Secrets and public configuration
 
@@ -261,8 +247,8 @@ No API credential belongs in browser code, static environment variables, Git his
 | ------------------------------------------------------- | ----------------------------------------- | -------------------------- |
 | Worker secrets, webhook signing keys, CRM OAuth secrets | Cloudflare Worker secrets                 | Server only                |
 | Database/KV/Queue bindings                              | `wrangler.toml` binding references        | Worker runtime only        |
-| `NEXT_PUBLIC_API_BASE_URL`                              | Pages environment variable                | Public by design; URL only |
-| Feature flags with no sensitive value                   | Pages public build env or Worker config   | May be public              |
+| `HIRING_SIGNALS_API_BASE_URL`                            | CLI env var or `--api-base` flag          | Public by design; URL only |
+| Feature flags with no sensitive value                   | Worker config                             | May be public              |
 
 Use `wrangler secret put NAME` for secrets. Use `.dev.vars` only locally and add it to `.gitignore`. Validate server environment values at Worker startup with Zod, but never return validation detail containing secret names/values to clients.
 
@@ -282,7 +268,7 @@ Cron event
   → upsert jobs and insert observations
   → compute state transitions / signals
   → write raw response pointer and source-run metrics
-  → cache dashboard summary invalidation
+  → cache facets summary invalidation
 ```
 
 ### 5.2 Scheduling — cadence is computed from the Cloudflare free-tier budget, not guessed
@@ -291,10 +277,10 @@ The whole point of this rework is detection latency, so cadence should be as tig
 
 | Resource                   | Free-tier daily allowance                                       | What consumes it here                                                                                                    |
 | -------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Workers requests           | $100{,}000$/day                                                 | Cron fires + Queue consumer invocations + every dashboard page view/API call                                             |
+| Workers requests           | $100{,}000$/day                                                 | Cron fires + Queue consumer invocations + every CLI invocation/API call                                                  |
 | Queues operations          | $10{,}000$/day (send + receive + delete combined)               | One enqueue + one dequeue per source-fetch attempt, plus retries                                                         |
 | D1 rows written            | $100{,}000$/day                                                 | Job upserts, observation inserts, signal inserts                                                                         |
-| D1 rows read               | $5{,}000{,}000$/day                                             | Dashboard queries — not the binding constraint here                                                                      |
+| D1 rows read               | $5{,}000{,}000$/day                                             | Read-path queries (signals/companies/facets) — not the binding constraint here                                          |
 | Cron Triggers              | $3$ per Worker, $5$ per account, $1$-minute minimum granularity | The scheduler itself; cheap regardless of frequency since it only enqueues, it doesn't fetch                             |
 | Subrequests per invocation | $50$/invocation (Free)                                          | Caps how many boards one Queue consumer invocation can fetch before it must stop and let the next message batch continue |
 
@@ -315,9 +301,9 @@ where $N_{\text{sources}}$ is the number of enabled sources and $T$ is the per-s
 
 Rules that follow from this:
 
-- **Cadence is a computed, monitored value, not a fixed constant in code.** The Worker must track $N_{\text{sources}}$ (count of enabled sources) and the rolling daily Queues operation count, and the admin health page (§16.2) must surface both alongside the currently effective interval. If actual usage approaches 85% of the daily Queues or D1-write allowance, the system should widen the interval automatically rather than silently start failing enqueues — this is what keeps "set and forget" true as source count grows over time.
+- **Cadence is a computed, monitored value, not a fixed constant in code.** The Worker must track $N_{\text{sources}}$ (count of enabled sources) and the rolling daily Queues operation count, and the admin health page (§13.2) must surface both alongside the currently effective interval. If actual usage approaches 85% of the daily Queues or D1-write allowance, the system should widen the interval automatically rather than silently start failing enqueues — this is what keeps "set and forget" true as source count grows over time.
 - **Default at MVP launch (assume ~100–150 seed sources): 60–90 minutes per source**, computed from the table above rather than picked arbitrarily. This is already a large improvement over the original 6-hour default and is the honest, sustainable version of "minutes-to-hours" on a free-tier budget.
-- **If the user is willing to move to the $5/month Workers Paid plan, cadence can drop substantially** (no daily request cap, Queues/D1 paid allowances are far larger) — worth flagging as a low-cost upgrade path if true near-real-time detection becomes the priority later. This is not required for v1 but should be a documented, easy switch (see §22 open decisions).
+- **If the user is willing to move to the $5/month Workers Paid plan, cadence can drop substantially** (no daily request cap, Queues/D1 paid allowances are far larger) — worth flagging as a low-cost upgrade path if true near-real-time detection becomes the priority later. This is not required for v1 but should be a documented, easy switch (see §19 open decisions).
 - No separate "high-priority watchlist" tier at a tighter cadence in v1 — a second tier doubles the moving parts (two schedules to keep within budget, two things that can silently drift) for a benefit that a single well-computed default already delivers. Reconsider only after the single-tier system has run unattended and clean for a while.
 - Reconciliation: once daily, re-check jobs considered active but not seen recently, on the same Queues/D1 budget (accounted for in the 70% margin above).
 - Source health check: once daily for all enabled sources, folded into the same budget.
@@ -382,7 +368,7 @@ A listing state is based on repeated observations, not a single missing fetch.
 | Job returns after closure                                    | mark `active`, emit `reopened_job` candidate    |
 | Source run fails                                             | do not alter missing counts                     |
 
-The exact thresholds must be configuration, not hard-coded. The UI must not show a “closed” assertion when source availability is uncertain.
+The exact thresholds must be configuration, not hard-coded. The API/CLI must not show a “closed” assertion when source availability is uncertain.
 
 ---
 
@@ -403,7 +389,7 @@ P0 role categories:
 - ERP / Business Systems
 - AI / Machine Learning
 
-A job can map to multiple categories with confidence levels. For dashboard filtering, use the highest-confidence primary category plus optional secondary tags.
+A job can map to multiple categories with confidence levels. For filtering, use the highest-confidence primary category plus optional secondary tags.
 
 ### 6.2 Classification approach
 
@@ -499,15 +485,15 @@ Requirements:
 - Store every component score, formula version, and inputs in `signal_evidence`.
 - Scores must be recomputable from persisted observations.
 - Never hide low-confidence evidence; label it clearly.
-- A user should be able to answer “why is this ranked $82$?” from the detail screen.
+- A user should be able to answer “why is this ranked $82$?” from the signal detail output.
 
 ### 7.3 Deduplication
 
-Prevent the dashboard from counting the same opening repeatedly.
+Prevent the system from counting the same opening repeatedly.
 
 1. **Hard duplicate:** same `$source_id + external_job_id$` — upsert one job.
 2. **Likely duplicate within a company:** same normalized title, same location mode/location, and same requisition identifier if available.
-3. **Similar jobs:** preserve separately when source IDs differ, but group in the interface as “$3$ similar openings” when title similarity and department match exceed a threshold.
+3. **Similar jobs:** preserve separately when source IDs differ, but group in output as “$3$ similar openings” when title similarity and department match exceed a threshold.
 4. Do not deduplicate across companies unless an administrator has marked a parent/subsidiary relationship.
 
 ---
@@ -655,7 +641,7 @@ Retention settings must be centralized, documented, and automated with scheduled
 
 - Base path: `/api/v1`.
 - All responses use JSON and have a stable envelope.
-- All data endpoints are public and unauthenticated (§14.1) — no auth check anywhere in the request path.
+- All data endpoints are public and unauthenticated (§11.1) — no auth check anywhere in the request path.
 - Return `requestId` in success and error responses.
 - Cursor pagination for signal lists; do not use offset pagination on large tables.
 - Validate query parameters using Zod.
@@ -696,12 +682,12 @@ Error envelope:
 listing (source, provider, company) alongside the table above, same
 rate-limit tier as every other route here.
 
-`/api/v1/admin/*` (spec §13.5a) is the one exception: an
-**operator-only, secret-gated** surface, never reachable from `apps/web`
-or any user-facing flow, and never a login a user sees. It exists to
+`/api/v1/admin/*` (spec §10.5a) is the one exception: an
+**operator-only, secret-gated** surface, never reachable from any
+user-facing flow, and never a login a user sees. It exists to
 trigger the same pipelines the cron already runs (source ingest,
 scheduler flush, reconciliation) without shell access to `wrangler`; it
-creates no capability the local ops scripts (§13.5) don't already have,
+creates no capability the local ops scripts (§10.5) don't already have,
 and it never touches read-path data or pricing — the product has no
 paywall, full stop. Source *write* management (add/edit a source) still
 lives only as a local ops script, not this route or any other.
@@ -759,7 +745,7 @@ until this section is promoted out of draft status.
    additional, optional input to §6.2's classification confidence
    scoring, never a replacement for it.
 
-**Guardrail (binding on both capabilities, restated from §21):**
+**Guardrail (binding on both capabilities, restated from §18):**
 _"Do not use a generic 'AI classifier' where deterministic rules are
 enough. Make any model-assisted classification opt-in, server-side,
 auditable, and non-blocking."_ Concretely for this feature:
@@ -778,7 +764,7 @@ auditable, and non-blocking."_ Concretely for this feature:
   and the job proceeds fully classified/scored/persisted through the
   existing deterministic path — it is never a reason to fail, retry, or
   degrade the ingestion pipeline (contrast with an ATS-fetch failure,
-  which does retry per §13.4; embedding failure does not lose the job,
+  which does retry per §10.4; embedding failure does not lose the job,
   only the job's searchability-by-meaning until a later backfill).
 - Both capabilities are read-path / search-time and post-classification
   by construction — neither one can move earlier than "the job already
@@ -802,13 +788,13 @@ in scope for the initial build).
 **Non-goals for this addendum:**
 
 - Embedding backfill specifically stays a local ops script calling
-  Workers AI/Vectorize directly (§13.5's pattern), not a new admin
+  Workers AI/Vectorize directly (§10.5's pattern), not a new admin
   route added just for this feature — I.3's backfill doesn't need
-  `/api/v1/admin/*`'s pipeline-trigger capability (§13.5a) and
-  shouldn't grow the admin surface's scope beyond what §13.5a already
+  `/api/v1/admin/*`'s pipeline-trigger capability (§10.5a) and
+  shouldn't grow the admin surface's scope beyond what §10.5a already
   documents. This is a scoping note for I.3, not a blanket ban on
   admin routes generally — that ban was narrowed to a documented
-  exception in §13.5a; read that section for the current rule.
+  exception in §10.5a; read that section for the current rule.
 - No change to what evidence is required to display a signal (§1.4's
   closing paragraph) — a semantically-matched result still needs the
   full evidence trail like every other signal; semantic matching only
@@ -821,244 +807,9 @@ in scope for the initial build).
 
 ---
 
-## 10. Dashboard UX specification
+## 10. Worker implementation requirements
 
-### 10.1 Route map
-
-| Route                 | Purpose                                 |
-| --------------------- | --------------------------------------- |
-| `/`                   | Landing/dashboard redirect or overview  |
-| `/signals`            | Main dense signal feed                  |
-| `/signals/[signalId]` | Deep-linkable signal evidence view      |
-| `/companies/[slug]`   | Company-level timeline and active roles |
-
-There is no `/admin` route in the deployed app. Adding/editing sources,
-triggering a manual ingestion run, and viewing source health are
-operator tasks run as a local script against D1
-(`infrastructure/scripts/`), not a page in this app — see §13.5/§14.1,
-which already settle this as the permanent access model, not a
-temporary posture.
-
-### 10.2 Main dashboard layout
-
-Desktop grid uses a hard, editorial structure:
-
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│ HIRING//SIGNALS                 LAST SYNC 07:15 UTC     [EXPORT CSV] │
-├───────────────┬─────────────────────────────────────────────────────┤
-│ FILTERS       │  126 ACTIVE SIGNALS                                  │
-│               ├─────────────────────────────────────────────────────┤
-│ ROLE          │  [82] ACME CORP            NEW JOB / SECURITY       │
-│ □ Security    │  Senior Detection Engineer · Remote US              │
-│ □ Cloud       │  OBSERVED 2H AGO · GREENHOUSE · [VIEW EVIDENCE →]   │
-│               ├─────────────────────────────────────────────────────┤
-│ COMPANY       │  [76] NORTHSTAR SYSTEMS   HIRING BURST / DEVOPS     │
-│ [search____]  │  4 new roles in 14d · London / Remote               │
-│               │  OBSERVED 5H AGO · LEVER · [VIEW EVIDENCE →]        │
-│ SCORE ≥ 60    ├─────────────────────────────────────────────────────┤
-│               │  ...                                                │
-└───────────────┴─────────────────────────────────────────────────────┘
-```
-
-- Desktop: fixed filter rail of $280$–$320$ px and fluid content column.
-- Signal feed: a single dense column at tablet widths; optional two-column masonry is **not** recommended because chronological scanning and keyboard navigation matter.
-- Mobile: filter rail becomes a full-width `<details>` / sheet control above results.
-- Filter changes update URL parameters and results without a full page reload.
-
-### 10.3 Signal card requirements
-
-Each row/card must show:
-
-1. Score badge, $0$–$100$.
-2. Company name and optional company domain.
-3. Signal type label.
-4. Role category and primary job title or aggregate count.
-5. Location / work mode if available.
-6. “Observed” time, never an invented posting time.
-7. Source platform label.
-8. One clear CTA: `VIEW EVIDENCE →`.
-9. A source link in the detail view, clearly labeled `OPEN PUBLIC JOB POST ↗`.
-
-Do not overload cards with descriptions. Use the details panel/page for evidence and role history.
-
-### 10.4 Filtering behavior
-
-#### Role
-
-- Multi-select checkbox list using the canonical role taxonomy.
-- Include counts for active matching signals.
-- Selected roles compose with `OR`; all different filter groups compose with `AND`.
-
-#### Company
-
-- Typeahead starts after $2$ characters.
-- Search company display names, aliases, and domains.
-- Selecting a company uses its canonical slug in the URL.
-- The filter supports exactly one company in MVP; multi-company selection is P1.
-
-#### Additional P0 filters
-
-- Score: $0$–$100$ range / preset thresholds.
-- Observed: $24$ hours, $7$ days, $30$ days, custom date.
-- Work mode: remote, hybrid, onsite, unknown.
-- Source provider.
-- Signal type.
-
-#### URL example
-
-```text
-/signals?roles=cybersecurity,cloud_platform_devops_sre&company=acme-corp&minScore=60&since=7d
-```
-
-### 10.5 Signal detail
-
-A direct route plus optional side panel on wide screens. Must include:
-
-- Company header and outbound company domain link if known.
-- Score and plain-language breakdown.
-- Exact signal rule and detection time.
-- Evidence table with job title, source, observed time, location, status, and public URL.
-- Trend block: active matching roles over $7$, $30$, and $90$ days.
-- Data limitations note: “Based on publicly available job-board information; listing status may change.”
-- Copyable outreach research prompt, not a fabricated personalized message.
-
-### 10.6 Empty, loading, and error states
-
-| State            | Required copy / behavior                                   |
-| ---------------- | ---------------------------------------------------------- |
-| First load       | Skeleton rows preserve dense layout                        |
-| No filters match | “NO SIGNALS MATCH THIS QUERY.” plus `RESET FILTERS` CTA    |
-| No data yet      | Explain the monitored-source scope, not “no hiring exists” |
-| Source stale     | Show “Source last confirmed $X$ ago” in detail             |
-| API error        | Compact error panel with retry, no raw stack trace         |
-
----
-
-## 11. Visual system — Minimal Brutalist
-
-### 11.1 Principles
-
-- Content and evidence outrank decoration.
-- Hard borders, visible separators, no floating translucent panels.
-- No gradients, glassmorphism, drop shadows, rounded “pill” interfaces, or stock illustrations.
-- Small typography can be dense but must remain readable and accessible.
-- Accent color is scarce: it means action, selection, or high urgency only.
-
-### 11.2 Tokens
-
-```css
-:root {
-  --ink: #000000;
-  --paper: #ffffff;
-  --muted: #e8e8e8;
-  --soft-ink: #5a5a5a;
-  --accent: #dfff00; /* acid chartreuse: CTAs, selected controls, score >= 80 */
-  --danger: #000000; /* use copy/icon shape, not a second color */
-  --border: 2px solid var(--ink);
-  --border-thin: 1px solid var(--ink);
-  --radius: 0px;
-}
-```
-
-The sole accent must be checked for contrast when used with black text. Use it as a background only with black foreground. Do not use it for body copy on white.
-
-### 11.3 Typography
-
-- Display / navigation: `Arial`, `Helvetica Neue`, or system sans-serif, weight $700$–$900$, uppercase selectively.
-- Data points: `ui-monospace`, `SFMono-Regular`, `Menlo`, `Monaco`, `Consolas`, monospace fallback.
-- Base font size: $16$ px minimum.
-- Data labels: $11$–$12$ px with enough line-height.
-- Avoid loading a font merely for aesthetics unless performance and licensing are approved.
-
-### 11.4 Component rules
-
-| Component   | Specification                                                                                               |
-| ----------- | ----------------------------------------------------------------------------------------------------------- |
-| Button      | Rectangular, black border, bold uppercase; primary has chartreuse fill; hover inverts foreground/background |
-| Input       | White, $2$ px black border, square corners, explicit label above                                            |
-| Checkbox    | Native or visibly custom but keyboard-operable; selected uses chartreuse                                    |
-| Card / row  | White background, black separators, no shadow, $12$–$16$ px internal padding                                |
-| Score block | Monospace, black fill / white text for normal; chartreuse fill / black text for score $\geq 80$             |
-| Tag         | Prefer plain text labels with separators; no rounded pills                                                  |
-| Table       | Strong column headers, horizontal overflow on narrow screens, sticky header when useful                     |
-| Link        | Underline by default or clear arrow suffix; external links show `↗`                                         |
-
-### 11.5 Accessibility
-
-- Meet WCAG $2.2$ AA contrast requirements.
-- Use semantic landmarks: `header`, `nav`, `main`, `aside`, `section`.
-- Every filter input has a persistent text label.
-- Keyboard focus is unmistakable: $3$ px solid black outline with offset; never rely only on color.
-- Focus order must follow visual order.
-- Do not rely on hover for evidence or actions.
-- Respect `prefers-reduced-motion`; transitions under $150$ ms and non-essential.
-- Tables/cards should have accessible names and descriptive status text.
-- Test at $200\%$ zoom and $320$ CSS-pixel width.
-
----
-
-## 12. Next.js implementation requirements
-
-### 12.1 Setup
-
-```bash
-pnpm create next-app@latest apps/web --ts --tailwind --eslint --app --src-dir
-```
-
-Implementation notes:
-
-- Use Next.js App Router.
-- Use server components for static shell and route metadata where compatible with Pages delivery.
-- Use client components only for interactive filters, autocomplete, and export controls.
-- Keep API calls in `apps/web/src/lib/api-client.ts`; do not call ATS providers from the web application.
-- Configure a public API base URL through `NEXT_PUBLIC_API_BASE_URL`; it is not a secret.
-- Add a strict Content Security Policy appropriate to the deployed origin and required API origin.
-- Use `next/image` only after configuring allow-listed remote patterns. Do not permit arbitrary image hosts.
-
-### 12.2 State model
-
-The URL is the source of truth for dashboard filters. On initial render:
-
-1. Parse and validate search parameters.
-2. Render selected filters.
-3. Fetch matching signal data.
-4. Update filters with `router.replace` or `router.push` according to intentional history semantics.
-5. Cancel stale client requests when filters change rapidly.
-
-Debounce free-text company search at approximately $250$ ms. Do not debounce checkbox/filter application if it would make state unclear.
-
-### 12.3 UI components
-
-```text
-components/
-├── app-shell.tsx
-├── masthead.tsx
-├── filter-rail.tsx
-├── role-filter.tsx
-├── company-combobox.tsx
-├── score-filter.tsx
-├── signal-feed.tsx
-├── signal-card.tsx
-├── signal-detail.tsx
-├── evidence-table.tsx
-├── score-breakdown.tsx
-├── status-line.tsx
-├── empty-state.tsx
-└── ui/
-    ├── button.tsx
-    ├── checkbox.tsx
-    ├── input.tsx
-    └── data-label.tsx
-```
-
-Avoid prematurely adopting a large component framework. Build small, accessible primitives and maintain the visual system directly.
-
----
-
-## 13. Worker implementation requirements
-
-### 13.1 Bindings
+### 10.1 Bindings
 
 Illustrative `wrangler.toml` design:
 
@@ -1093,21 +844,21 @@ Note: this cron only runs the "find due sources and enqueue" step (§5.1) — it
 
 Use the active Cloudflare configuration format at implementation time. Do not commit secrets to this file.
 
-### 13.2 Worker routes and middleware
+### 10.2 Worker routes and middleware
 
 Middleware order:
 
 1. Request ID generation.
-2. Security headers and CORS allow-list.
-3. Per-IP rate limit (no auth step -- every route is open-access, see §13.5).
+2. Security headers and permissive CORS (see note below — no longer an access control now that the only caller is the CLI).
+3. Per-IP rate limit (no auth step -- every route is open-access, see §10.5).
 4. Zod validation.
 5. Route handler.
 6. Structured error mapping.
 7. Structured log with safe fields only.
 
-CORS must name known Pages preview/production origins.
+CORS is no longer a meaningful access control now that the only caller is the CLI (a Node process, not a browser) — it can be left permissive or removed. It is not a substitute for authentication if one is added later.
 
-### 13.3 Queue message design
+### 10.3 Queue message design
 
 ```ts
 interface IngestMessage {
@@ -1121,7 +872,7 @@ interface IngestMessage {
 
 The consumer must be idempotent. A retry for the same `$sourceId + runId$` must not create duplicate observations or duplicate signals. Use database transaction boundaries appropriate to D1 capabilities and stable unique keys.
 
-### 13.4 Failure handling
+### 10.4 Failure handling
 
 | Failure                   | Response                                                            |
 | ------------------------- | ------------------------------------------------------------------- |
@@ -1134,19 +885,19 @@ The consumer must be idempotent. A retry for the same `$sourceId + runId$` must 
 
 Maximum retry count should be configured, e.g. $5$. After exhaustion, send to a dead-letter queue or persistent failure table with a human-review workflow.
 
-### 13.5 Source management (ops-only, not an HTTP surface)
+### 10.5 Source management (ops-only, not an HTTP surface)
 
 The product has no login and no admin UI in the deployed app. Adding a
 source, editing a source's schedule/enabled flag, and triggering a
 manual ingestion run are operator tasks performed by running a local
 script against the target D1 database (`infrastructure/scripts/`),
-the same way seed data (§20 Phase 0 step 5) is loaded. This keeps the
+the same way seed data (§17 Phase 0 step 5) is loaded. This keeps the
 Worker's only routes as the public, unauthenticated read API -- there is
 no state-changing endpoint reachable over the internet, so there is
 nothing that needs CSRF protection, session auth, or a CAPTCHA gate.
 
 Viewing source health (per-source last success/failure, next poll,
-job counts -- the table shape in §16.2) is likewise a local query/script
+job counts -- the table shape in §13.2) is likewise a local query/script
 against D1, not a `/admin/health` HTTP route.
 
 If a future need justifies bringing source management back into the
@@ -1155,23 +906,24 @@ access to the Cloudflare account), that reopens the access-control
 question this section currently closes -- treat it as a new decision,
 not a default reversion to Cloudflare Access.
 
-### 13.5a Operator-triggered pipeline runs (`/api/v1/admin/*`, decided 2026-07-30)
+### 10.5a Operator-triggered pipeline runs (`/api/v1/admin/*`, decided 2026-07-30)
 
 The decision above (no HTTP admin surface) covered *source write
 management* specifically -- add/edit a source, change its schedule.
-This subsection is the "new decision" that §13.5 said would be needed
+This subsection is the "new decision" that §10.5 said would be needed
 if an operational need arose: triggering the pipelines the cron already
 runs (one source's ingest, a scheduler flush, reconciliation)
 on-demand, without shell access to `wrangler d1 execute`.
 
-This does **not** reopen or weaken §14.1's core rule -- the product
+This does **not** reopen or weaken §11.1's core rule -- the product
 remains public, free, no paywall, no login a user ever sees, forever.
 `/api/v1/admin/*` is reachable only with a secret (`ADMIN_SECRET`, a
 Worker secret, never a browser-visible value) via `Authorization:
-Bearer <secret>`; `apps/web` never calls it and never will (verify:
-`apps/web` has no reference to `/admin` anywhere in its source). It is
-an operator convenience layered *next to* the public API, not a
-gate in front of it.
+Bearer <secret>`; no user-facing surface calls it or ever will —
+`apps/web` (which never referenced `/admin`) was deleted 2026-08-07,
+and `apps/cli` (Milestone F.1), once built, is a thin client over the
+public read routes only. It is an operator convenience layered *next
+to* the public API, not a gate in front of it.
 
 Routes (`apps/api/src/routes/admin.ts`):
 
@@ -1220,18 +972,19 @@ source's own company, same as if the cron had triggered it.
 
 ---
 
-## 14. Security, privacy, and compliance
+## 11. Security, privacy, and compliance
 
-### 14.1 Security controls
+### 11.1 Security controls
 
 - All data APIs are intentionally public and unauthenticated -- this is
   the permanent operating mode, not a temporary demo posture. Do not add
   an auth step in front of any `/api/v1/*` **read** route, and never put
-  a login or paywall in front of anything `apps/web` calls. The one
-  exception is the operator-only `/api/v1/admin/*` surface (§13.5a),
-  secret-gated and never reachable from the public UI -- it triggers
-  pipeline runs, not data access, and does not change this rule for
-  every other route.
+  a login or paywall in front of anything a client -- `apps/cli` or an
+  agent calling `apps/api` directly -- uses. The one exception is the
+  operator-only `/api/v1/admin/*` surface (§10.5a), secret-gated and
+  never reachable from any user-facing surface -- it triggers pipeline
+  runs, not data access, and does not change this rule for every other
+  route.
 - Parameterize every SQL query.
 - Validate all external payloads.
 - Escape/sanitize untrusted job descriptions. Do not render source HTML with `dangerouslySetInnerHTML`.
@@ -1240,13 +993,13 @@ source's own company, same as if the cron had triggered it.
 - Redact authorization headers, cookies, and source payload bodies from logs.
 - Use dependency scanning and lockfiles; patch critical vulnerabilities promptly.
 
-### 14.2 Privacy posture
+### 11.2 Privacy posture
 
 The product processes organization/job-post data, not candidate data. Do not collect names, email addresses, candidate profiles, or other personal information from sources. If an upstream payload unexpectedly includes personal data, exclude it from normalized records and raw archive retention wherever feasible.
 
 Provide an operator-accessible source removal workflow. If a company requests removal from a privately operated instance, disable its source and remove retained raw payloads according to policy after legal review.
 
-### 14.3 Legal and product copy
+### 11.3 Legal and product copy
 
 Include a footer/link in the application:
 
@@ -1256,15 +1009,14 @@ Do not label companies as “actively buying,” “in market,” or “budget a
 
 ---
 
-## 15. Performance and reliability targets
+## 12. Performance and reliability targets
 
 | Metric                                                      |                                                                                                                                                                                                           Target |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| Static dashboard shell delivery                             |                                                                                                                                                                                            CDN-served from Pages |
 | Main signal API, cached facet response                      |                                                                                                                                                                                  $p95 < 250$ ms in target region |
 | Main signal API, uncached query                             |                                                                                                                                                                                  $p95 < 800$ ms for $50$ results |
-| First dashboard payload                                     |                                                                                                                                                                                            $\leq 50$ signal rows |
-| **Detection latency** (posting live → visible in dashboard) | $p50 \leq$ effective per-source `pollIntervalMinutes` (§5.2); this is the primary metric for this product's stated optimization goal and should be tracked explicitly, not inferred from ingestion success alone |
+| Default `signals list` page size                            |                                                                                                                                                                                            $\leq 50$ signal rows |
+| **Detection latency** (posting live → queryable via the CLI) | $p50 \leq$ effective per-source `pollIntervalMinutes` (§5.2); this is the primary metric for this product's stated optimization goal and should be tracked explicitly, not inferred from ingestion success alone |
 | **Free-tier budget headroom**                               |                                                                                              Queues ops and D1 writes stay $\leq 85\%$ of daily allowance at all times; cadence auto-widens before breach (§5.2) |
 | Source ingestion success rate                               |                                                                                                                                                             $\geq 98\%$ excluding intentionally disabled sources |
 | Duplicate job rate                                          |                                                                                                                                                                                $< 1\%$ of normalized active jobs |
@@ -1282,9 +1034,9 @@ Implementation tactics:
 
 ---
 
-## 16. Observability and operations
+## 13. Observability and operations
 
-### 16.1 Structured events
+### 13.1 Structured events
 
 Emit structured logs/events with:
 
@@ -1302,9 +1054,9 @@ Emit structured logs/events with:
 
 Never include access tokens, cookies, full raw payloads, or browser PII in logs.
 
-### 16.2 Ops health script output
+### 13.2 Ops health script output
 
-Not an in-app page — this is the output of the local ops script (§13.5)
+Not an in-app page — this is the output of the local ops script (§10.5)
 run against D1 when an operator wants a status check. Show a compact
 operational table:
 
@@ -1318,7 +1070,7 @@ Status definitions:
 - **Degraded:** repeated failures or schema validation issue.
 - **Disabled:** intentionally not fetched.
 
-### 16.3 Alerts
+### 13.3 Alerts
 
 Alert administrators when:
 
@@ -1331,9 +1083,9 @@ Alert administrators when:
 
 ---
 
-## 17. Testing strategy
+## 14. Testing strategy
 
-### 17.1 Unit tests
+### 14.1 Unit tests
 
 - Adapter raw payload parsing with stored, sanitized fixtures.
 - Normalization for titles, locations, dates, and URLs.
@@ -1342,7 +1094,7 @@ Alert administrators when:
 - Duplicate and job lifecycle transitions.
 - Filter query parsing and SQL parameter construction.
 
-### 17.2 Integration tests
+### 14.2 Integration tests
 
 - Worker routes against a local/test D1 database.
 - Queue consumer idempotency: send identical message twice and assert one logical result.
@@ -1350,7 +1102,7 @@ Alert administrators when:
 - Role/company filter combinations return expected rows.
 - Access-control checks for every admin route.
 
-### 17.3 End-to-end tests
+### 14.3 End-to-end tests
 
 Use Playwright or equivalent:
 
@@ -1363,7 +1115,7 @@ Use Playwright or equivalent:
 7. Test mobile viewport and $200\%$ zoom.
 8. Confirm CSV export respects the currently applied filters.
 
-### 17.4 Quality gates
+### 14.4 Quality gates
 
 Before merge:
 
@@ -1379,63 +1131,61 @@ Require code review for source adapters, migrations, security headers, and score
 
 ---
 
-## 18. CI/CD and deployment
+## 15. CI/CD and deployment
 
-### 18.1 Environments
+### 15.1 Environments
 
 | Environment | Purpose                        | Data                                               |
 | ----------- | ------------------------------ | -------------------------------------------------- |
 | Local       | Developer iteration            | Fixtures or isolated development D1                |
-| Preview     | Pull-request UI/API validation | Synthetic or scrubbed sample data                  |
+| Preview     | Pull-request API validation    | Synthetic or scrubbed sample data                  |
 | Staging     | Integration and manual QA      | Separate source registry, limited approved sources |
 | Production  | User-facing system             | Production D1/KV/Queue and secrets                 |
 
 Never point preview deployments at production secrets or production write bindings.
 
-### 18.2 Deployment sequence
+### 15.2 Deployment sequence
 
 1. Run migration validation against a disposable/test D1 database.
 2. Deploy Worker API and Worker migrations to staging.
 3. Run smoke tests against staging API.
-4. Build and deploy Next.js frontend to Pages preview.
-5. Run E2E tests against preview/staging origins.
-6. Promote Worker and Pages deployment to production.
+4. Build the CLI and run it against the staging API origin (integration smoke test, not a deploy step — the CLI itself has no server-side deployment target).
+5. Run E2E tests against the staging origin.
+6. Promote Worker deployment to production.
 7. Enable or update cron schedule only after source registry health is confirmed.
 
-### 18.3 Rollback
+### 15.3 Rollback
 
 - Keep versioned Worker deployments and retain the prior stable version.
 - Use backward-compatible database migrations: expand, deploy, migrate data, contract later.
-- Disable faulty adapters through source configuration without requiring frontend deployment.
+- Disable faulty adapters through source configuration without requiring a CLI release.
 - Feature-flag new scoring formulas and compare output before making them default.
 
 ---
 
-## 19. Acceptance criteria
+## 16. Acceptance criteria
 
-### 19.1 Functional
+### 16.1 Functional
 
 - [ ] An administrator can add a Greenhouse, Lever, or Ashby source to a known company.
 - [ ] Scheduled ingestion fetches enabled sources without exposing credentials to the browser.
 - [ ] A job is not marked closed because a source fetch failed.
 - [ ] New matching jobs generate attributable signals with canonical public job links.
-- [ ] The dashboard lists signals ordered by score by default.
-- [ ] A user can filter by one or more roles and one company.
-- [ ] Filters are encoded in and restored from the URL.
-- [ ] A user can open a signal and see the score explanation and evidence.
+- [ ] `GET /api/v1/signals` returns results ordered by score by default.
+- [ ] The CLI/API accepts filtering by one or more roles and one company.
+- [ ] A caller can request a single signal and receive the score explanation and evidence.
 - [ ] CSV export includes only the currently filtered result set.
-- [ ] The ops health script (§13.5) identifies stale, degraded, and disabled sources.
+- [ ] The ops health script (§10.5) identifies stale, degraded, and disabled sources.
 
-### 19.2 Visual / interaction
+### 16.2 CLI output and scriptability
 
-- [ ] The UI is black and white with exactly one intentional accent color.
-- [ ] All cards, inputs, and buttons use square corners and visible borders.
-- [ ] Data values use a monospaced face.
-- [ ] No shadows, gradients, glass effects, or decorative illustrations appear.
-- [ ] Keyboard users can operate filters, open details, and export data.
-- [ ] The UI is useful at desktop, tablet, and narrow mobile widths.
+- [ ] Default output is valid JSON on stdout; a `--format table` flag is available for interactive human use.
+- [ ] Exit codes are meaningful: `0` success, non-zero on error, distinct codes for auth/network/validation failures.
+- [ ] Errors are written to stderr, never mixed into stdout JSON.
+- [ ] No ANSI color codes or progress spinners are emitted when stdout is not a TTY (i.e., when piped).
+- [ ] Long-running commands (e.g. `--watch`, if added) do not block a caller that only wants a single poll.
 
-### 19.3 Security / operations
+### 16.3 Security / operations
 
 - [ ] No secret appears in client bundles, repository files, logs, or browser responses.
 - [ ] All external source hosts are allow-listed in code/configuration.
@@ -1446,12 +1196,12 @@ Never point preview deployments at production secrets or production write bindin
 
 ---
 
-## 20. Build order for an AI implementation agent
+## 17. Build order for an AI implementation agent
 
 ### Phase 0 — Foundation
 
 1. Create the `pnpm` monorepo.
-2. Scaffold Next.js 16/Tailwind app and Worker application.
+2. Scaffold the Worker application (`apps/api`).
 3. Configure TypeScript strict mode, ESLint, formatting, environment validation, and test runners.
 4. Create D1 migrations and local dev bindings.
 5. Seed $20$ companies and realistic sanitized job fixtures.
@@ -1464,52 +1214,52 @@ Never point preview deployments at production secrets or production write bindin
 4. Implement queue-driven ingestion and cron scheduler.
 5. Implement `new_job` signal generation and evidence persistence.
 
-### Phase 2 — Dashboard
+### Phase 2 — CLI
 
-1. Build the brutalist design tokens and accessible base primitives.
-2. Build `/signals` with seeded API data.
-3. Add role and company filters with URL synchronization.
-4. Add signal cards, details page, score breakdown, and evidence table.
-5. Add empty/loading/error states and responsive behavior.
+1. Scaffold `apps/cli` as a thin Node client over `apps/api`'s HTTP surface.
+2. Implement `signals list` with role/company filtering, backed by seeded API data.
+3. Implement `signals show <id>` (score breakdown, evidence).
+4. Implement CSV export of the currently filtered result set.
+5. Add structured JSON error handling and the exit-code conventions from §16.2.
 
 ### Phase 3 — Production hardening
 
 1. Add remaining P0 adapters (SmartRecruiters, Workable, Recruitee, Personio, Breezy) using the same contract.
 2. Add company-level acceleration/burst signals (secondary context) and formula versioning.
-3. Build out the source-management/health ops script (§13.5) as source count grows.
+3. Build out the source-management/health ops script (§10.5) as source count grows.
 4. Add structured logging, alerting _to the operator_ (not user-facing push — see delivery model in the header), and retention cleanup.
 5. Add CI preview, integration tests, and production deployment runbook.
-6. Wire the detection-latency metric (§15) into the ops health script: track time between a job's `first_seen_at` and the source run that produced it, so cadence-tuning decisions are based on measured latency, not assumption.
+6. Wire the detection-latency metric (§12) into the ops health script: track time between a job's `first_seen_at` and the source run that produced it, so cadence-tuning decisions are based on measured latency, not assumption.
 
 ### Phase 4 — Verification
 
 1. Test against a small approved source cohort before expanding coverage.
-2. Measure duplicate rate, source staleness, classifier precision, dashboard query latency, and **detection latency against the computed cadence target (§5.2)**.
+2. Measure duplicate rate, source staleness, classifier precision, `GET /api/v1/signals` query latency, and **detection latency against the computed cadence target (§5.2)**.
 3. Manually inspect a sample of newly surfaced role-level signals weekly for genuineness (real, open, correctly matched).
 4. Tune score weights and cadence only through versioned configuration and documented review.
 
 ---
 
-## 21. Implementation guardrails for the coding agent
+## 18. Implementation guardrails for the coding agent
 
 - Treat all source content as untrusted input.
 - Never invent API endpoints, source fields, dates, company data, or job statuses. Verify source contracts first.
 - If a provider endpoint stops being public/stable, disable that adapter and show source status; do not add evasive scraping.
-- Never put `API_KEY`, database credentials, tokens, or any secret in `NEXT_PUBLIC_*` variables.
-- Never fetch ATS sources directly from a React client component.
+- Never put `API_KEY`, database credentials, tokens, or any secret in a CLI-side environment variable that could end up in shell history or a committed `.env`; secrets live server-side in the Worker only.
+- Never fetch ATS sources directly from the CLI; the CLI only calls `apps/api`'s HTTP surface.
 - Never render raw job HTML without sanitization; plain-text extraction is preferred for v1.
 - Do not use a generic “AI classifier” where deterministic rules are enough. Make any model-assisted classification opt-in, server-side, auditable, and non-blocking.
 - Preserve evidence and timestamps necessary to explain a signal.
 - Prefer explicit, typed, small modules over a large abstraction layer.
-- Keep the interface visually severe but not hostile: readable text, strong focus states, semantic HTML, and clear errors are mandatory.
+- Keep CLI output honest and unadorned: no decorative spinners or color in piped output, clear error messages, and machine-parseable structure are mandatory (see §16.2).
 
 ---
 
-## 22. Open decisions to resolve before production
+## 19. Open decisions to resolve before production
 
 Settled, no longer open: access model and tenancy. The product has no
 login, is public/free for anyone to use, and is single-tenant only (no
-`workspace_id`, no per-customer data boundary) — see §3, §13.5, §14.1.
+`workspace_id`, no per-customer data boundary) — see §3, §10.5, §11.1.
 
 1. **Source coverage:** which additional official ATS APIs beyond the §4.1 P0 list are worth building next, and in what order — driven by observed gaps in detected postings, not by legal gatekeeping (the trade-off in §1.3/§2.1 already accepts reduced legal-review overhead in exchange for coverage speed).
 2. **Company/source registry supply:** who supplies and validates ATS board tokens at launch, and how does the registry grow over time without becoming a bottleneck on detection speed?
@@ -1520,6 +1270,6 @@ login, is public/free for anyone to use, and is single-tenant only (no
 
 ---
 
-## 23. Definition of done
+## 20. Definition of done
 
-The application is complete for MVP when a user can open a Cloudflare Pages-hosted dashboard, filter genuine, matching, still-open job postings by role and location, inspect transparent evidence pointing to the public job post, and export a current filtered queue. Company-level hiring trends remain available as secondary context. A separate, secure Cloudflare Worker reliably polls a wide set of official public ATS APIs on a cadence computed from the Cloudflare free-tier budget (§5.2), persists audited observations, computes explainable role-level and company-level signals, exposes no secrets to the frontend, requires no push/alerting infrastructure, and reports its own operational health and detection latency so cadence and coverage decisions are made from measured data rather than assumption.
+The application is complete for MVP when an agent, invoking the CLI (`apps/cli`) on a person's behalf, can list genuine, matching, still-open job postings filtered by role and location, inspect transparent evidence pointing to the public job post, and export a current filtered queue as CSV. Company-level hiring trends remain available as secondary context. A separate, secure Cloudflare Worker (`apps/api`) reliably polls a wide set of official public ATS APIs on a cadence computed from the Cloudflare free-tier budget (§5.2), persists audited observations, computes explainable role-level and company-level signals, exposes no secrets to the CLI or any other caller, requires no push/alerting infrastructure, and reports its own operational health and detection latency so cadence and coverage decisions are made from measured data rather than assumption.
