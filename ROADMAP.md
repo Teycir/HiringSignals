@@ -609,113 +609,116 @@ constructed directly by whoever wants a feed; a feed URL is short
 enough to write by hand or generate with a template, so this was never
 a hard technical dependency.
 
-### R.1 — RSS serializer (`lib/text/rss.ts`)
+### R.1 — RSS serializer (`lib/text/rss.ts`) — complete, landed 2026-08-07
 
-Pure function `buildRssFeed(signals: SignalListItem[], meta: { selfUrl:
-string, title: string, description: string, lastBuildDate: string }):
-string` — returns a valid RSS 2.0 XML string. No external dependency,
-same pattern as the sibling `lib/text/csv.ts`/`lib/text/content-hash.ts`
-(repo-root `lib/text/`, not under `packages/`); route imports it the
-same relative way `export.ts` imports `toCsvDocument`: `../../../../lib/
-text/rss`.
+- [x] Pure function `buildRssFeed(items: RssFeedItem[], meta: RssFeedMeta):
+      string`, `lib/text/rss.ts`. **Row type correction found during
+      implementation:** this section originally sketched
+      `SignalListItem[]`, but R.2 (below) reuses `listSignalsForExport`'s
+      read path — the same one `export.ts`'s CSV route already calls —
+      so the real row shape is `SignalExportRow`
+      (`packages/db`'s alias for `SignalRow`), and the real field names
+      are `first_detected_at`/`last_detected_at`, not the
+      `first_seen_at`/`last_seen_at` shorthand used in this file's prose.
+      `rss.ts` types against the real shape, documented in its own header
+      comment. No external dependency, same pattern as the sibling
+      `lib/text/csv.ts`/`lib/text/content-hash.ts`.
+- [x] Field mapping as specified: `<title>`←`headline`, `<link>`←
+      `canonical_url` (omitted entirely when null — company-level
+      aggregate signals with no job-linked evidence), `<pubDate>`←
+      `first_detected_at` (RFC 822 via `Date#toUTCString()`),
+      `<description>`←`summary` + score + signal type (HTML-escaped),
+      `<guid isPermaLink="false">`←`signal_id`.
+- [x] Verify: `apps/api/test/lib/rss.test.ts`, 7 tests (RSS 2.0 shell
+      validity, empty feed with zero `<item>` elements, RFC 822 date
+      formatting, XML escaping, `<guid>` uniqueness, `<link>` omission on
+      null `canonical_url`, description content) — 7/7 passing, confirmed
+      2026-08-07 via `npx vitest run test/lib/rss.test.ts`. Placed under
+      `apps/api/test/lib/` rather than a new root-level `lib/`
+      `vitest.config.ts` (this file's own prior note already flagged that
+      choice as open) — `rss.ts` is pure fixture-input logic with no
+      D1/AI/Vectorize dependency, so it's outside AGENTS.md's zero-mocks
+      scope, same category as `packages/domain/test/*`. `pnpm --filter
+      @hiring-signals/api typecheck` clean.
 
-Field mapping:
+### R.2 — RSS route (`apps/api/src/routes/feed.ts`) — complete, landed 2026-08-07
 
-| RSS 2.0 field | Signal field |
-|---|---|
-| `<title>` | `headline` |
-| `<link>` | canonical evidence URL (first evidence row's `canonical_url`) |
-| `<pubDate>` | `first_seen_at` (RFC 822 format) |
-| `<description>` | `summary` + score + signal type, HTML-escaped |
-| `<guid isPermaLink="false">` | `signal_id` |
+- [x] `GET /api/v1/feed.rss`. **Param-name correction found during
+      implementation:** this section originally listed `role`, `workMode`,
+      `since` — the real wire contract (matching `signals.ts`/`export.ts`)
+      is `roles` (comma-delimited), `locationMode`, `observedSince`;
+      `feedQuerySchema` in `feed.ts` uses the real names, documented in
+      its own header comment. Own inline `z.object({...})` (not
+      `signalsQuerySchema.omit(...)`), matching `export.ts`'s convention
+      and stated reasoning. Returns `Content-Type: application/rss+xml;
+      charset=utf-8`. Mounted in `apps/api/src/index.ts` at the bare
+      `/api/v1` prefix (not `/api/v1/feed`) since the route itself
+      defines `/feed.rss` — gives the exact spec path.
+- [x] `FEED_ROW_CAP = 50` + `listSignalsForFeed` added to
+      `packages/db/src/signals-repo.ts`, next to `EXPORT_ROW_CAP`/
+      `listSignalsForExport` — own constant and own query function
+      (not `listSignalsForExport` with a caller-supplied limit), same
+      truncate-and-report `{ items, truncated }` shape. Same
+      `freeReadTier()` middleware as every other public route.
+- [x] `Last-Modified` (most recent `first_detected_at`) + `ETag`
+      (`lib/text/content-hash.ts`'s `computeContentHash` over the
+      rendered XML) + `304 Not Modified` on matching `If-None-Match`,
+      no KV caching.
+- [x] Verify, 2026-08-07: `pnpm --filter @hiring-signals/api
+      typecheck`/`lint` clean (0 errors, 0 warnings); `pnpm -r
+      typecheck`/`lint` clean workspace-wide afterward. Manual `curl`
+      against a real local `wrangler dev` (scratch port 8799, since
+      8787 was already held by a stale/unresponsive `workerd` from a
+      concurrent session): `GET /api/v1/feed.rss?roles=software_engineering`
+      → `200`, valid RSS 2.0 XML, correct `Content-Type`/`ETag`/
+      `Last-Modified`; repeat request with matching `If-None-Match` →
+      `304 Not Modified`, confirmed; `?roles=cybersecurity` exercised
+      both the `<link>`-present and `<link>`-omitted (null
+      `canonical_url`) branches against real seeded local-D1 data;
+      `?roles=backend` (invalid enum value) correctly `400`s via the
+      existing Zod/error-handler chain. Dev server torn down after
+      verification.
 
-Channel `<title>` built from active filter params (e.g. "Hiring Signals
-— backend · london"). `<lastBuildDate>` = most recent `first_seen_at`
-in the result set, or current time if feed is empty.
-
-Verify: unit tests covering HTML escaping, RFC 822 date formatting,
-empty feed (valid XML, zero `<item>` elements), and `<guid>` uniqueness
-across items. Note: `lib/text/csv.ts` and `lib/text/content-hash.ts`
-(the two existing siblings this pattern is modeled on) have no test
-files anywhere in the repo and there's no root-level vitest config for
-`lib/` — confirmed by search, not assumed. `rss.ts`'s tests need a new
-`vitest.config.ts` for `lib/` (or import into an existing package's
-test suite, e.g. `apps/api/test/`, if that's simpler) — call this out
-explicitly during implementation rather than copy a "same as csv.ts"
-pattern that doesn't actually exist yet.
-
-### R.2 — RSS route (`apps/api/src/routes/feed.ts`)
-
-`GET /api/v1/feed.rss` — same query params as `GET /api/v1/signals`
-(`role`, `company`, `source`, `signalType`, `workMode`, `minScore`,
-`since`, `q`). Hard cap: 50 items (RSS readers poll frequently;
-pagination not applicable to feed format). Returns
-`Content-Type: application/rss+xml; charset=utf-8`.
-
-Query schema: duplicate it inline (own `z.object({...})`, same fields
-minus `sort`/`cursor`/`limit`), matching `export.ts`'s own choice and
-stated reasoning (own header comment: a route's contract should be
-legible on its own without needing to open `signals.ts` to see what's
-accepted) — not `signalsQuerySchema.omit(...)`. Same convention both
-places, not a new decision to make here.
-
-Reuses `listSignalsForExport` from `signals-repo.ts` as the read path
-(same function the CSV export route calls), different serializer on
-top — but note its real signature is `(client, params: Omit<
-ListSignalsParams, "sort" | "cursor" | "limit">)`: no caller-supplied
-`limit`, capping happens internally via `EXPORT_ROW_CAP` (currently
-2000, export.ts's constant). The feed's 50-item cap is a *different*
-number for a *different* reason (poll frequency, not one-time-dump
-size), so it needs its own constant — add `FEED_ROW_CAP = 50` next to
-`EXPORT_ROW_CAP` in `signals-repo.ts`, following the same truncate-
-and-report shape (`{ items, truncated }`) rather than passing 50 into
-the existing function as if it took a limit argument. Same
-`freeReadTier()` rate-limit middleware as every other public route
-(no-arg factory, `apps/api/src/middleware/anti-abuse.ts`).
-
-No KV caching in v1 — respond with `Last-Modified` (most recent
-`first_seen_at`) and `ETag` (content hash via
-`lib/text/content-hash.ts`). A conditional `304 Not Modified` on
-matching `If-None-Match` is cheaper than a KV write on every RSS
-reader poll.
-
-Verify: `pnpm --filter @hiring-signals/api typecheck`/`lint` clean;
-manual `curl` confirming valid XML, correct `Content-Type`, and `304`
-on repeat request with matching `If-None-Match`.
-
-### R.3 — `hs feed-url` command (`apps/cli`)
+### R.3 — `hs feed-url` command (`apps/cli`) — complete, landed 2026-08-07
 
 **Resolved 2026-08-07 (decided with the user): build it.** This
 subtask was originally written against `apps/web` (a `buildFeedUrl`
 helper, a `[RSS ↗]` link, an auto-discovery `<link>` tag) — all
 deleted with the rest of `apps/web` on 2026-08-07. Re-scoped to the
-CLI rather than left open: R.1/R.2 (the feed itself) are pure
-`apps/api` work and were never actually blocked by the dashboard's
-deletion — only *discoverability* needed a new home, and the CLI is
-that home now that F.1 is committed.
+CLI: R.1/R.2 (the feed itself) are pure `apps/api` work and were never
+actually blocked by the dashboard's deletion — only *discoverability*
+needed a new home, and the CLI is that home now that F.1 is committed.
 
-`hs feed-url [--role --company --q --location-mode --country --source
---signal-type --min-score --since]` — same flag set as `hs signals
-list` (F.1.2), reusing that command's flag-parsing/validation rather
-than a second copy. Builds and prints the full `/api/v1/feed.rss?...`
-URL against the configured API base. `--format json` (the CLI global
-default) wraps it as `{"url": "..."}`; `--format table` prints the
-bare URL on one line for a human to paste into a feed reader.
+- [x] `hs feed-url [--role --company --q --locationMode --country
+      --source --signalType --minScore --observedSince]` — same flag
+      names as `hs signals list` (F.1.2) and `hs export signals` (F.1.3),
+      reusing `signalsQuerySchema.omit({ sort, cursor, limit })` rather
+      than a second copy of flag parsing. No `--format` flag (F.1.1
+      already dropped that CLI-wide — see that section's own scope
+      note); output is always the one JSON object `{"url": "..."}` per
+      design principle 1. `buildFeedUrl()` (pure, no network call) added
+      to `apps/cli/src/api-client.ts`, reusing the same `queryFromRecord`
+      serializer every other GET in that file uses, so the URL this
+      builds is byte-identical in shape to what the CLI's own HTTP calls
+      would send for the same params. Registered as a flat top-level
+      command (`hs feed-url`, not nested), same placement as `hs facets`.
+- [x] Verify, 2026-08-07: `apps/cli/test/feed-url.test.ts`, 6 tests
+      (no-filter case, comma-joined `roles` array, every field
+      `feedQuerySchema` accepts present in the query string,
+      sort/cursor/limit never present, undefined/null filters omitted
+      not empty-stringed, configurable `baseUrl`) — 6/6 passing; full
+      `apps/cli` suite (`npx vitest run`) 25/25 passing, no regressions.
+      `pnpm --filter @hiring-signals/cli typecheck`/`lint` clean;
+      workspace-wide `pnpm -r typecheck`/`lint` clean afterward (6 of 7
+      projects). Manual check: `node ./bin/hs.mjs feed-url --role
+      software_engineering,cybersecurity --country US` printed exactly
+      one JSON object with a correctly URL-encoded query string;
+      re-run with `HS_API_BASE_URL` pointed at the same scratch
+      `wrangler dev` instance R.2 verified against, the printed URL
+      fetched directly and returned the same valid RSS 2.0 document —
+      confirms the URL this command builds is the real, working feed
+      URL, not just well-formed output.
 
-**Why build it, not skip:** the target user is mostly an agent acting
-for a person, but an agent acting on `hs feed-url`'s own output can
-still hand a real RSS URL to a person who wants push-style delivery
-in Feedly/NetNewsWire — that's a small addition (reuses F.1.2's flag
-parsing entirely, no new validation logic) for a real capability gap
-(the CLI itself has no push mechanism; RSS is how "notify me later"
-gets covered without building one). Not building a `--save`/`--watch`
-polling loop into the CLI itself — that's a separate feature, not
-implied by this command.
-
-Verify: unit test asserting flag-to-query-param mapping matches R.2's
-accepted param set exactly (same fixture list, so drift between the
-two is caught); manual check that a printed URL, opened directly,
-returns valid RSS (reuses R.2's own manual-verification step).
-
-**Sequence after Milestone F.1.2** (needs `signals list`'s flag
-parsing to exist first) **and R.2** (needs the route to point at).
+**Milestone R acceptance: all three subtasks (R.1–R.3) complete,
+verified 2026-08-07 — the RSS feed is fully built, routed, and
+discoverable via the CLI.**

@@ -292,3 +292,21 @@ export function reconcile(
 }> {
   return adminPost(config, "/api/v1/admin/reconcile");
 }
+
+/**
+ * Builds the full GET /api/v1/feed.rss URL for the given filters
+ * (Milestone R.3, ROADMAP.md) -- no network call, unlike every other
+ * export in this file. Reuses queryFromRecord (same comma-join-array /
+ * skip-null-undefined serialization every other GET in this file uses)
+ * so the query string this produces is byte-identical in shape to what
+ * `fetchSignals`/`fetchSignalsCsv` would send for the same params,
+ * keeping drift between "the URL a human pastes into a feed reader" and
+ * "the URL this CLI would call itself" impossible by construction.
+ */
+export function buildFeedUrl(
+  config: CliClientConfig,
+  params: Partial<Omit<SignalsQuery, "sort" | "cursor" | "limit">> = {},
+): string {
+  const qs = queryFromRecord(params);
+  return `${config.baseUrl}/api/v1/feed.rss${qs ? `?${qs}` : ""}`;
+}

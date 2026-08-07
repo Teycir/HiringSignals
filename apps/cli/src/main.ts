@@ -5,6 +5,7 @@ import { facetsCommand } from "./commands/facets";
 import { sourcesCommand } from "./commands/sources";
 import { exportCommand } from "./commands/export";
 import { adminCommand } from "./commands/admin";
+import { feedUrlCommand } from "./commands/feed-url";
 import { ApiClientError } from "./api-client";
 
 /**
@@ -34,6 +35,7 @@ const rootCommand = defineCommand({
     sources: sourcesCommand,
     export: exportCommand,
     admin: adminCommand,
+    "feed-url": feedUrlCommand,
   },
 });
 

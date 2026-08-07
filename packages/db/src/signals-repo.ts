@@ -537,6 +537,61 @@ export async function listSignalsForExport(
   };
 }
 
+/**
+ * v1 cap for the RSS feed (Milestone R.2, ROADMAP.md): 50 items, a
+ * *different* number from EXPORT_ROW_CAP for a *different* reason --
+ * this caps a feed a reader polls repeatedly (poll-frequency budget),
+ * not a one-time CSV dump size. Deliberately not reusing
+ * EXPORT_ROW_CAP or passing 50 into listSignalsForExport as if it took
+ * a limit argument -- that function's signature intentionally omits
+ * `limit` (see its own header comment), so a second, differently-
+ * reasoned cap gets its own constant and its own query function instead
+ * of overloading that one.
+ */
+export const FEED_ROW_CAP = 50;
+
+export interface ListSignalsForFeedResult {
+  items: SignalExportRow[];
+  truncated: boolean;
+}
+
+/**
+ * Feed variant of listSignals (Milestone R.2): same filter set as
+ * listSignalsForExport (roles, company, q, locationMode, country,
+ * source, signalType, minScore, observedSince) and the same
+ * `q` LIKE clause, but capped at FEED_ROW_CAP (50) instead of
+ * EXPORT_ROW_CAP (2000) -- RSS readers poll frequently, so a feed
+ * returns "what's current" rather than a full historical dump.
+ * Same truncate-and-report shape (`{ items, truncated }`) as
+ * listSignalsForExport, same fixed `sort=score_desc`-equivalent
+ * ordering so repeat polls of the same filters are stable/diffable
+ * (a feed reader deduplicates by <guid>, so stable ordering also keeps
+ * new items appearing at a predictable position across polls).
+ */
+export async function listSignalsForFeed(
+  client: D1Client,
+  params: Omit<ListSignalsParams, "sort" | "cursor" | "limit">,
+): Promise<ListSignalsForFeedResult> {
+  const { where, args } = buildCommonFilters(params);
+
+  if (params.q) {
+    const pattern = `%${escapeLikePattern(params.q)}%`;
+    where.push(
+      `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`,
+    );
+    args.push(pattern, pattern, pattern);
+  }
+
+  const sql = `${BASE_SELECT} WHERE ${where.join(" AND ")} ORDER BY s.score DESC, s.last_detected_at DESC, s.id DESC LIMIT ?`;
+  const rows = await client.all<SignalExportRow>(sql, [...args, FEED_ROW_CAP + 1]);
+
+  const truncated = rows.length > FEED_ROW_CAP;
+  return {
+    items: truncated ? rows.slice(0, FEED_ROW_CAP) : rows,
+    truncated,
+  };
+}
+
 export interface SignalEvidenceRow {
   id: string;
   signal_id: string;

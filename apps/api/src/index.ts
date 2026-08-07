@@ -11,6 +11,7 @@ import { sourcesRoute } from "./routes/sources";
 import { facetsRoute } from "./routes/facets";
 import { adminRoute } from "./routes/admin";
 import { exportRoute } from "./routes/export";
+import { feedRoute } from "./routes/feed";
 import { handleScheduled } from "./jobs/scheduler";
 import { handleIngestMessage } from "./jobs/ingest-consumer";
 import { handleReconciliation } from "./jobs/reconciliation";
@@ -46,6 +47,11 @@ app.route("/api/v1/companies", companiesRoute);
 app.route("/api/v1/sources", sourcesRoute);
 app.route("/api/v1/facets", facetsRoute);
 app.route("/api/v1/export", exportRoute);
+// Mounted at the bare /api/v1 prefix, not /api/v1/feed -- feedRoute
+// itself defines GET /feed.rss, so this gives the exact spec path
+// GET /api/v1/feed.rss (Milestone R.2) rather than a nested prefix
+// no other route in this file uses.
+app.route("/api/v1", feedRoute);
 
 // Admin routes: idempotent triggers for the same pipelines the cron
 // handlers drive (source-run enqueues a single source, scheduler-flush
