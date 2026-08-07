@@ -1,0 +1,27 @@
+{
+  "name": "@hiring-signals/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hs": "./bin/hs.mjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hiring-signals/db": "workspace:*",
+    "@hiring-signals/domain": "workspace:*",
+    "citty": "^0.2.2",
+    "node-typescript-resolver": "^0.8.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "eslint": "^10.8.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
