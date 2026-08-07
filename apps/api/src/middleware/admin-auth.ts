@@ -80,10 +80,19 @@ async function timingSafeEqualStrings(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
   const aBuf = enc.encode(a);
   const bBuf = enc.encode(b);
-  if (aBuf.byteLength !== bBuf.byteLength) {
-    return false;
-  }
-  return crypto.subtle.timingSafeEqual(aBuf, bBuf);
+
+  // Compare fixed-length buffers so a wrong-length bearer token does not
+  // return before the WebCrypto comparison. Length still must match for a
+  // valid token, but folding that check into the final boolean avoids an
+  // easy remote timing oracle for ADMIN_SECRET length.
+  const maxLen = Math.max(aBuf.byteLength, bBuf.byteLength);
+  const aPadded = new Uint8Array(maxLen);
+  const bPadded = new Uint8Array(maxLen);
+  aPadded.set(aBuf);
+  bPadded.set(bBuf);
+
+  const bytesMatch = crypto.subtle.timingSafeEqual(aPadded, bPadded);
+  return bytesMatch && aBuf.byteLength === bBuf.byteLength;
 }
 
 interface StrikeState {
