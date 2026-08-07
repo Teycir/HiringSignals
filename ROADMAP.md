@@ -1205,19 +1205,60 @@ file.
       this enforceable. Verified: `pnpm -r typecheck`/`lint` clean
       across all 6 workspace packages after the change.
 - [ ] If any deploy automation is added: never point preview/staging at
-      production secrets or write bindings (spec §18.1) — a hard
-      constraint regardless of how simplified the environment tier
-      structure ends up.
-- [ ] Rollback readiness (spec §18.3): confirm Cloudflare Workers
-      versioned deployments are actually in use (not just theoretically
-      available) and that a rollback has been test-run at least once
-      manually, not just assumed to work.
-- [ ] Feature-flag pattern for scoring formula changes (spec §18.3) —
-      check whether `score_version`/`velocity_score_version` fields
-      (already in the schema per Milestone C/Q) are sufficient for this,
-      or whether an actual runtime flag mechanism is needed; likely
-      already sufficient given versioned fields exist — confirm rather
-      than build something new.
+      production secrets or write bindings (spec §18.1) — mostly moot
+      now that G.4's environment-scope decision (above) rules out a
+      separate preview/staging tier, but leaving this as an explicit
+      guardrail rather than deleting it: if that decision is ever
+      revisited, this constraint still applies.
+- [x] **Rollback readiness (spec §18.3) — audited 2026-08-06, corrected
+      same day after token scope was widened.** Initial pass found
+      `CF_TOKEN` lacked Workers Scripts permission, blocking
+      `wrangler versions list`/`deployments list`, and concluded
+      (wrongly) "likely never deployed" based only on no record in
+      `CHANGELOG.md`/`AGENTS.md`. After the token was widened to add
+      Account.Workers Scripts (alongside the existing Workers AI,
+      Vectorize, D1, Workers KV Storage scopes — nothing broader), a
+      direct check showed the real picture: **the Worker has been
+      deployed 8 times, all on 2026-07-30**, currently serving version
+      `82df9ce2` at 100% traffic, confirmed live and responding
+      correctly at `https://hiring-signals-api.teycircoder14.workers.dev`
+      (verified `/api/v1/signals` returns real fixture data, HTTP 200).
+      It was simply never recorded in the docs. That live version
+      predates every commit from 2026-08-06 (I.5c/I.5d, test-support
+      fixes, lint enforcement), so production is currently running
+      stale code — a real redeploy is needed, intentionally deferred
+      until local ingestion is validated against real data sources
+      first. Versioned-deployment history now confirmed to genuinely
+      exist (8 real entries), so a rollback (`wrangler rollback` or
+      `wrangler deploy` to a prior version) is mechanically available
+      and testable once we're deploying again — not yet exercised.
+- [x] **Feature-flag pattern for scoring formula changes (spec §18.3) —
+      audited, partial gap found, 2026-08-06.** This item's own
+      original premise was wrong and is corrected here: `packages/db`'s
+      schema has no `velocity_score_version` column at all — grepped
+      every migration file, zero matches. That's not a bug; Milestone Q
+      (the hiring-velocity-score feature that field would belong to) is
+      entirely unbuilt (0/3 items, not started), so a version column
+      for it can't exist yet. `score_version` (spec §7.2's existing
+      signal score) is real and does exactly one of spec §18.3's two
+      asks: every scored signal persists `SCORE_FORMULA_VERSION`
+      (`packages/domain/src/signal-score.ts`, currently `"v2"`), so old
+      and new-formula rows stay distinguishable after a change — that
+      part is genuinely satisfied. **What's missing:** spec §18.3 asks
+      to "feature-flag new scoring formulas and compare output before
+      making them default" — `SCORE_FORMULA_VERSION` is a hardcoded
+      module constant with no runtime toggle; the deployed code always
+      scores with whatever value it's set to, for every signal, with no
+      way to run old-vs-new side by side or gate a new formula behind a
+      flag before defaulting to it. A version-stamped-after-the-fact
+      audit trail and a pre-launch A/B comparison mechanism are
+      different things; this repo has the former, not the latter.
+      Given the "stays simplified" environment-scope decision above
+      and that no second scoring-formula change is in flight right
+      now, building a real flag mechanism speculatively isn't
+      justified today — recording the gap accurately rather than
+      building unneeded infrastructure or checking this off as fully
+      satisfied.
 
 ### G.5 — Acceptance criteria sign-off (spec §19)
 

@@ -123,6 +123,15 @@ binding = "AI"
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "hiring-signals-jobs"
+# 2026-08-06 local-testing note: temporarily set remote=true to test
+# against the real Vectorize account instead of the unsupported local
+# stub (Cloudflare docs confirm Vectorize has no local emulation --
+# see this file's other header comment). Writes under this setting
+# land in the SAME account-level index production uses (not
+# environment-scoped) -- explicit user confirmation obtained before
+# enabling. Revert to false/remove before deploying, once local
+# ingestion is confirmed stable end-to-end (see ROADMAP.md).
+remote = true
 
 # Cron routes:
 # - */15 * * * *: find due sources and enqueue ingest messages; never fetch providers here.

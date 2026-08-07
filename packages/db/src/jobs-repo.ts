@@ -336,41 +336,54 @@ export async function insertJobObservation(
 /**
  * The complement query the lifecycle step needs (ROADMAP.md Milestone A):
  * jobs previously active/possibly_closed for this source whose
- * external_job_id is NOT in the current run's result set. Computed in
- * one round trip via NOT IN rather than diffing two full-table loads in
- * application code.
+ * external_job_id is NOT in the current run's result set.
  *
  * Only considers active/possibly_closed jobs -- an already-closed job
  * that's still absent doesn't need to be re-flagged as missing (spec
  * §5.4's table has no "closed + still absent" transition; it only moves
  * on reappearance).
  *
- * `seenExternalIds` empty is a valid case (a run that returned zero jobs,
- * e.g. an empty board) -- guarded explicitly since SQL's `NOT IN ()` with
- * an empty list is invalid syntax in some dialects and unreliable in
- * others; when the list is empty, every previously active/possibly_closed
- * job for this source is missing by definition, so skip the NOT IN clause
- * entirely rather than trying to parameterize an empty list.
+ * 2026-08-07 bugfix (found via local end-to-end testing against
+ * Stripe's real 552-job Greenhouse board): the prior implementation
+ * bound one `?` placeholder per seenExternalIds entry in a single
+ * `NOT IN (...)` clause -- 552 placeholders + sourceId = 553 bound
+ * params for Stripe alone, which fails every time against D1/SQLite's
+ * SQLITE_LIMIT_VARIABLE_NUMBER (100, per Cloudflare's documented D1
+ * limits and workerd's own default) with `D1_ERROR: too many SQL
+ * variables`. Only surfaced at scale -- small fixture boards with a
+ * handful of jobs never approached the limit.
+ *
+ * Fixed by loading the candidate set (this source's own active/
+ * possibly_closed jobs -- normally small relative to the full remote
+ * board, since it's bounded by how many jobs this source has ever had
+ * open at once, not by the board's total size) in one parameterless-list
+ * round trip, then filtering out `seenExternalIds` in application code.
+ * This trades "one query with N bound params" for "one query with a
+ * fixed 2 params, plus an in-memory filter over a typically-small
+ * candidate set" -- no chunking/batching complexity, no risk of the
+ * same limit resurfacing at a larger board size, and still exactly one
+ * D1 round trip.
+ *
+ * `seenExternalIds` empty is still a valid case (a run that returned
+ * zero jobs, e.g. an empty board): every candidate row is missing by
+ * definition, so the filter below simply keeps everything.
  */
 export async function getJobsMissingFromRun(
   client: D1Client,
   sourceId: string,
   seenExternalIds: string[],
 ): Promise<JobRow[]> {
+  const candidates = await client.all<JobRow>(
+    `SELECT * FROM jobs WHERE source_id = ? AND status IN ('active', 'possibly_closed')`,
+    [sourceId],
+  );
+
   if (seenExternalIds.length === 0) {
-    return client.all<JobRow>(
-      `SELECT * FROM jobs WHERE source_id = ? AND status IN ('active', 'possibly_closed')`,
-      [sourceId],
-    );
+    return candidates;
   }
 
-  const placeholders = seenExternalIds.map(() => "?").join(",");
-  return client.all<JobRow>(
-    `SELECT * FROM jobs
-     WHERE source_id = ? AND status IN ('active', 'possibly_closed')
-       AND external_job_id NOT IN (${placeholders})`,
-    [sourceId, ...seenExternalIds],
-  );
+  const seen = new Set(seenExternalIds);
+  return candidates.filter((job) => !seen.has(job.external_job_id));
 }
 
 export interface DetectionLatencyStats {

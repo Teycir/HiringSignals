@@ -263,6 +263,20 @@ export async function handleIngestMessage(
       throw err;
     }
 
+    // 2026-08-06 bugfix: `timeoutMs` was documented and typed on
+    // FetchContext but never actually enforced -- every adapter's
+    // fetchBoard() correctly passes `signal: ctx.signal` to its own
+    // fetch() call (see e.g. greenhouse.ts), but this call site never
+    // constructed or passed a `signal` at all, so it stayed `undefined`
+    // for all 8 providers. Found via local end-to-end testing against
+    // Stripe's real (552-job) Greenhouse board: the request hung
+    // indefinitely with no timeout, no error, and no completion --
+    // confirmed by a source_runs row stuck in status='running' well
+    // past any reasonable fetch duration. AbortSignal.timeout() is
+    // available in the Workers runtime (standard Web API) and is the
+    // minimal fix: construct the real timeout signal here so
+    // `timeoutMs` does what its own name and doc comment already
+    // claimed.
     const fetchResult = await adapter.fetchBoard(
       {
         sourceId: source.id,
@@ -271,7 +285,11 @@ export async function handleIngestMessage(
         boardToken: source.board_token,
         publicUrl: source.public_url,
       },
-      { userAgent: "HiringSignalsBot/1.0 (+https://hiringsignals.example)", timeoutMs: 15_000 },
+      {
+        userAgent: "HiringSignalsBot/1.0 (+https://hiringsignals.example)",
+        timeoutMs: 15_000,
+        signal: AbortSignal.timeout(15_000),
+      },
     );
 
     // --- Failure branches per spec §13.4, one branch each (not collapsed) ---
@@ -1146,6 +1164,15 @@ async function embedAndUpsertJob(
       return undefined;
     }
 
+    // Captured once, right after the guard above: TS narrows
+    // `embeddingResult.data?.[0]` for that `if` condition itself, but
+    // doesn't retain that narrowing across the later statements below
+    // (the vectorize upsert and the return), which is what produced the
+    // two "possibly undefined" errors this comment replaces. Binding the
+    // already-checked value here keeps the rest of this function
+    // cast-free.
+    const embeddingVector = embeddingResult.data[0];
+
     const metadata: Record<string, VectorizeVectorMetadata> = {
       companyId: params.companyId,
       status: params.status,
@@ -1158,13 +1185,35 @@ async function embedAndUpsertJob(
       metadata.locationMode = params.locationMode;
     }
 
-    await ai.VECTORIZE.upsert([
-      {
-        id: params.jobId,
-        values: embeddingResult.data[0],
-        metadata,
-      },
-    ]);
+    // 2026-08-06 bugfix: same class of issue as the AI.run() call above
+    // (this file's aiBreaker wrapping, and commit 8ba4517's note) but
+    // was left unwrapped here -- confirmed via local end-to-end testing
+    // against Stripe's real 552-job board: every per-job stage through
+    // classification completed (all 552 jobs upserted/observed/
+    // classified), yet the source_runs row stayed status='running'
+    // indefinitely with zero log output, including no ingest_failed and
+    // no "Embedding failed" console.error from this function's own
+    // catch block -- consistent with VECTORIZE.upsert() itself hanging
+    // rather than throwing, never resolving so the catch never fires.
+    // Matches wrangler.toml's own documented constraint: Vectorize has
+    // no local emulation ("not supported" without `remote: true` on the
+    // binding, confirmed via Cloudflare's docs) and this repo's
+    // wrangler.toml deliberately does not set `remote: true` on
+    // [[vectorize]]. Wrapping in the same aiBreaker used for AI.run()
+    // (registering a "vectorize" resource on it is safe --
+    // createCircuitBreaker's getOrCreate lazily initializes any unseen
+    // resource key with fresh CLOSED state) gives this call the same
+    // bounded-timeout, log-and-continue contract this function's own
+    // doc comment already promises for the AI.run() call beside it.
+    await aiBreaker.withCircuit("vectorize", () =>
+      ai.VECTORIZE.upsert([
+        {
+          id: params.jobId,
+          values: embeddingVector,
+          metadata,
+        },
+      ]),
+    );
 
     // Handed back so I.5c's classification-assist nudge (called moments
     // later in the same ingest run, when this branch fired) can reuse
@@ -1174,7 +1223,7 @@ async function embedAndUpsertJob(
     // backfill-embeddings.mjs (upserts typically take a few seconds to
     // become query-visible). Nothing downstream of this function's
     // existing callers relies on a void return; this is purely additive.
-    return embeddingResult.data[0];
+    return embeddingVector;
   } catch (error) {
     // Log-and-continue, never throw: see this function's doc comment for
     // why an embedding failure must not fail the enclosing ingest
