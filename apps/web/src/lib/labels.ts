@@ -43,10 +43,7 @@ export const PROVIDER_LABELS: Record<AtsProvider, string> = {
   workable: "Workable",
   recruitee: "Recruitee",
   personio: "Personio",
-  teamtailor: "Teamtailor",
-  jazzhr: "JazzHR",
   breezy: "Breezy",
-  bamboohr: "BambooHR",
 };
 
 /** Spec 7.1's signal types. */

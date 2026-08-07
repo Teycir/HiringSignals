@@ -204,10 +204,7 @@ All P0 sources are official, documented ATS APIs. Breadth of coverage is pursued
 | Workable                                                                            | Public jobs API                                                                          | API adapter          |                           P0 |
 | Recruitee                                                                           | Public careers API                                                                       | API adapter          |                           P0 |
 | Personio                                                                            | Public job postings API (where offered)                                                  | API adapter          |                           P0 |
-| Teamtailor                                                                          | Public job feed API                                                                      | API adapter          |                           P0 |
-| JazzHR                                                                              | Public board API (where offered)                                                         | API adapter          |                           P0 |
 | Breezy HR                                                                           | Public job board API                                                                     | API adapter          |                           P0 |
-| BambooHR (careers)                                                                  | Public careers-page JSON feed (where offered as a documented endpoint, not scraped HTML) | API adapter          |                           P0 |
 | Any additional provider with a stable, documented, public JSON/REST job-listing API | To be confirmed per-provider at implementation time                                      | API adapter          | Add on demand, same contract |
 
 Adding a new provider is a small, well-scoped unit of work precisely because every adapter obeys the same contract (§5.3): confirm the endpoint is public and documented, write the Zod schema for its payload shape, write the normalizer, write fixture tests. There is no legal-review gate blocking onboarding a new official API adapter in v1 — the trade-off in §1.3/§2.1 accepts that posture deliberately in exchange for speed of coverage. The technical courtesies in §4.3 (rate limits, `User-Agent`, backoff) remain mandatory regardless — they are what keeps a source from banning the product, which is a robustness requirement, not a legal one.
@@ -342,10 +339,7 @@ export interface AtsAdapter {
     | "workable"
     | "recruitee"
     | "personio"
-    | "teamtailor"
-    | "jazzhr"
-    | "breezy"
-    | "bamboohr";
+    | "breezy";
   fetchBoard(input: SourceConfig, ctx: FetchContext): Promise<AdapterFetchResult>;
   normalize(raw: unknown, source: SourceConfig): NormalizedJob[];
 }
@@ -1480,7 +1474,7 @@ Never point preview deployments at production secrets or production write bindin
 
 ### Phase 3 — Production hardening
 
-1. Add remaining P0 adapters (SmartRecruiters, Workable, Recruitee, Personio, Teamtailor, JazzHR, Breezy, BambooHR) using the same contract.
+1. Add remaining P0 adapters (SmartRecruiters, Workable, Recruitee, Personio, Breezy) using the same contract.
 2. Add company-level acceleration/burst signals (secondary context) and formula versioning.
 3. Build out the source-management/health ops script (§13.5) as source count grows.
 4. Add structured logging, alerting _to the operator_ (not user-facing push — see delivery model in the header), and retention cleanup.

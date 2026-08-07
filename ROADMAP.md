@@ -228,38 +228,25 @@ Verify (current): `pnpm --filter @hiring-signals/adapters
 typecheck`/`lint`/`test` clean, 114/114 adapter tests; `pnpm -r
 typecheck`/`lint` clean across all 6 workspace projects.
 
-**Coverage scope closed at 8, decided with the user 2026-08-04 — standing
-decision, not a backlog gap.** Every additional adapter is permanent
+**Coverage scope closed at 8.** Every additional adapter is permanent
 maintenance surface (schema drift, fixture upkeep, silent-failure risk).
 A future session should not propose a new provider without the user
 raising it first.
 
-**Not built — `teamtailor`, `jazzhr`: structurally gated, not
-effort gaps.** Both providers require a per-account secret API key with
-no public/unauthenticated tier and no board-token-derivable URL — this
-repo's `board_token`-only source-config model (spec §8.2) has nothing
-to construct a fetchable URL from, and building against the
-authenticated API would mean per-company secret storage, which spec
-§14.1 ("no secrets in source config") explicitly rules out absent a
-real decision from the user. Revisit only if either ships a public,
-derivable-URL feed, or the user decides secret storage is in scope.
-
-**Not built — `bamboohr`: closed by scope decision, not a verification
-failure.** Independent (non-first-party) sources describe a plausible
-public `{company}.bamboohr.com/careers/list` endpoint matching this
-repo's model, but no real customer board could be found to confirm it
-first-party. If adapter coverage ever reopens, this is the best-
-positioned candidate — but that's not scheduled.
-
-Ops script's `ATS_PROVIDERS` list already covers all 11 canonical
-providers; the 3 unbuilt ones simply have no `registry.ts` entry, so
-`getAdapterForProvider` throws its typed `UnsupportedProviderError` —
-correct behavior, not a bug. AGENTS.md's roadmap status reflects the
-closed-at-8 scope.
+Ops script's `ATS_PROVIDERS` list covers exactly the 8 supported
+providers; `registry.ts` has a `getAdapterForProvider` entry for each.
+AGENTS.md's roadmap status reflects the closed-at-8 scope.
 
 ---
 
-## Milestone F — Dashboard UI (Phase 2, `apps/web`)
+## Milestone F — Dashboard UI (Phase 2, `apps/web`) — complete, deprioritized 2026-08-07
+
+**Status update, decided with the user 2026-08-07: the CLI (Milestone
+F.1, below) is now the primary interface. This milestone's code is
+built, tested, and stays in the repo — nothing here is being deleted —
+but it is no longer where new interface work lands.** Read this
+milestone as a historical record of what shipped, not an active area.
+Any future web-UI work needs the user to explicitly reopen it.
 
 Spec §11 (Minimal Brutalist visual system), §12 (Next.js requirements),
 §10 (UX spec — route map, filters, signal cards, detail view, empty/
@@ -327,6 +314,87 @@ All subtasks F.1 through F.7 are fully implemented and passing across `apps/web`
   - Graceful empty state when filters return zero results, with reset-filters action.
   - Error boundary & retry UI for network or API errors.
 - [x] **F.7 — Accessibility & Responsive Audit**: Keyboard navigation across filters and card lists, screen-reader attributes, mobile/desktop responsive design.
+
+---
+
+## Milestone F.1 — CLI (`apps/cli`), primary interface — planned, decided with the user 2026-08-07
+
+**Not started. No code exists yet** — `apps/web`'s dashboard remains the
+only working interface until this milestone lands. This section
+describes the target shape so implementation has a spec to build
+against; it is not a record of anything shipped.
+
+**Why this exists (decided with the user 2026-08-07):** the real
+end-user of this tool is an AI agent acting on a person's behalf — the
+person asks their assistant to look something up, and the assistant
+invokes the CLI — not a human typing commands or clicking through a
+browser directly. That reverses the usual CLI design priorities: no
+interactive prompts (an agent can't respond to a stdin prompt), no
+progress spinners or ANSI color as the primary output channel, no
+"friendly" reformatting that varies between runs. The dashboard
+(Milestone F) stays in the repo, tested, and unmodified, but new
+interface work lands here, not there — see Milestone F's status note.
+
+**Design principles, all in service of agentic (not human-interactive)
+use:**
+
+1. **Structured output by default, not opt-in.** Every command emits
+   JSON on stdout by default (`--format table` available for a human
+   who's debugging by hand, but never the default). One JSON object or
+   array per invocation — no multi-line human-readable banners mixed
+   into stdout that a JSON parser would choke on.
+2. **Machine-readable errors.** Failures print a single JSON object to
+   stderr (`{"error": {"code": ..., "message": ..., "requestId": ...}}`)
+   and set a non-zero exit code. No stack traces on stdout, no
+   "Oops, something went wrong! 🙁" — an agent parsing this needs the
+   `code` field to branch on, the same way apps/api's routes already
+   return typed error codes today.
+3. **No interactive prompts, ever.** Every input is a flag or
+   positional argument. A command that would need confirmation (e.g. an
+   admin action) takes an explicit `--yes`/`--confirm` flag instead of
+   pausing for a y/n keypress — an agent has no terminal to type into.
+4. **Deterministic, scriptable, idempotent where the underlying API is.**
+   Same input flags → same shape of output, run after run. Exit codes
+   follow standard convention (0 success, non-zero failure) so an agent
+   can branch on `$?` without parsing prose.
+5. **Thin client over `apps/api`, not a new backend.** The CLI calls the
+   same Cloudflare Worker routes the dashboard already uses (`GET
+   /signals`, `/signals/:id`, `/companies`, `/companies/:slug`,
+   `/export/signals.csv`, `/facets`, `/sources`, and the `POST
+   /admin/*` routes) — decided with the user 2026-08-07. No direct D1
+   access, no bypassing the API's validation/rate-limiting/auth. This
+   keeps exactly one source of truth for business logic instead of
+   duplicating it into the CLI.
+
+**Target command surface (mirrors existing routes 1:1 — no new backend
+behavior invented here):**
+
+- [ ] **F.1.1 — CLI scaffold (`apps/cli`)**: new workspace package,
+  argument parsing (a library with agentic-friendly defaults — no
+  interactive fallback prompts), `--format json|table` global flag
+  (default `json`), shared HTTP client wrapping `apps/web`'s existing
+  `lib/api-client.ts` pattern, `ADMIN_SECRET`/API base URL from env vars
+  or `--config`, never an interactive login flow.
+- [ ] **F.1.2 — Read commands**: `hs signals list [--role --company --q
+  --location-mode --country --source --signal-type --min-score
+  --observed-since --cursor]`, `hs signals get <signalId>`, `hs
+  companies list [--filters]`, `hs companies get <slug>`, `hs facets`,
+  `hs sources list`. Each maps directly to its existing `GET` route and
+  passes the same query parameters through unchanged.
+- [ ] **F.1.3 — Export command**: `hs export signals [--same filters as
+  signals list] [--out <path>]` — streams the existing CSV export route
+  to a file or stdout.
+- [ ] **F.1.4 — Admin commands**: `hs admin source run <sourceId>
+  --yes`, `hs admin scheduler flush --yes`, `hs admin reconcile --yes`
+  — thin wrappers over the existing `POST /admin/*` routes, each
+  requiring the explicit `--yes` flag per principle 3 above.
+- [ ] **F.1.5 — Tests**: fixture-driven tests against a mocked
+  `apps/api` (same pattern as `packages/adapters`'s fixture tests), plus
+  exit-code and stderr-shape assertions for the error path.
+- [ ] **F.1.6 — Docs**: `apps/cli/README.md` with one example invocation
+  and its exact JSON output per command, written for an agent's context
+  window (short, literal, no marketing prose) rather than a human
+  tutorial.
 
 ---
 

@@ -40,7 +40,7 @@
       "parameterized D1 client wrapper; read repos (signals/companies/facets/export) and write repos (sources/jobs/signals/companies)",
       "API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources, /export/signals.csv",
       "CSV Export endpoint (GET /api/v1/export/signals.csv) with RFC-4180 streaming serializer, 2,000-row safety limit, and truncation header",
-      "8 active P0 ATS adapters: Greenhouse, Lever, Ashby, Recruitee, Breezy, Personio, SmartRecruiters, Workable (Teamtailor, JazzHR, BambooHR marked wont-build due to unauthenticated API constraints)",
+      "8 active P0 ATS adapters: Greenhouse, Lever, Ashby, Recruitee, Breezy, Personio, SmartRecruiters, Workable",
       "full ingestion pipeline: fetch -> validate -> normalize -> upsert -> observe -> lifecycle -> classify -> score -> signal, idempotent per (sourceId, runId)",
       "real Volume/Acceleration/Breadth signal scoring (score_version v2) and all four company-level signal types (hiring_burst, role_acceleration, multi_location, persistent_demand)",
       "daily reconciliation job recomputing stale active signals' scores without altering last_detected_at",

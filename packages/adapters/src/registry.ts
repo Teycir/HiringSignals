@@ -11,15 +11,13 @@ import { breezyAdapter } from "./breezy";
 
 /**
  * Provider -> adapter lookup for the ingest consumer (ROADMAP.md
- * Milestone D). Only providers with a landed adapter file appear here --
- * Milestone E adds one entry per remaining provider as each adapter is
- * built (lever, ashby, smartrecruiters, workable, recruitee, personio,
- * teamtailor, jazzhr, breezy, bamboohr). A source configured for a
- * provider not yet in this map is a 4xx-style configuration issue (spec
- * §13.4's "4xx configuration issue" row), not a schema mismatch or a
- * transient failure -- getAdapterForProvider throws a typed error so the
- * consumer's failure-handling can route it to the correct branch (mark
- * source degraded, no hammering) instead of retrying forever.
+ * Milestone D). Covers all 8 providers in the ATS_PROVIDERS enum. A
+ * source configured for a provider not in this map is a 4xx-style
+ * configuration issue (spec §13.4's "4xx configuration issue" row), not
+ * a schema mismatch or a transient failure -- getAdapterForProvider
+ * throws a typed error so the consumer's failure-handling can route it
+ * to the correct branch (mark source degraded, no hammering) instead of
+ * retrying forever.
  */
 const ADAPTERS: Partial<Record<AtsProvider, AtsAdapter>> = {
   greenhouse: greenhouseAdapter,

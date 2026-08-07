@@ -10,10 +10,7 @@ export const ATS_PROVIDERS = [
   "workable",
   "recruitee",
   "personio",
-  "teamtailor",
-  "jazzhr",
   "breezy",
-  "bamboohr",
 ] as const;
 
 export const atsProviderSchema = z.enum(ATS_PROVIDERS);
