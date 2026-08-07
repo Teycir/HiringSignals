@@ -71,7 +71,6 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 | `packages/adapters/` | ATS provider integrations | **8 P0 providers built** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio, breezy. |
 | `packages/db/` | D1 database layer | **Complete** → D1 client + repository functions. Read paths: signals/companies/facets/export. Write paths: sources/jobs/signals. Company-role activity stats, signals-export repo. |
 | `packages/test-support/` | Testing infrastructure | **Complete** → Live Cloudflare bindings for zero-mocks integration testing (live D1 client, live AI/Vectorize/KV, remote transport layer). Used by packages/db and apps/api suites. |
-| `packages/ui/` | Shared UI primitives | **Not scaffolded** → Optional shared UI primitives (see its README for details). |
 | `lib/` | Cross-workspace utilities | **Complete** → D1 helpers (client, LIKE pattern, unique-constraint), HTTP primitives (circuit-breaker, safeRateLimitIdentifier SHA-256 hashing, rate-limit, trusted IP extraction, security-headers), KV TTL store, audit logging, cursor pagination, text utilities (base64url, content-hash, CSV, location-mode). |
 | `infrastructure/` | DevOps & migrations | **Complete** → D1 migrations (0001-0004 landed). Ops scripts: add-source, update-source, add-company, source-health, backfill-embeddings, import-sources. |
 

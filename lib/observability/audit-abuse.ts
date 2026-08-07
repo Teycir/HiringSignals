@@ -2,7 +2,7 @@
  * KV-backed audit + abuse-signal logger.
  *
  * Inspired by Timeseal's auditLogger.ts. Stores are append-only and
- * partitioned by (day, eventType) so the abuse dashboard can do cheap
+ * partitioned by (day, eventType) so operator tooling can do cheap
  * counts via a single `kv.list({ prefix })` per bucket. Retention is
  * enforced via KV TTL on every entry; no separate sweep job.
  *
@@ -58,12 +58,13 @@ function uuidLike(): string {
 /**
  * KV key: <prefix><day>:<type>:<uuid>
  *
- * Design: prefix:day:type groups events for a single dashboard query via
- * `kv.list({ prefix: "ab:2026-07-27:RATE_LIMIT_HIT:" })`, then the uuid
- * suffix keeps concurrent writes unique (no clobbering). The IP is stored
- * *inside* the JSON value, not in the key — so querying "all events by
- * IP X today" is expensive, but querying counts for the abuse-dashboard
- * panels (the primary use case today) is one kv.list + .length per type.
+ * Design: prefix:day:type groups events for a single abuse-analysis
+ * query via `kv.list({ prefix: "ab:2026-07-27:RATE_LIMIT_HIT:" })`, then
+ * the uuid suffix keeps concurrent writes unique (no clobbering). The
+ * IP is stored *inside* the JSON value, not in the key — so querying
+ * "all events by IP X today" is expensive, but querying counts for
+ * operator inspection panels (the primary use case) is one
+ * kv.list + .length per type.
  */
 function makeKey(cfg: AuditAbuseConfig, ev: AbuseEvent): string {
   const prefix = cfg.prefix ?? "ab:";

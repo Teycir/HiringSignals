@@ -9,7 +9,7 @@
  *
  * Separate namespaces per project KV namespacing rule: abuse logs carry
  * PII (IPs) and should not share a KV scope with cache data or raw ATS
- * payloads; an IAM policy can grant abuse-dashboard operators read-only
+ * payloads; an IAM policy can grant abuse-analysis operators read-only
  * access to ABUSE_LOGS alone.
  *
  * One policy: freeReadTier() -> generous per-IP rate limit, no CAPTCHA,

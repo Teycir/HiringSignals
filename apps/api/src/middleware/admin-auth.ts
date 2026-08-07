@@ -16,8 +16,8 @@
  *      of subsequent attempts. Strike window resets passively via KV TTL.
  *
  * All auth events (success, wrong_secret, locked_out, secret_unset) are
- * fire-and-forget appended to ABUSE_LOGS KV via recordAbuseEvent so an
- * operator dashboard can inspect trends. Writes never block the response.
+ * fire-and-forget appended to ABUSE_LOGS KV via recordAbuseEvent so
+ * operator tooling can inspect trends. Writes never block the response.
  *
  * Token transport: clients MUST send `Authorization: Bearer <SECRET>`.
  * A query param fallback is intentionally NOT supported — query strings

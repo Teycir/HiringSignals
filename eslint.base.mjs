@@ -1,6 +1,7 @@
 // Shared ESLint flat-config building blocks for every workspace package.
 // Each app/package composes these with its own framework-specific config
-// (e.g. apps/web adds next/core-web-vitals on top of this).
+// on top (CLI apps add no framework layer; Worker API uses hono-aware rules
+// inline if needed).
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
@@ -21,8 +22,6 @@ export const baseConfig = [
   {
     ignores: [
       "**/node_modules/**",
-      "**/.next/**",
-      "**/out/**",
       "**/dist/**",
       "**/.wrangler/**",
       "**/coverage/**",

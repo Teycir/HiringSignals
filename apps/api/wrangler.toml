@@ -85,8 +85,8 @@ id = "ca20113fb0cf427f87310007f96f2cb5"
 # Separate namespace per project KV namespacing rule: abuse logs contain
 # IP addresses, event timestamps, and route identifiers that should not
 # share a namespace with cache data or raw payloads. An IAM policy can
-# grant read-only access to just this namespace for the abuse-dashboard
-# operator role without leaking facet cache counters or ATS payloads.
+# grant read-only access to just this namespace for abuse-analysis
+# operators without leaking facet cache counters or ATS payloads.
 #
 # Provisioned 2026-07-30 via:
 #   npx wrangler kv namespace create ABUSE_LOGS

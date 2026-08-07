@@ -1,17 +1,16 @@
 // API-shaped read types (spec 9.2/9.3/10.4/10.5), split out from the repo
 // modules that define them so consumers that only need types -- not query
 // functions -- never pull in D1Client (and therefore never need the
-// ambient D1Database type from @cloudflare/workers-types). apps/web was the
-// motivating case (deleted 2026-08-07, CLI-first decision) -- it was a
-// browser bundle with no D1 binding, and `tsc` resolves a module's full
-// type graph even for `import type`-only usage, so importing
-// SignalListItem etc. from signals-repo.ts directly used to drag
-// d1-client.ts's D1Database reference into its typecheck and fail it. The
-// extraction stays useful for any future non-D1 consumer (e.g. apps/cli,
-// though that's a Node process without the same binding-absence
-// constraint). The repo modules still own these definitions' source of
-// truth via re-export (`export type { X } from "./types"`), so this is a
-// pure extraction -- no shape changes, no new duplication.
+// ambient D1Database type from @cloudflare/workers-types). The motivating
+// case was consumers that have no Worker D1 binding at all (e.g. a
+// browser bundle, a plain Node CLI): tsc resolves a module's full type
+// graph even for `import type`-only usage, so importing SignalListItem
+// etc. from signals-repo.ts directly used to drag d1-client.ts's
+// D1Database reference into their typecheck and fail it. This extraction
+// stays useful for any future non-D1 consumer (apps/cli, etc.). The repo
+// modules still own these definitions' source of truth via re-export
+// (`export type { X } from "./types"`), so this is a pure extraction --
+// no shape changes, no new duplication.
 import type { RoleCategory, SignalStatus, SignalType } from "@hiring-signals/domain";
 
 /** API-shaped signal (spec 9.2/9.3), derived from SignalRow. */

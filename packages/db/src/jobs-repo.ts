@@ -390,9 +390,9 @@ export interface DetectionLatencyStats {
   /** Median minutes between a source_run starting and the FIRST
    * job_observations row it produced for a given job (i.e. the run that
    * first discovered that job) -- p50 of spec §12's "posting live ->
-   * visible in dashboard" detection-latency metric. `null` when there
-   * are zero qualifying samples (e.g. a brand-new source/company with
-   * no first-observation history yet). */
+   * visible to API consumers" detection-latency metric. `null` when
+   * there are zero qualifying samples (e.g. a brand-new source/company
+   * with no first-observation history yet). */
   p50LatencyMinutes: number | null;
   /** 95th percentile of the same distribution. */
   p95LatencyMinutes: number | null;
@@ -406,7 +406,7 @@ export interface DetectionLatencyStats {
 
 /**
  * Detection-latency percentiles (ROADMAP.md K.2, spec §12's primary
- * optimization-target metric: "posting live -> visible in dashboard,
+ * optimization-target metric: "posting live -> visible to API consumers,
  * p50 <= effective per-source pollIntervalMinutes"). Needs no schema
  * change -- entirely derived from `first_seen_at` (jobs), `started_at`
  * (source_runs), scoped via `job_observations` to the specific run that

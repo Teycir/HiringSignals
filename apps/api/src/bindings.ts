@@ -24,7 +24,7 @@ export interface Bindings {
    *  without exposing CACHE-scope secrets or vice-versa. */
   RAW_PAYLOADS: KVNamespace;
   /** Append-only abuse/audit event log (14-day TTL). Separate namespace
-   *  so IAM can grant abuse-dashboard read access without leaking cache
+   *  so IAM can grant abuse-analysis read access without leaking cache
    *  counters or raw ATS payload contents. */
   ABUSE_LOGS: KVNamespace;
   INGEST_QUEUE: Queue;

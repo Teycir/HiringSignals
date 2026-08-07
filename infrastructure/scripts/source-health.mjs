@@ -10,7 +10,7 @@
 // read-time judgment on top of it).
 //
 // p50 latency (ROADMAP.md K.2, spec §15's detection-latency metric:
-// "posting live -> visible in dashboard, p50 <= effective per-source
+// "posting live -> visible to API consumers, p50 <= effective per-source
 // pollIntervalMinutes") is computed inline as a correlated scalar
 // subquery per source row, duplicating packages/db's
 // getDetectionLatencyStats query shape by hand -- same reasoning as this

@@ -142,8 +142,7 @@ hiring-signals/
 ├── packages/
 │   ├── domain/                      # Zod schemas, types, scoring constants
 │   ├── adapters/                    # ATS adapter interface and implementations
-│   ├── db/                          # migrations and query helpers
-│   └── ui/                          # optional shared presentational primitives (not yet scaffolded)
+│   └── db/                          # migrations and query helpers
 ├── infrastructure/
 │   ├── d1/migrations/
 │   └── scripts/

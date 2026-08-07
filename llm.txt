@@ -26,7 +26,6 @@ packages/domain/ Zod schemas, taxonomies, classification, lifecycle,
 packages/adapters/ AtsAdapter interface; 8 P0 providers implemented (coverage closed at 8,
                   decided with the user 2026-08-04)
 packages/db/     D1 client + read/write repository functions
-packages/ui/     Optional shared UI primitives
 infrastructure/  D1 migrations (0001-0004) + ops scripts (add-source, update-source,
                   add-company, source-health, backfill-embeddings)
 ```

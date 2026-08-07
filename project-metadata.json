@@ -22,7 +22,6 @@
     "packages/adapters": "AtsAdapter interface; 8 active ATS adapters (greenhouse, lever, ashby, recruitee, breezy, personio, smartrecruiters, workable)",
     "packages/db": "D1 client + read/write/export repository functions",
     "packages/test-support": "Live Cloudflare bindings & transport layer for zero-mocks testing",
-    "packages/ui": "Optional shared UI primitives",
     "infrastructure": "D1 migrations (0001-0004) + ops scripts (add-source, update-source, add-company, source-health, backfill-embeddings, import-sources)"
   },
   "status": {
