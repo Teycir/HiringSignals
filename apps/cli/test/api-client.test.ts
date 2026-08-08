@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiClientError,
   fetchCompanies,
+  fetchCompanyTimeline,
   fetchFacets,
   fetchSignals,
   fetchSignalsCsv,
@@ -97,6 +98,61 @@ describe("fetchSignals (query serialization)", () => {
     expect(calledUrl).toContain("roles=software_engineering%2Cai_machine_learning");
     expect(calledUrl).not.toContain("q=");
     expect(calledUrl).toContain("minScore=50");
+  });
+});
+
+describe("fetchCompanyTimeline (O.1/O.2, query serialization + envelope)", () => {
+  it("builds /api/v1/companies/:slug/timeline and returns the parsed data/meta envelope", async () => {
+    const fixture = {
+      data: {
+        company: { id: "co_1", slug: "acme", displayName: "Acme", domain: null, industry: null, employeeBand: null },
+        buckets: [
+          {
+            bucketStart: "2026-07-01T00:00:00.000Z",
+            bucketEnd: "2026-07-15T00:00:00.000Z",
+            newJobsCount: 3,
+            closedJobsCount: 0,
+            activeJobsCount: 3,
+            roleBreakdown: [{ roleCategory: "software_engineering", count: 3 }],
+            locationBreakdown: [{ countryCode: "US", count: 3 }],
+            signalTypes: ["hiring_burst"],
+          },
+        ],
+      },
+      meta: { requestId: "req_test_tl", appliedFilters: { bucketDays: 14 } },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(fixture));
+
+    const result = await fetchCompanyTimeline(config, "acme", { bucketDays: 14 });
+
+    expect(result).toEqual(fixture);
+    const calledUrl = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(calledUrl).toBe("http://localhost:8787/api/v1/companies/acme/timeline?bucketDays=14");
+  });
+
+  it("URL-encodes the slug and omits the query string entirely with no params", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ data: { company: {}, buckets: [] }, meta: { requestId: "req_test_tl2", appliedFilters: {} } }),
+    );
+
+    await fetchCompanyTimeline(config, "acme corp/x");
+
+    const calledUrl = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(calledUrl).toBe("http://localhost:8787/api/v1/companies/acme%20corp%2Fx/timeline");
+  });
+
+  it("propagates a 404 NOT_FOUND ApiClientError for an unknown slug", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: "NOT_FOUND", message: "Company nope not found.", requestId: "req_test_tl3" } },
+        404,
+      ),
+    );
+
+    await expect(fetchCompanyTimeline(config, "nope")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      requestId: "req_test_tl3",
+    });
   });
 });
 

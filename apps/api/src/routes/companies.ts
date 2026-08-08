@@ -4,10 +4,40 @@ import type { AppEnv } from "../bindings";
 import {
   createD1Client,
   getCompanyBySlug,
+  getCompanyHiringTimeline,
   getRecentSignalsForCompany,
   searchCompanies,
 } from "@hiring-signals/db";
+import { companyTimelineQuerySchema } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
+
+/** Milestone O.1's own cap: v1 rejects windows wider than 90 days. */
+const MAX_TIMELINE_WINDOW_DAYS = 90;
+
+/**
+ * Resolves since/until defaults and validates the resulting window,
+ * pulled out of the route handler as a pure function so it's directly
+ * unit-testable without a live D1 client or a running server -- the
+ * only branching logic in the timeline route that isn't a pass-through
+ * to getCompanyHiringTimeline itself.
+ */
+export function resolveTimelineWindow(
+  parsed: { since?: string; until?: string },
+  now: Date = new Date(),
+): { ok: true; since: string; until: string } | { ok: false; message: string } {
+  const until = parsed.until ?? now.toISOString();
+  const since = parsed.since ?? new Date(now.getTime() - MAX_TIMELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  const windowMs = Date.parse(until) - Date.parse(since);
+  const maxWindowMs = MAX_TIMELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  if (windowMs < 0 || windowMs > maxWindowMs) {
+    return {
+      ok: false,
+      message: `since/until window must be positive and at most ${MAX_TIMELINE_WINDOW_DAYS} days.`,
+    };
+  }
+  return { ok: true, since, until };
+}
 
 const companiesQuerySchema = z.object({
   q: z.string().min(2).optional(),
@@ -52,5 +82,67 @@ companiesRoute.get("/:slug", async (c) => {
   return c.json({
     data: { ...company, recentSignals },
     meta: { requestId: c.get("requestId") },
+  });
+});
+
+/**
+ * Company hiring timeline (ROADMAP.md Milestone O.1, spec §1.4/§10.1).
+ * Time-bucketed summary of hiring activity for one company. Pure read
+ * path over getCompanyHiringTimeline (packages/db/src/companies-repo.ts).
+ *
+ * `since`/`until` default here (90d-ago / now), not in
+ * companyTimelineQuerySchema itself -- "now" at schema-module-load time
+ * would be stale by request time, same reasoning that schema's own
+ * header comment documents. Window is clamped to
+ * MAX_TIMELINE_WINDOW_DAYS (90d, matching O.1's own "cap at 90 days v1"
+ * wording) with a 400 if the caller's since/until exceeds it, rather than
+ * silently truncating -- an agent needs to know its request was rejected,
+ * not get back fewer buckets than it asked for with no signal why.
+ */
+companiesRoute.get("/:slug/timeline", async (c) => {
+  const slug = c.req.param("slug");
+  const parsed = companyTimelineQuerySchema.parse(c.req.query());
+  const client = createD1Client(c.env.DB);
+  const company = await getCompanyBySlug(client, slug);
+
+  if (!company) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Company ${slug} not found.`,
+          requestId: c.get("requestId"),
+        },
+      },
+      404,
+    );
+  }
+
+  const window = resolveTimelineWindow(parsed);
+  if (!window.ok) {
+    return c.json(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: window.message,
+          requestId: c.get("requestId"),
+        },
+      },
+      400,
+    );
+  }
+  const { since, until } = window;
+
+  const buckets = await getCompanyHiringTimeline(client, {
+    companyId: company.id,
+    roleCategoryFilter: parsed.roles,
+    since,
+    until,
+    bucketDays: parsed.bucketDays,
+  });
+
+  return c.json({
+    data: { company, buckets },
+    meta: { requestId: c.get("requestId"), appliedFilters: { ...parsed, since, until } },
   });
 });

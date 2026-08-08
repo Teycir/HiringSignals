@@ -1,10 +1,11 @@
 import type {
+  CompanyHiringTimelineBucket,
   CompanySummary,
   Facets,
   SignalDetail,
   SignalListItem,
 } from "@hiring-signals/db/src/types";
-import { apiErrorSchema, type SignalsQuery } from "@hiring-signals/domain";
+import { apiErrorSchema, type CompanyTimelineQuery, type SignalsQuery } from "@hiring-signals/domain";
 
 /**
  * Single place apps/cli talks to the Worker API (spec 12.1, ROADMAP.md
@@ -179,6 +180,30 @@ export async function fetchCompanyDetail(
   slug: string,
 ): Promise<{ data: CompanyDetail; meta: { requestId: string } }> {
   return request(config, `/api/v1/companies/${encodeURIComponent(slug)}`);
+}
+
+/**
+ * GET /api/v1/companies/:slug/timeline (ROADMAP.md Milestone O.1/O.2,
+ * spec §1.4/§10.1). Params validated by CompanyTimelineQuery
+ * (@hiring-signals/domain) upstream in the CLI command layer, same
+ * pattern as fetchSignals -- this function just serializes an
+ * already-validated object to a query string and calls the route.
+ */
+export interface CompanyTimelineResponse {
+  data: { company: CompanySummary; buckets: CompanyHiringTimelineBucket[] };
+  meta: { requestId: string; appliedFilters: Record<string, unknown> };
+}
+
+export async function fetchCompanyTimeline(
+  config: CliClientConfig,
+  slug: string,
+  params: Partial<CompanyTimelineQuery> = {},
+): Promise<CompanyTimelineResponse> {
+  const qs = queryFromRecord(params);
+  return request<CompanyTimelineResponse>(
+    config,
+    `/api/v1/companies/${encodeURIComponent(slug)}/timeline${qs ? `?${qs}` : ""}`,
+  );
 }
 
 /** GET /api/v1/sources (no dedicated spec section beyond the route list in

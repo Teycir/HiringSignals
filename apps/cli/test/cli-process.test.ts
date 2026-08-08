@@ -77,4 +77,22 @@ describe("hs CLI error paths (real subprocess)", () => {
     expect(lines).toHaveLength(1);
     expect(() => JSON.parse(lines[0] as string)).not.toThrow();
   });
+
+  it("companies timeline exits non-zero with NETWORK_ERROR/req_none when the API host is unreachable", () => {
+    // ROADMAP.md Milestone O.2: same NETWORK_ERROR-path assertion as the
+    // `facets` case above, extended to the new `companies timeline`
+    // subcommand -- confirms it goes through the same api-client.ts
+    // request() error path (single JSON object on stderr, non-zero
+    // exit), not a special-cased success-shape assumption.
+    const result = runCli(["companies", "timeline", "acme"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("NETWORK_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
 });
