@@ -10,7 +10,7 @@
     "lint": "eslint . --max-warnings 0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250127.0",
+    "@cloudflare/workers-types": "^5.20260807.2",
     "@types/node": "^24.13.3",
     "eslint": "^10.8.0",
     "typescript": "^5.7.3"

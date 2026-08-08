@@ -4,7 +4,7 @@
  * Four-layer defense, matching ArxivExplorer's hardened pattern:
  *   1. Fail-closed: if ADMIN_SECRET binding is unset (not a wrangler secret),
  *      every admin route returns 403 regardless of request headers.
- *   2. Constant-time comparison via crypto.subtle timingSafeEqual — never
+ *   2. Constant-time comparison via node:crypto's timingSafeEqual — never
  *      === or localeCompare, both of which leak byte-difference information
  *      through timing side channels.
  *   3. Per-IP strike counter in ABUSE_LOGS KV, keyed on SHA-256(IP) so raw
@@ -26,6 +26,7 @@
 
 import type { MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { timingSafeEqual as nodeTimingSafeEqual } from "node:crypto";
 import type { AppEnv } from "../bindings";
 import {
   recordAbuseEvent,
@@ -76,14 +77,28 @@ function logAbuse(
   );
 }
 
-async function timingSafeEqualStrings(a: string, b: string): Promise<boolean> {
+/** Exported for direct unit testing (apps/api/test/middleware/admin-auth.test.ts)
+ * -- pure function, exporting it doesn't change adminAuth()'s runtime behavior.
+ *
+ * Bug found and fixed 2026-08-08 while adding this file's first real test
+ * coverage: `crypto.subtle.timingSafeEqual` is not a real Web Crypto API
+ * method (neither the browser standard nor the Workers runtime expose it)
+ * -- every call threw `TypeError: crypto.subtle.timingSafeEqual is not a
+ * function`, so the timing-oracle fix in commit 78a68cf had never actually
+ * executed successfully; adminAuth() always 500'd before this had a test to
+ * catch it. The real constant-time primitive lives in `node:crypto`
+ * (available here because `wrangler.toml` sets `compatibility_flags =
+ * ["nodejs_compat"]`) as a synchronous `timingSafeEqual(a, b)` that requires
+ * equal-length inputs -- hence the explicit pad-to-maxLen step below still
+ * matters, not just for the timing property but to satisfy that precondition. */
+export async function timingSafeEqualStrings(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
   const aBuf = enc.encode(a);
   const bBuf = enc.encode(b);
 
   // Compare fixed-length buffers so a wrong-length bearer token does not
-  // return before the WebCrypto comparison. Length still must match for a
-  // valid token, but folding that check into the final boolean avoids an
+  // return before the constant-time comparison. Length still must match for
+  // a valid token, but folding that check into the final boolean avoids an
   // easy remote timing oracle for ADMIN_SECRET length.
   const maxLen = Math.max(aBuf.byteLength, bBuf.byteLength);
   const aPadded = new Uint8Array(maxLen);
@@ -91,7 +106,7 @@ async function timingSafeEqualStrings(a: string, b: string): Promise<boolean> {
   aPadded.set(aBuf);
   bPadded.set(bBuf);
 
-  const bytesMatch = crypto.subtle.timingSafeEqual(aPadded, bPadded);
+  const bytesMatch = nodeTimingSafeEqual(aPadded, bPadded);
   return bytesMatch && aBuf.byteLength === bBuf.byteLength;
 }
 

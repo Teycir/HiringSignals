@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it, vi, beforeEach } from "vitest";
 import type { Message, VectorizeVector } from "@cloudflare/workers-types";
-import type { IngestMessage } from "@hiring-signals/domain";
+import type { IngestMessage, NormalizedJob } from "@hiring-signals/domain";
 import {
   createLiveD1Database,
   createLiveAiBinding,
@@ -258,8 +258,23 @@ function unusedBinding<T>(name: string): T {
  * Adapter mocking is the documented AGENTS.md exception (see file header)
  * -- not a leftover from the pre-migration fake.
  */
-let fetchBoardImpl: ReturnType<typeof vi.fn>;
-let normalizeImpl: ReturnType<typeof vi.fn>;
+/**
+ * Explicit function signatures (not the bare `ReturnType<typeof vi.fn>`
+ * used before Vitest 4) -- Vitest 4 changed vi.fn()'s default inferred
+ * type to a wider `Mock<Procedure | Constructable>` union, which isn't
+ * directly callable without a type guard (see Vitest 4 migration guide,
+ * "module mocking" changes). Typed against the real contract shapes
+ * (AtsAdapter.fetchBoard/.normalize's own declared return types, per
+ * adapter-contract.ts) rather than one call site's inferred literal --
+ * a literal-typed mock rejected every reassignment elsewhere in this
+ * file that varies department/descriptionText/locationMode (all
+ * legitimately optional per NormalizedJob), which is the actual bug a
+ * first pass at this fix introduced and this corrects.
+ */
+let fetchBoardImpl: ReturnType<
+  typeof vi.fn<() => Promise<AdaptersModule.AdapterFetchResult>>
+>;
+let normalizeImpl: ReturnType<typeof vi.fn<() => NormalizedJob[]>>;
 
 vi.mock("@hiring-signals/adapters", async (importOriginal) => {
   const actual = await importOriginal<typeof AdaptersModule>();
@@ -269,8 +284,14 @@ vi.mock("@hiring-signals/adapters", async (importOriginal) => {
       if (provider !== "greenhouse") throw new actual.UnsupportedProviderError(provider as never);
       return {
         provider: "greenhouse",
-        fetchBoard: (...args: unknown[]) => fetchBoardImpl(...args),
-        normalize: (...args: unknown[]) => normalizeImpl(...args),
+        // Real inputs (SourceConfig/FetchContext, raw/SourceConfig) are
+        // intentionally discarded -- fetchBoardImpl/normalizeImpl are
+        // scripted zero-arg mocks per-test (see this file's header);
+        // no test asserts on the arguments a real adapter would have
+        // received here (confirmed: no fetchBoardImpl.mock.calls or
+        // normalizeImpl.mock.calls assertion exists in this file).
+        fetchBoard: () => fetchBoardImpl(),
+        normalize: () => normalizeImpl(),
       };
     },
   };
