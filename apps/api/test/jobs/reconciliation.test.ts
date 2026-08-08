@@ -35,6 +35,17 @@ import { handleReconciliation } from "../../src/jobs/reconciliation";
  * `finally` (FK-safe: signal_evidence -> signals -> companies), with an
  * `afterEach` sweep as a second pass -- same discipline as
  * signals-write-repo.test.ts.
+ *
+ * `operationTimeoutMs: 30_000` fix (2026-08-08): this file's module-
+ * level `client` originally had no override, and every
+ * `handleReconciliation(...)` call below omitted its own third
+ * `operationTimeoutMs` argument -- both defaulted to the circuit
+ * breaker's bare 15s (lib/http/circuit-breaker.ts), which real live-D1
+ * calls in this environment exceed. All 6 tests in this file failed
+ * with `CircuitBreakerError` (`TIMEOUT`) before this fix. 30_000 was
+ * chosen to match ingest-consumer.test.ts's own module-level client
+ * override exactly (ROADMAP.md J.2), not a value picked freshly for
+ * this file.
  */
 
 const TEST_PREFIX = "test-recon";
@@ -44,7 +55,24 @@ function testSlug(label: string): string {
   return `${TEST_PREFIX}-${label}-${seq}-${Date.now()}`;
 }
 
-const client: D1Client = createD1Client(createLiveD1Database());
+// operationTimeoutMs override -- raised from the initial 30_000 to
+// 60_000 (2026-08-08) after a full, real run at 30_000 still hit
+// `CircuitBreakerError: Operation timed out after 30000ms` on 4 of 6
+// tests. This file's own seed/cleanup helpers (createCompany,
+// createSignal, client.batch(), etc.) plus handleReconciliation's own
+// internal D1 calls chain multiple sequential `wrangler d1 execute
+// --remote` round trips per test, and live per-call latency in this
+// environment is higher/more variable than ingest-consumer.test.ts's
+// original 30_000 baseline (ROADMAP.md J.2) anticipated -- confirmed by
+// a full live run (2026-08-08) that took 580s end-to-end for 6 tests at
+// the 30_000 setting. Not a fixed per-call cost: individual `wrangler
+// d1 execute` calls were also observed to intermittently fail with
+// Cloudflare API `code: 7403` (documented as a known transient-auth
+// signature in d1-remote-transport.ts's isTransientAuthFailure, which
+// already retries it) -- 60_000 gives real headroom for that retry
+// backoff (500ms + 1500ms) plus a slow call, without masking a truly
+// hung call the way an unbounded wait would.
+const client: D1Client = createD1Client(createLiveD1Database(), { operationTimeoutMs: 60_000 });
 
 /** All 6 statements run in one client.batch() call -- D1's real
  * atomicity primitive (see lib/d1/client.ts's batch() header comment;
@@ -149,7 +177,7 @@ describe("handleReconciliation", () => {
       });
 
       const db = createLiveD1Database();
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
 
       const persisted = await client.first<{
         score: number;
@@ -204,7 +232,7 @@ describe("handleReconciliation", () => {
       });
 
       const db = createLiveD1Database();
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
 
       const persisted = await client.first<{ score: number; score_version: string }>(
         `SELECT score, score_version FROM signals WHERE id = ?`,
@@ -246,7 +274,7 @@ describe("handleReconciliation", () => {
       await client.run(`UPDATE signals SET status = 'expired' WHERE id = ?`, [signalId]);
 
       const db = createLiveD1Database();
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
 
       const persisted = await client.first<{ score: number; score_version: string }>(
         `SELECT score, score_version FROM signals WHERE id = ?`,
@@ -320,6 +348,13 @@ describe("handleReconciliation", () => {
   }
 
   it("appends still_active evidence and bumps last_detected_at for a stale signal whose job was recently seen", async () => {
+    // 180_000 per-test timeout override (2026-08-08): this test's own
+    // seedStillActiveSignal (4 sequential live-D1 inserts) +
+    // handleReconciliation + assertions + cleanupCompany chain enough
+    // 60_000-capable D1 round trips to exceed vitest.config.ts's
+    // workspace-default 90_000 testTimeout -- confirmed live (121774ms
+    // observed) after the operationTimeoutMs 30_000->60_000 fix
+    // resolved the earlier CircuitBreakerError/FK failures.
     const seeded = await seedStillActiveSignal({
       label: "sa-recent",
       signalDetectedAt: "2026-07-01T06:00:00.000Z",
@@ -328,7 +363,7 @@ describe("handleReconciliation", () => {
     });
     try {
       const db = createLiveD1Database();
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
 
       const persisted = await client.first<{ last_detected_at: string; score: number }>(
         `SELECT last_detected_at, score FROM signals WHERE id = ?`,
@@ -354,7 +389,7 @@ describe("handleReconciliation", () => {
     } finally {
       await cleanupCompany(seeded.company.id);
     }
-  });
+  }, 180_000);
 
   it("does not append still_active evidence when the backing job's last_seen_at is stale relative to its own poll interval", async () => {
     const seeded = await seedStillActiveSignal({
@@ -365,7 +400,7 @@ describe("handleReconciliation", () => {
     });
     try {
       const db = createLiveD1Database();
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
 
       const evidenceRows = await client.all<{ evidence_type: string }>(
         `SELECT evidence_type FROM signal_evidence WHERE signal_id = ?`,
@@ -375,7 +410,7 @@ describe("handleReconciliation", () => {
     } finally {
       await cleanupCompany(seeded.company.id);
     }
-  });
+  }, 180_000);
 
   it("does not append a second still_active evidence row the same day (idempotency guard)", async () => {
     const seeded = await seedStillActiveSignal({
@@ -386,8 +421,8 @@ describe("handleReconciliation", () => {
     });
     try {
       const db = createLiveD1Database();
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"));
-      await handleReconciliation(makeEnv(db), new Date("2026-07-31T14:00:00.000Z"));
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T14:00:00.000Z"), 60_000);
 
       const evidenceRows = await client.all<{ evidence_type: string }>(
         `SELECT evidence_type FROM signal_evidence WHERE signal_id = ? AND evidence_type = 'still_active'`,
@@ -397,5 +432,5 @@ describe("handleReconciliation", () => {
     } finally {
       await cleanupCompany(seeded.company.id);
     }
-  });
+  }, 210_000);
 });
