@@ -81,3 +81,22 @@ export interface Facets {
   sources: FacetCount[];
   locationModes: FacetCount[];
 }
+
+/**
+ * One time bucket of company hiring activity (ROADMAP.md Milestone
+ * O.1, spec §1.4/§10.1). `roleBreakdown`/`locationBreakdown` are
+ * capped top-N lists (see getCompanyHiringTimeline's header comment
+ * for the exact cap), not exhaustive -- a bucket with many distinct
+ * roles/countries still returns a legible-sized array, not one entry
+ * per distinct value.
+ */
+export interface CompanyHiringTimelineBucket {
+  bucketStart: string;
+  bucketEnd: string;
+  newJobsCount: number;
+  closedJobsCount: number;
+  activeJobsCount: number;
+  roleBreakdown: Array<{ roleCategory: RoleCategory | null; count: number }>;
+  locationBreakdown: Array<{ countryCode: string | null; count: number }>;
+  signalTypes: SignalType[];
+}
