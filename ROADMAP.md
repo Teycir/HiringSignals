@@ -203,6 +203,17 @@ and 7 `source_runs` (both from 2 test-fixture sources, `acme-corp`/
 meaningful p95/quota measurement, so items below split into what's
 verifiable now vs. blocked on real source volume.
 
+**2026-08-08 cleanup:** a separate, unrelated set of test-fixture rows
+(5 `companies` rows named "Reconciliation Fresh/Raced/Stale Co", slugs
+`test-recon-*`, created 2026-08-07 by `reconciliation.test.ts`'s live-D1
+runs) was found sitting in production alongside the `acme-corp`/
+`globo-labs` fixtures referenced above. Verified zero dependent `sources`/
+`jobs` rows, then deleted (`DELETE FROM companies WHERE id IN (...)`,
+5 rows removed, confirmed via follow-up `SELECT`). `acme-corp`/`globo-labs`
+were deliberately left in place — they have 6 real dependent `jobs` rows
+and 7 `source_runs` this section's own numbers cite as a baseline, so
+removing them would need a real cascade decision, not a same-day cleanup.
+
 - [ ] Measure actual p95 latency for cached facet response and
       uncached `/api/v1/signals` (targets: facet < 250ms, uncached
       signals query < 800ms for 50 results) — still blocked on a

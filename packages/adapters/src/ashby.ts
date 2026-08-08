@@ -48,9 +48,18 @@ const ashbyJobSchema = z.object({
   secondaryLocations: z.array(ashbySecondaryLocationSchema).optional(),
   department: z.string().optional(),
   team: z.string().optional(),
-  isListed: z.boolean().optional(),
-  isRemote: z.boolean().optional(),
-  workplaceType: ashbyWorkplaceTypeSchema.optional(),
+  isListed: z.boolean().nullable().optional(),
+  // Ashby's live board sends explicit `null` (not just an absent field) for
+  // isRemote/workplaceType on some jobs -- confirmed 2026-08-08 against a
+  // real fetch of api.ashbyhq.com/posting-api/job-board/openai, which
+  // returned `"isRemote":null,"workplaceType":null` on at least one posting.
+  // `.optional()` alone only tolerates `undefined`, so a genuine `null` in
+  // the response failed schema validation with a real board (schema_mismatch
+  // in source_runs, http_status 200) rather than a bad slug/network issue.
+  // `.nullable().optional()` treats a JSON `null` the same as a genuinely
+  // absent field, matching every other truly-optional field in this schema.
+  isRemote: z.boolean().nullable().optional(),
+  workplaceType: ashbyWorkplaceTypeSchema.nullable().optional(),
   descriptionPlain: z.string().optional(),
   publishedAt: z.string().optional(),
   employmentType: z.string().optional(),

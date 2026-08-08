@@ -22,7 +22,7 @@ function at(jobs: NormalizedJob[], i: number): NormalizedJob {
 describe("ashbyAdapter.normalize", () => {
   it("maps listed fixture postings and skips unlisted direct-link roles", () => {
     const result = ashbyAdapter.normalize(boardFixture, source);
-    expect(result).toHaveLength(3);
+    expect(result).toHaveLength(4);
     expect(result.map((job) => job.title)).not.toContain("Unlisted Direct Link Role");
   });
 
@@ -78,6 +78,15 @@ describe("ashbyAdapter.normalize", () => {
     const third = at(ashbyAdapter.normalize(boardFixture, source), 2);
     expect(third.postedAt).toBeUndefined();
     expect(third.updatedAt).toBeUndefined();
+  });
+
+  it("accepts explicit null isRemote/workplaceType (real Ashby boards send this, not just an absent field) and falls back to location inference", () => {
+    // Index 3, not 4: the fixture's 5th job is the 4th *listed* one after
+    // "Unlisted Direct Link Role" (isListed: false) is filtered out above.
+    const fourth = at(ashbyAdapter.normalize(boardFixture, source), 3);
+    expect(fourth.title).toBe("Administrative Business Partner");
+    expect(fourth.locationRaw).toBe("London, United Kingdom");
+    expect(fourth.locationMode).toBe("onsite");
   });
 
   it("throws AshbySchemaError on a structurally invalid posting", () => {

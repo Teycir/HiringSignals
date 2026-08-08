@@ -61,6 +61,18 @@
       "publishedAt": "2026-07-04T09:00:00.000Z",
       "employmentType": "FullTime",
       "jobUrl": "https://jobs.ashbyhq.com/example/unlisted-role"
+    },
+    {
+      "title": "Administrative Business Partner",
+      "location": "London, United Kingdom",
+      "department": "Administrative",
+      "isListed": true,
+      "isRemote": null,
+      "workplaceType": null,
+      "descriptionPlain": "Support leadership with scheduling and operations.",
+      "publishedAt": "2026-03-21T16:30:16.463Z",
+      "employmentType": "FullTime",
+      "jobUrl": "https://jobs.ashbyhq.com/example/ac978161-6f46-4f6b-ad9e-a258e642751c"
     }
   ]
 }
