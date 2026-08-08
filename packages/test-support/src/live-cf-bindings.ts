@@ -2,8 +2,10 @@
  * Real `AI`, `VECTORIZE`, and KV bindings for tests -- per AGENTS.md's
  * "zero mocks, zero fakes" policy, same reasoning as live-d1-client.ts
  * in this package. There is no way to construct a live
- * `Ai`/`VectorizeIndex`/`KVNamespace` binding outside a deployed Worker,
- * so each of these shells out to a real Cloudflare-facing CLI:
+ * `Ai`/`VectorizeIndex`/`KVNamespace` binding outside a deployed Worker.
+ * All three now go through direct Cloudflare REST calls (see below) --
+ * KV was the last holdout still shelling out to `wrangler`, until the
+ * 2026-08-08 revision documented below.
  *
  * Token resolution (`loadCfToken` below) delegates to
  * `d1-remote-transport.ts`'s `requireCfToken` -- unified 2026-08-06
@@ -13,20 +15,28 @@
  * silently drift apart.
  *
  * - AI + VECTORIZE: `wrangler`'s dev/remote HTTP surface isn't scriptable
- *   for a one-off run() the way D1/KV are, so these two go through the
+ *   for a one-off run() the way D1 is, so these two go through the
  *   same direct REST calls infrastructure/scripts/backfill-embeddings.mjs
  *   already established (Authorization: Bearer CF_TOKEN from
  *   .env.local, deliberately scoped to Workers AI: Edit + Vectorize:
  *   Edit only -- see .env.local's own header comment for why).
- * - KV: unlike AI/Vectorize, `wrangler kv key put/get/delete` IS a real
- *   scriptable CLI surface (confirmed via `wrangler kv key --help`,
- *   2026-07-30). Originally piggybacked on wrangler's own interactive
- *   login rather than widening CF_TOKEN's scope -- revised 2026-08-06
- *   after that stored login expired in a non-interactive environment
- *   with no way to re-run the browser-based `wrangler login` flow.
- *   CF_TOKEN's scope now includes KV:Edit (see .env.local's header) and
- *   runWrangler() passes it through as CLOUDFLARE_API_TOKEN, same as
- *   d1-remote-transport.ts already does for `wrangler d1`.
+ * - KV: originally shelled out to `wrangler kv key put/get/delete
+ *   --remote` (confirmed a real scriptable CLI surface, 2026-07-30) via
+ *   CF_TOKEN passed through as CLOUDFLARE_API_TOKEN -- revised
+ *   2026-08-08 after `admin-auth.test.ts`'s live-KV integration tests
+ *   were found to take 13-14s *per KV call* (measured live, this
+ *   machine: `wrangler --version` alone costs ~7s of real CPU time to
+ *   boot regardless of npx/local-binary/monorepo-vs-empty-dir, i.e. an
+ *   inherent wrangler-CLI-startup cost, not a cache-miss or network
+ *   issue -- confirmed by isolating each variable independently). KV
+ *   has the same direct-REST surface AI/Vectorize already use below
+ *   (confirmed live against the real ABUSE_LOGS namespace, 2026-08-08:
+ *   GET/PUT/DELETE each ~0.3-0.6s, a ~25x improvement over the wrangler
+ *   subprocess path), so KV now matches AI/Vectorize's approach instead
+ *   of being the one exception -- same CF_TOKEN, same Bearer-auth
+ *   pattern, no separate credential or scope needed (KV:Edit was
+ *   already added to CF_TOKEN's scope 2026-08-06 for the old wrangler
+ *   path; see .env.local's header).
  *
  * Lives in `@hiring-signals/test-support` (a real workspace package),
  * not inside `apps/api/test/lib/` where it originated (2026-07-30) --
@@ -35,21 +45,19 @@
  * nor repo-root `lib/` (documented project-agnostic, zero
  * `@hiring-signals/*` imports) is the right home.
  *
- * Node-version note: same as live-d1-client.ts -- run under
- * `nvm use 24.18.0`, wrangler requires >=22.
+ * Node-version note: this file itself no longer needs a wrangler-
+ * compatible Node version (KV/AI/Vectorize are all now plain `fetch`
+ * calls) -- the >=22 requirement only still applies if the *caller*
+ * also pulls in d1-remote-transport.ts's `execRemote` for live D1.
  */
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import type { Ai, VectorizeIndex, VectorizeMatches, VectorizeVector, KVNamespace } from "@cloudflare/workers-types";
 import { requireCfToken } from "./d1-remote-transport";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// packages/test-support/src -> repo root -> apps/api. Same "exactly one
-// wrangler.toml in the repo" reasoning as live-d1-client.ts's API_DIR.
-const REPO_ROOT = path.resolve(__dirname, "../../..");
-const API_DIR = path.join(REPO_ROOT, "apps/api");
-
+// No filesystem/subprocess machinery needed in this file anymore -- KV,
+// AI, and Vectorize are all plain `fetch` calls against Cloudflare's
+// REST API now (see header comment). d1-remote-transport.ts still owns
+// its own REPO_ROOT/API_DIR resolution for `wrangler d1`, unrelated to
+// this file.
 const CF_ACCOUNT_ID = "c62f54368e3f6a1f503afa434771b7e4"; // wrangler.toml's account_id
 // wrangler.toml's three KV namespace ids (CACHE/RAW_PAYLOADS/ABUSE_LOGS)
 // -- kept as a lookup table, not one hardcoded constant, so
@@ -80,100 +88,90 @@ function loadCfToken(): string {
   return requireCfToken();
 }
 
-/** Runs one `wrangler` subcommand against the API app's directory (where
- * wrangler.toml's bindings live), rejecting with real stderr/stdout on
- * failure -- same discipline as live-d1-client.ts's execRemote.
- *
- * Passes CLOUDFLARE_API_TOKEN (derived from CF_TOKEN via loadCfToken())
- * into the spawned process's env -- this file's own header comment
- * originally chose to rely on wrangler's stored interactive login
- * instead of CF_TOKEN for the KV surface specifically, but a stored
- * login can silently expire and its refresh flow needs an interactive
- * terminal, which CI/agent environments don't have. CF_TOKEN must be
- * scoped to include KV:Edit for this to work (see .env.local's header
- * comment on this token's scope) -- same env-injection pattern
- * d1-remote-transport.ts already uses for its own wrangler d1 calls. */
-function runWrangler(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("npx", ["wrangler", ...args], {
-      cwd: API_DIR,
-      shell: false,
-      env: { ...process.env, CLOUDFLARE_API_TOKEN: loadCfToken() },
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (err) => reject(new Error(`Failed to spawn wrangler: ${err.message}`)));
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
-  });
-}
-
 /**
  * Real `KVNamespace` backed by one of the three live, remote KV
  * namespaces (`CACHE`/`RAW_PAYLOADS`/`ABUSE_LOGS`, see wrangler.toml)
- * via `wrangler kv key put/get/delete --namespace-id ... --remote`.
- * Defaults to `CACHE` (this function's original single-namespace
- * behavior, before the 2026-07-30 generalization) so existing call
- * sites written as `createLiveKvNamespace()` keep working unchanged.
- * Only implements the three methods ttl-store.ts's makeTtlStore
- * actually calls (get with "text" type, put with expirationTtl,
- * delete) -- narrower than the full KVNamespace interface on purpose,
- * cast to it below since that's all any current caller needs.
+ * via Cloudflare's direct KV REST API (`GET`/`PUT`/`DELETE
+ * .../values/{key}`) -- same Bearer-auth-via-CF_TOKEN pattern as
+ * createLiveAiBinding/createLiveVectorizeIndex below, not a wrangler
+ * subprocess (see this file's header comment for why: a `wrangler kv`
+ * subprocess was measured live at 13-14s per call, vs ~0.3-0.6s for
+ * the equivalent REST call, confirmed 2026-08-08 against this same
+ * ABUSE_LOGS namespace). Defaults to `CACHE` (this function's original
+ * single-namespace behavior, before the 2026-07-30 generalization) so
+ * existing call sites written as `createLiveKvNamespace()` keep
+ * working unchanged. Only implements the three methods
+ * ttl-store.ts's makeTtlStore actually calls (get with "text" type,
+ * put with expirationTtl, delete) -- narrower than the full
+ * KVNamespace interface on purpose, cast to it below since that's all
+ * any current caller needs.
  *
- * get() on a missing key: confirmed live (2026-07-30) that `wrangler kv
- * key get` on a nonexistent key exits non-zero with a 404 from
- * Cloudflare's API, not an empty success -- translated to `null` below
- * to match KVNamespace.get's own documented behavior for a missing key.
+ * get() on a missing key: confirmed live (2026-08-08) that the REST
+ * `GET .../values/{key}` endpoint returns HTTP 404 with a JSON error
+ * envelope (`{ success: false, errors: [{ code: 10009, message: "get:
+ * 'key not found'" }] }`) for a nonexistent key, not an empty 200 --
+ * translated to `null` below to match KVNamespace.get's own documented
+ * behavior for a missing key.
  */
 export function createLiveKvNamespace(binding: LiveKvBinding = "CACHE"): KVNamespace {
   const namespaceId = KV_NAMESPACE_IDS[binding];
+  const cfToken = loadCfToken();
+  const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values`;
+
   return {
     async get(key: string, _type?: unknown): Promise<string | null> {
-      const { code, stdout, stderr } = await runWrangler([
-        "kv",
-        "key",
-        "get",
-        key,
-        "--namespace-id",
-        namespaceId,
-        "--remote",
-        "--text",
-      ]);
-      if (code !== 0) {
-        if (/404|not found/i.test(stderr) || /404|not found/i.test(stdout)) return null;
-        throw new Error(`wrangler kv key get failed (exit ${code}):\n${stderr || stdout}\nkey: ${key}`);
+      const res = await fetch(`${baseUrl}/${encodeURIComponent(key)}`, {
+        headers: { Authorization: `Bearer ${cfToken}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`KV get failed: HTTP ${res.status}: ${body.slice(0, 300)}\nkey: ${key}`);
       }
-      // wrangler prints the raw value with a trailing newline; --text
-      // mode has no other framing to strip.
-      return stdout.replace(/\n$/, "");
+      // Unlike AI/Vectorize's JSON envelope, a successful KV value GET
+      // returns the raw stored value as the response body directly (no
+      // { success, result } wrapper) -- confirmed live 2026-08-08.
+      return await res.text();
     },
 
     async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
-      const args = ["kv", "key", "put", key, value, "--namespace-id", namespaceId, "--remote"];
-      if (options?.expirationTtl) args.push("--ttl", String(options.expirationTtl));
-      const { code, stdout, stderr } = await runWrangler(args);
-      if (code !== 0) {
-        throw new Error(`wrangler kv key put failed (exit ${code}):\n${stderr || stdout}\nkey: ${key}`);
+      const url = new URL(`${baseUrl}/${encodeURIComponent(key)}`);
+      if (options?.expirationTtl) url.searchParams.set("expiration_ttl", String(options.expirationTtl));
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${cfToken}` },
+        body: value,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`KV put failed: HTTP ${res.status}: ${body.slice(0, 300)}\nkey: ${key}`);
+      }
+      const json = (await res.json()) as { success: boolean; errors?: unknown };
+      if (!json.success) {
+        throw new Error(`KV put failed: ${JSON.stringify(json.errors)}\nkey: ${key}`);
       }
     },
 
     async delete(key: string): Promise<void> {
-      // Confirmed live (2026-07-30): `wrangler kv key delete` on an
-      // already-absent key exits 0 (KV delete is idempotent by design,
-      // unlike `get` which 404s on a miss) -- so no "was it already
-      // gone" branch is needed here, any non-zero exit is a real failure.
-      const { code, stdout, stderr } = await runWrangler([
-        "kv",
-        "key",
-        "delete",
-        key,
-        "--namespace-id",
-        namespaceId,
-        "--remote",
-      ]);
-      if (code !== 0) {
-        throw new Error(`wrangler kv key delete failed (exit ${code}):\n${stderr || stdout}\nkey: ${key}`);
+      // Confirmed live (2026-08-08): DELETE on an already-absent key
+      // still returns HTTP 200 with success:true (KV delete is
+      // idempotent by design, unlike get which 404s on a miss) -- so
+      // no "was it already gone" branch is needed here, any non-2xx
+      // response is a real failure.
+      const res = await fetch(`${baseUrl}/${encodeURIComponent(key)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${cfToken}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`KV delete failed: HTTP ${res.status}: ${body.slice(0, 300)}\nkey: ${key}`);
+      }
+      const json = (await res.json()) as { success: boolean; errors?: unknown };
+      if (!json.success) {
+        throw new Error(`KV delete failed: ${JSON.stringify(json.errors)}\nkey: ${key}`);
       }
     },
   } as unknown as KVNamespace;
