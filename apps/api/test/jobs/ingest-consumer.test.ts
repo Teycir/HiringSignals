@@ -571,7 +571,12 @@ describe("handleIngestMessage - happy path", () => {
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+    // Explicit override: this test does 1 live ingest call plus 5 more live-D1
+    // verification reads (jobs, observations, signals, evidence, source run)
+    // and a cleanup teardown. Under live-infra load each round trip can take
+    // 80-100s+ (see AGENTS.md), so the workspace-default 90s testTimeout is
+    // not enough even though the underlying pipeline logic is correct.
+  }, 450_000);
 
   it("I.2: embeds a new job and upserts the vector with the documented metadata shape (spec §9.4)", async () => {
     const company = await seedCompany("embed", "Embed Path Co");
