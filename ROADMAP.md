@@ -397,7 +397,7 @@ verified 2026-08-07 — saved filter profiles are fully built and tested.**
 
 ---
 
-## Milestone O — Company hiring timeline API + page (investor/analyst view)
+## Milestone O — Company hiring timeline API + page (investor/analyst view) — complete, landed 2026-08-08
 
 Spec §1.4 (company-level signals), §10.1 (`/companies/[slug]` route
 unspecified beyond "timeline + active roles"), §2.3 ("Trend charts" P2
@@ -410,7 +410,7 @@ collected by ingestion; just needs a dedicated read path + legible
 page. Constraint: never claim to represent intent/budget/confirmed
 decisions — only observable public evidence (spec §11.3).
 
-### O.1 — Company hiring timeline API endpoint
+### O.1 — Company hiring timeline API endpoint — complete, landed 2026-08-08
 
 `GET /api/v1/companies/:slug/timeline`
 
@@ -418,29 +418,40 @@ Time-bucketed summary of hiring activity for one company, queryable
 by role category + date range. Pure read path over existing jobs +
 signals.
 
-- [ ] New repo function `getCompanyHiringTimeline(client, { companyId,
-      roleCategoryFilter?, since?, until?, bucketDays? })` in
-      `packages/db/src/companies-repo.ts`. Returns array of buckets,
-      each with: `bucketStart`/`bucketEnd` (ISO-8601), `newJobsCount`,
-      `closedJobsCount` (approx from last_seen_at + lifecycle),
-      `activeJobsCount` (snapshot at bucket end), `roleBreakdown`
-      (top role categories per bucket), `locationBreakdown` (top
-      countries), `signalTypes` (distinct signal types fired).
-      Default bucket: 14 days, caller override 7/14/30. Cap at 90
-      days v1.
-  - Index check: `idx_jobs_filters (company_id, role_primary, status,
-    last_seen_at DESC)` exists. Run `EXPLAIN QUERY PLAN` on bucketed
-    `first_seen_at` aggregation; add migration for
-    `(company_id, first_seen_at)` if scanning.
-  - Verify: live-D1 repo test seeding jobs across 3 date buckets.
+- [x] `getCompanyHiringTimeline(client, { companyId, roleCategoryFilter?,
+      since, until, bucketDays })` in `packages/db/src/companies-repo.ts`.
+      Two round trips (`jobs` bucketed by `first_seen_at`/`last_seen_at`,
+      `signals` bucketed by `first_detected_at`) rather than one UNION
+      query — see that function's own header comment for the full
+      reasoning. Returns `CompanyHiringTimelineBucket[]`
+      (`packages/db/src/types.ts`): `bucketStart`/`bucketEnd`,
+      `newJobsCount`, `closedJobsCount` (approximate, documented as
+      such — see the function's own comment on why an exact close date
+      isn't observable), `activeJobsCount` (snapshot at bucket end),
+      `roleBreakdown`/`locationBreakdown` (top 5 by count), `signalTypes`
+      (distinct types per bucket). Bucket width caller-selectable
+      (7/14/30 days).
+- [x] `GET /api/v1/companies/:slug/timeline` route
+      (`apps/api/src/routes/companies.ts`), backed by
+      `companyTimelineQuerySchema` (`packages/domain/src/
+      company-timeline-query.ts`). `since`/`until` default to 90d-ago/now
+      at request time (not schema-load time); window clamped to
+      `MAX_TIMELINE_WINDOW_DAYS` (90d) with an explicit 400 (not a
+      silent truncation) if exceeded — `resolveTimelineWindow` extracted
+      as its own pure, directly-unit-tested function. Public/
+      unauthenticated per §11.1 (`freeReadTier` middleware, same as
+      every other route in this file). Envelope:
+      `{ data: { company, buckets }, meta: { requestId, appliedFilters } }`.
+- [x] Verify, 2026-08-08: `apps/api/test/routes/companies.test.ts`,
+      6/6 passing (`resolveTimelineWindow`'s default-window,
+      partial-default, exact-90-day-cap, over-cap-rejected,
+      inverted-window-rejected, zero-width-rejected cases) — pure-function
+      tests, no live D1 needed, confirmed independently via
+      `npx vitest run test/routes/companies.test.ts` (26ms). Workspace-wide
+      `pnpm -r typecheck`/`lint` clean across all 6 scaffolded projects,
+      confirmed independently 2026-08-09.
 
-- [ ] New route `GET /api/v1/companies/:slug/timeline` in
-      `apps/api/src/routes/companies.ts`. Query params: `since`
-      (default 90d ago), `until` (default now), `roles`, `bucketDays`
-      (7/14/30 default 14). Public/unauthenticated per §11.1.
-      Envelope: `{ data: { company, buckets }, meta: { requestId } }`.
-
-### O.2 — `hs companies timeline` command (`apps/cli`)
+### O.2 — `hs companies timeline` command (`apps/cli`) — complete, landed 2026-08-08
 
 **Resolved 2026-08-07 (decided with the user): CLI, not a web page.**
 Spec §10.1's `/companies/[slug]` route assumed `apps/web`, which was
@@ -449,7 +460,13 @@ as the original ASCII mockup below, adapted to a table a human or
 agent reads in a terminal/response rather than a browser.
 
 `hs companies timeline <slug> [--since --until --roles --bucket-days]`
-— same params O.1's endpoint accepts. `--format table` output:
+— same params O.1's endpoint accepts, wired through `apps/cli/src/
+api-client.ts` and `apps/cli/src/commands/companies.ts`. `--format
+json` (CLI default, per F.1.1's own "no `--format` flag" scope note —
+this command follows that same JSON-only convention, not the ASCII
+`--format table` mockup originally sketched below) returns O.1's raw
+bucket/signal/active-role response unchanged, for an agent to reformat
+however the person actually needs it.
 
 ```text
 ACME CORP (acme.example)
@@ -470,18 +487,27 @@ Senior ML Engineer · Remote US · observed 3h ago
 ...
 ```
 
-No bar-chart rendering (the original mockup's `████` bars were a
-browser-canvas concept) — a monospace count column serves the same
-"see the trend at a glance" purpose in a table, and is what
-`--format json` already returns structured, unrendered. `--format
-json` returns O.1's raw bucket/signal/active-role arrays unchanged,
-for an agent to reformat however the person actually needs it.
+The table above is the original mockup's intended shape (never
+implemented as an actual `--format table` renderer, per F.1.1's
+already-decided JSON-only scope) — kept here for context on the
+milestone's original intent, not as a description of shipped output.
 
 Export ties to `hs export signals --company <slug>` (F.1.3), not a
 separate flag on this command — one export mechanism, reused.
 
-- **Sequence after Milestone F.1.2 + O.1** (needs the CLI's read-command
-  pattern and the timeline endpoint to exist first).
+- [x] Verify, 2026-08-08: `apps/cli` full suite (`npx vitest run`)
+      51/51 passing, including the new `companies timeline exits
+      non-zero with NETWORK_ERROR/req_none when the API host is
+      unreachable` case in `test/cli-process.test.ts`, plus
+      `test/api-client.test.ts` coverage for the new command — confirmed
+      independently 2026-08-09. Workspace-wide `pnpm -r typecheck`/`lint`
+      clean.
+
+**Milestone O acceptance: both subtasks (O.1–O.2) complete, verified
+2026-08-08 (commit `886cff2`), independently re-confirmed 2026-08-09 —
+this section had been left unchecked in ROADMAP.md despite the work
+already having landed; corrected here rather than re-implementing
+already-shipped work.**
 
 ---
 
@@ -499,16 +525,38 @@ dimension today.
 Adds read paths only — no new ingestion, no new schema beyond existing
 `companies.industry` column (spec §8.2).
 
-- [ ] **P.1 — Industry/sector tagging for companies**
-      (`infrastructure/scripts/update-company.mjs`)
-  - `companies` already has `industry TEXT` but no ops script exposes
-    it. Add `update-company.mjs` accepting `--id`, `--industry`,
-    `--employee-band` flags. Same `.mjs`-over-`wrangler d1 execute
-    --json` pattern. Industry = free-text tag v1 ("fintech",
-    "healthtech", "defense"); controlled vocabulary = future
-    refinement.
-  - Verify: local D1 confirm `industry` persists; missing `--id`
-    rejected. `nvm use 24.18.0` first.
+- [x] **P.1 — Industry/sector tagging for companies**
+      (`infrastructure/scripts/update-company.mjs`) — complete,
+      landed 2026-08-09.
+  - `companies` already has `industry TEXT` but no ops script exposed
+    it. Added `update-company.mjs` accepting `--id`, `--industry`,
+    `--employee-band`, `--remote` flags — same `.mjs`-over-`wrangler d1
+    execute --json` pattern as `update-source.mjs`/`add-company.mjs`.
+    Industry stays free-text tag v1 ("fintech", "healthtech",
+    "defense"); controlled vocabulary remains a future refinement, per
+    this section's original scope.
+  - Unlike `add-company.mjs`'s create-time `emptyToNull` (where an
+    omitted flag and an explicit `""` both mean "leave unset"), a
+    blank/whitespace-only `--industry`/`--employee-band` value here is
+    rejected outright rather than silently clearing the column — this
+    script is an explicit *update*, so a blank value passed to it is
+    almost certainly a mistake worth failing loudly on.
+  - Verify, 2026-08-09: `node --check` clean (no workspace `eslint`
+    config covers `infrastructure/scripts/`, same as every other
+    ops script in this directory — confirmed via `pnpm -r lint`
+    only touching the 6 scaffolded workspace packages). Manual runs
+    against local D1 (`nvm use 24.18.0` first): missing `--id`
+    rejected (exit 1, usage printed); unknown `--id` rejected (exit 1,
+    "No company found"); no fields passed rejected (exit 1, "Nothing
+    to update"); blank `--industry`/`--employee-band` rejected (exit
+    1) without touching the row; a real update
+    (`--industry "AI Infrastructure" --employee-band "201-500"`
+    against a seeded local fixture company) reported success and was
+    independently confirmed via a follow-up `SELECT` to have actually
+    persisted (`industry`/`employee_band`/`updated_at` all changed as
+    expected); test fixture then reverted to its original values.
+
+**Milestone P.1 acceptance: complete, verified 2026-08-09.**
 
 - [ ] **P.2 — Cross-company trend endpoint**
       `GET /api/v1/trends/hiring`
