@@ -171,7 +171,15 @@ export async function fetchFacets(
 export async function fetchCompanies(
   config: CliClientConfig,
   params: { q?: string; limit?: number } = {},
-): Promise<{ data: CompanySummary[]; meta: { requestId: string; appliedFilters: Record<string, unknown> } }> {
+): Promise<{
+  data: CompanySummary[];
+  meta: {
+    requestId: string;
+    appliedFilters: Record<string, unknown>;
+    // ROADMAP.md Milestone Q.3, spec §11.3.
+    hiringVelocityDisclaimer: string;
+  };
+}> {
   const qs = queryFromRecord(params);
   return request(config, `/api/v1/companies?${qs}`);
 }
@@ -184,7 +192,11 @@ export interface CompanyDetail extends CompanySummary {
 export async function fetchCompanyDetail(
   config: CliClientConfig,
   slug: string,
-): Promise<{ data: CompanyDetail; meta: { requestId: string } }> {
+): Promise<{
+  data: CompanyDetail;
+  // ROADMAP.md Milestone Q.3, spec §11.3.
+  meta: { requestId: string; hiringVelocityDisclaimer: string };
+}> {
   return request(config, `/api/v1/companies/${encodeURIComponent(slug)}`);
 }
 
@@ -221,7 +233,14 @@ export async function fetchCompanyTimeline(
  */
 export interface HiringTrendsResponse {
   data: HiringTrendCompany[];
-  meta: { requestId: string; appliedFilters: Record<string, unknown>; cached: boolean };
+  meta: {
+    requestId: string;
+    appliedFilters: Record<string, unknown>;
+    cached: boolean;
+    // ROADMAP.md Milestone Q.3, spec §11.3 -- same disclaimer text as
+    // fetchCompanyBySlug's response meta below, not duplicated per-item.
+    hiringVelocityDisclaimer: string;
+  };
 }
 
 export async function fetchHiringTrends(

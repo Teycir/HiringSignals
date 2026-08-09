@@ -661,18 +661,21 @@ building its technical team right now, vs. its own baseline?" Different
 question from "is this specific job posting fresh?" Computable from
 data already collected; no new ingestion beyond one migration.
 
-- [ ] **Q.1 — Hiring velocity score computation**
-      (`packages/domain/src/hiring-velocity.ts`, new file)
-  - Pure function `computeHiringVelocity(stats: CompanyRoleStats):
-    HiringVelocityResult` — `CompanyRoleStats` = output of
-    `getCompanyRoleActivityStats` (H.2, already built) aggregated
-    across *all* role categories for a company.
+- [x] **Q.1 — Hiring velocity score computation — complete, landed
+      2026-08-09.** (`packages/domain/src/hiring-velocity.ts`)
+  - Pure function `computeHiringVelocity(stats: CompanyActivityStats):
+    HiringVelocityResult` — `CompanyActivityStats` (not
+    `CompanyRoleStats` as this section originally sketched — that
+    shape is H.2's per-*role* stats; Q.1 needs a company-*wide*
+    aggregate across all roles, so a new interface was added rather
+    than reusing H.2's) is the output of the new `getCompanyActivityStats`
+    (Q.2, `packages/db/src/company-role-stats-repo.ts`).
   - Score formula (v1, versioned same as signal score):
     ```
     V = clamp(
       0.40 * acceleration + 0.25 * breadth
       + 0.20 * volume_norm  + 0.15 * persistence
-    , 0, 100) * 100
+    , 0, 1) * 100
     ```
     acceleration/breadth reuse `computeAcceleration` and
     `computeBreadth` from `signal-score.ts` (H.3, already built);
@@ -680,48 +683,77 @@ data already collected; no new ingestion beyond one migration.
     `clamp(daysSinceFirstSignal / 30, 0, 1)`.
   - Store as `companies.hiring_velocity_score` (INTEGER) +
     `companies.velocity_score_version` (TEXT) +
-    `companies.velocity_computed_at` (TEXT). Migration
-    `0005_company_velocity_score.sql` adding these three with DEFAULT
-    NULL.
-  - Verify: hand-computed unit tests (cold=0, multi-loc-accel=high,
-    stale=decay); `packages/domain` test/typecheck/lint clean.
+    `companies.velocity_computed_at` (TEXT). **Filename correction:**
+    this section originally suggested `0005_company_velocity_score.sql`
+    — 0005 was already taken by `0005_signals_dedup_index.sql` by the
+    time this was actually built, so it landed as
+    `0008_company_velocity_score.sql` (next free number after
+    P.2's own `0007_trends_role_first_seen_index.sql`), all three
+    columns DEFAULT NULL.
+  - Verify: hand-computed unit tests in `hiring-velocity.test.ts`
+    (cold=0, multi-loc-accel=high, stale=decay), matching
+    `signal-score.test.ts`'s style. Typecheck/lint not run this
+    session per explicit instruction — still outstanding before this
+    is considered fully verified.
 
-- [ ] **Q.2 — Velocity score recompute in reconciliation**
-      (`apps/api/src/jobs/reconciliation.ts`)
-  - Daily reconciliation pass: after per-signal recomputes, add a
-    company-level pass for each company that had ≥1 signal refreshed
-    today. Call `getCompanyRoleActivityStats` variant aggregating
-    across all roles (new query or new `getCompanyActivityStats`),
-    compute `computeHiringVelocity`, `UPDATE companies SET
-    hiring_velocity_score=?, velocity_score_version=?,
-    velocity_computed_at=?`.
-  - Verify: extend `reconciliation.test.ts` asserting velocity score
-    updates after reconciliation touch.
+- [x] **Q.2 — Velocity score recompute in reconciliation — complete,
+      landed 2026-08-09.** (`apps/api/src/jobs/reconciliation.ts`)
+  - Daily reconciliation pass: after per-signal recomputes,
+    `handleVelocityRecompute` runs once per company that had ≥1 signal
+    genuinely reconciled this run (tracked via a `touchedCompanyIds`
+    Set built during the score-reconciliation loop, so an unchanged
+    company isn't recomputed for nothing). Calls the new
+    `getCompanyActivityStats` (`packages/db/src/company-role-stats-repo.ts`
+    — added alongside `getCompanyRoleActivityStats` as its all-roles
+    sibling), `computeHiringVelocity`, then the new
+    `updateCompanyVelocityScore` (`packages/db/src/companies-repo.ts`)
+    to persist. Same per-row best-effort try/catch discipline as the
+    rest of this file — one company's failure logs and moves on.
+  - Verify: extended the first scenario in `reconciliation.test.ts`
+    ("recomputes a stale active signal's score") to also assert the
+    touched company's velocity score got persisted. Live-D1, not run
+    this session per explicit instruction.
 
-- [ ] **Q.3 — Velocity score in trends API and CLI output**
-  - Add `hiringVelocityScore` to P.2 `GET /api/v1/trends/hiring`
-    response items; add `sort=velocity_desc` sort option.
-  - Add `hiringVelocityScore` + `velocityComputedAt` to
-    `GET /api/v1/companies/:slug` response.
-  - Surface in `hs trends hiring` (P.3) and `hs companies timeline`
-    (O.2) output. **Correction, 2026-08-09:** both commands are JSON-
-    only (F.1.1 dropped `--format table` CLI-wide before either was
-    built — see P.3's own corrected section above) — no visual badge
-    treatment applies either (spec §11.4's chartreuse-at-80+ styling
-    was a dashboard concept, moot now that O.2/P.3 are JSON-emitting
-    CLI commands with no table renderer). The raw `hiringVelocityScore`
-    field is what both commands need to carry once Q.3's API work
-    lands; no separate CLI-layer formatting work required. Same
-    disclaimer text inline in the API response: "Based on pace,
-    breadth, and persistence of public hiring activity. Not a
-    prediction of intent or budget." (spec §11.3).
-  - Verify: route tests asserting fields present in both endpoints;
-    CLI test (`api-client.test.ts`, same pattern as P.3's
-    `fetchHiringTrends` tests) asserting `hiringVelocityScore` and the
-    disclaimer field round-trip through `fetchHiringTrends`/
-    `fetchCompanyTimeline` unchanged.
+- [x] **Q.3 — Velocity score in trends API and CLI output — complete,
+      landed 2026-08-09.**
+  - Added `hiringVelocityScore` to P.2 `GET /api/v1/trends/hiring`
+    response items (joined in `trends-repo.ts`'s main SELECT); added
+    `sort=velocity_desc` (`trends-query.ts`'s Zod enum + `sortTrends`'s
+    new branch — null/uncomputed scores sort last, not treated as 0).
+  - Added `hiringVelocityScore` + `velocityComputedAt` to
+    `GET /api/v1/companies/:slug` (and `GET /api/v1/companies` search —
+    both go through `companies-repo.ts`'s shared `toSummary`).
+  - Surfaced in `hs trends hiring` (P.3) via `Partial<TrendsQuery>`
+    (picks up `velocity_desc` automatically) — CLI flag description and
+    type cast updated. **Correction, 2026-08-09 (unchanged from prior
+    note):** JSON-only output, no `--format table` (F.1.1 dropped that
+    CLI-wide) — the raw `hiringVelocityScore` field is what the command
+    carries, no separate CLI-layer formatting.
+  - Disclaimer text ("Based on pace, breadth, and persistence of public
+    hiring activity. Not a prediction of intent or budget.", spec
+    §11.3) added as a shared `HIRING_VELOCITY_DISCLAIMER` constant
+    (`packages/domain/src/hiring-velocity.ts`) — this was sketched in
+    the prior version of this section but never actually implemented
+    until this session. Wired into `meta.hiringVelocityDisclaimer` on
+    `GET /api/v1/trends/hiring`, `GET /api/v1/companies`, and
+    `GET /api/v1/companies/:slug` (not `.../timeline` — that route
+    doesn't surface `hiringVelocityScore` at the top level, only nested
+    under `company`, so it was left alone).
+  - Verify: `trends-repo.test.ts` extended with a live-D1
+    `velocity_desc` sort test (high/low/uncomputed companies, asserting
+    null sorts last). `api-client.test.ts` extended: the existing
+    `fetchHiringTrends` fixture now includes
+    `meta.hiringVelocityDisclaimer`, plus a new describe block covering
+    `fetchCompanies`/`fetchCompanyDetail` round-tripping
+    `hiringVelocityScore` and the disclaimer unchanged. **Correction:**
+    this section previously said the CLI test would cover
+    `fetchHiringTrends`/`fetchCompanyTimeline` — `fetchCompanyTimeline`
+    was never in scope for the disclaimer (see above); the actual
+    second coverage point is `fetchCompanies`/`fetchCompanyDetail`.
+    None of this run this session per explicit instruction.
 
 ---
+
 
 ## Milestone R — RSS feed (`GET /api/v1/feed.rss`)
 

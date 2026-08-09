@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiClientError,
   fetchCompanies,
+  fetchCompanyDetail,
   fetchCompanyTimeline,
   fetchFacets,
   fetchHiringTrends,
@@ -171,7 +172,13 @@ describe("fetchHiringTrends (P.2/P.3, query serialization + envelope)", () => {
           latestSignalAt: "2026-08-08T00:00:00.000Z",
         },
       ],
-      meta: { requestId: "req_test_tr", appliedFilters: { roles: ["ai_machine_learning"] }, cached: false },
+      meta: {
+        requestId: "req_test_tr",
+        appliedFilters: { roles: ["ai_machine_learning"] },
+        cached: false,
+        hiringVelocityDisclaimer:
+          "Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget.",
+      },
     };
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(fixture));
 
@@ -205,6 +212,62 @@ describe("fetchHiringTrends (P.2/P.3, query serialization + envelope)", () => {
       code: "VALIDATION_ERROR",
       requestId: "req_test_tr3",
     });
+  });
+});
+
+describe("fetchCompanies / fetchCompanyDetail (Q.3, hiringVelocityDisclaimer round-trip)", () => {
+  it("passes hiringVelocityScore and hiringVelocityDisclaimer through fetchCompanies unchanged", async () => {
+    const fixture = {
+      data: [
+        {
+          id: "co_1",
+          slug: "acme",
+          displayName: "Acme",
+          domain: "acme.example",
+          industry: "fintech",
+          employeeBand: "51-200",
+          hiringVelocityScore: 72,
+          velocityComputedAt: "2026-08-09T00:00:00.000Z",
+        },
+      ],
+      meta: {
+        requestId: "req_test_cd1",
+        appliedFilters: {},
+        hiringVelocityDisclaimer:
+          "Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget.",
+      },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(fixture));
+
+    const result = await fetchCompanies(config);
+
+    expect(result).toEqual(fixture);
+  });
+
+  it("passes hiringVelocityScore and hiringVelocityDisclaimer through fetchCompanyDetail unchanged", async () => {
+    const fixture = {
+      data: {
+        id: "co_1",
+        slug: "acme",
+        displayName: "Acme",
+        domain: "acme.example",
+        industry: "fintech",
+        employeeBand: "51-200",
+        hiringVelocityScore: null,
+        velocityComputedAt: null,
+        recentSignals: [],
+      },
+      meta: {
+        requestId: "req_test_cd2",
+        hiringVelocityDisclaimer:
+          "Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget.",
+      },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(fixture));
+
+    const result = await fetchCompanyDetail(config, "acme");
+
+    expect(result).toEqual(fixture);
   });
 });
 

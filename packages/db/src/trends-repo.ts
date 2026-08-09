@@ -71,6 +71,7 @@ export async function getHiringTrends(
     company_display_name: string;
     company_industry: string | null;
     company_domain: string | null;
+    hiring_velocity_score: number | null;
     new_jobs_count: number;
     active_jobs_count: number;
     n14: number;
@@ -82,6 +83,7 @@ export async function getHiringTrends(
        c.display_name AS company_display_name,
        c.industry AS company_industry,
        c.domain AS company_domain,
+       c.hiring_velocity_score AS hiring_velocity_score,
        SUM(CASE WHEN j.first_seen_at >= ? THEN 1 ELSE 0 END) AS new_jobs_count,
        SUM(CASE WHEN j.status IN ('active', 'possibly_closed') THEN 1 ELSE 0 END) AS active_jobs_count,
        SUM(CASE WHEN j.first_seen_at >= datetime(?, '-14 days') AND j.first_seen_at <= ?
@@ -125,6 +127,7 @@ export async function getHiringTrends(
       topLocations: topLocationsByCompany.get(row.company_id) ?? [],
       latestSignalType: latest?.signalType ?? null,
       latestSignalAt: latest?.detectedAt ?? null,
+      hiringVelocityScore: row.hiring_velocity_score,
     };
   });
 
@@ -145,6 +148,18 @@ function sortTrends(
       if (!a.latestSignalAt) return 1;
       if (!b.latestSignalAt) return -1;
       return Date.parse(b.latestSignalAt) - Date.parse(a.latestSignalAt);
+    });
+  } else if (sort === "velocity_desc") {
+    // Same null-sorts-last convention as newest_signal above -- a
+    // company whose velocity score hasn't been computed yet (Q.2's
+    // handleVelocityRecompute hasn't run for it) is not "0 velocity,"
+    // it's unknown, so it shouldn't outrank or be conflated with a
+    // genuinely low-velocity company.
+    sorted.sort((a, b) => {
+      if (a.hiringVelocityScore === null && b.hiringVelocityScore === null) return 0;
+      if (a.hiringVelocityScore === null) return 1;
+      if (b.hiringVelocityScore === null) return -1;
+      return b.hiringVelocityScore - a.hiringVelocityScore;
     });
   } else {
     sorted.sort((a, b) => b.acceleration - a.acceleration);

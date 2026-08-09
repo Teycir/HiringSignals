@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
 import { createD1Client, getHiringTrends } from "@hiring-signals/db";
-import { trendsQuerySchema } from "@hiring-signals/domain";
+import { HIRING_VELOCITY_DISCLAIMER, trendsQuerySchema } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
 
 const CACHE_TTL_SECONDS = 300;
@@ -55,7 +55,12 @@ trendsRoute.get("/hiring", async (c) => {
   if (cached) {
     return c.json({
       data: cached,
-      meta: { requestId: c.get("requestId"), appliedFilters: { ...parsed, since }, cached: true },
+      meta: {
+        requestId: c.get("requestId"),
+        appliedFilters: { ...parsed, since },
+        cached: true,
+        hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
+      },
     });
   }
 
@@ -73,6 +78,11 @@ trendsRoute.get("/hiring", async (c) => {
 
   return c.json({
     data: results,
-    meta: { requestId: c.get("requestId"), appliedFilters: { ...parsed, since }, cached: false },
+    meta: {
+      requestId: c.get("requestId"),
+      appliedFilters: { ...parsed, since },
+      cached: false,
+      hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
+    },
   });
 });

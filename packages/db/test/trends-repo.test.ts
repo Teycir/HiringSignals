@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { createLiveD1Client } from "@hiring-signals/test-support";
 import type { D1Client } from "../src/d1-client";
-import { createCompany } from "../src/companies-repo";
+import { createCompany, updateCompanyVelocityScore } from "../src/companies-repo";
 import { createSource } from "../src/sources-repo";
 import { upsertJob } from "../src/jobs-repo";
 import { getHiringTrends } from "../src/trends-repo";
@@ -254,4 +254,58 @@ describe("getHiringTrends", () => {
       await cleanupCompany(company.id, source.id);
     }
   });
+
+  it(
+    "velocity_desc sorts by hiringVelocityScore, null (uncomputed) last",
+    async () => {
+      const now = new Date().toISOString();
+      const highVelocity = await seedCompanyAndSource("high-velocity", "fintech");
+      const lowVelocity = await seedCompanyAndSource("low-velocity", "fintech");
+      const uncomputed = await seedCompanyAndSource("uncomputed-velocity", "fintech");
+      try {
+        // All three need >=1 new job in the since window to appear in
+        // results at all (getHiringTrends's own HAVING new_jobs_count > 0).
+        await seedJob(highVelocity.company.id, highVelocity.source.id, "hv-0", now);
+        await seedJob(lowVelocity.company.id, lowVelocity.source.id, "lv-0", now);
+        await seedJob(uncomputed.company.id, uncomputed.source.id, "uc-0", now);
+
+        // uncomputed deliberately gets no updateCompanyVelocityScore call --
+        // its hiring_velocity_score stays NULL, same as a company Q.2's
+        // reconciliation pass hasn't reached yet.
+        await updateCompanyVelocityScore(client, highVelocity.company.id, {
+          hiringVelocityScore: 90,
+          velocityScoreVersion: "v1",
+          velocityComputedAt: now,
+        });
+        await updateCompanyVelocityScore(client, lowVelocity.company.id, {
+          hiringVelocityScore: 10,
+          velocityScoreVersion: "v1",
+          velocityComputedAt: now,
+        });
+
+        const results = await getHiringTrends(client, {
+          roleCategoryFilter: ["ai_machine_learning"],
+          since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+          limit: 20,
+          sort: "velocity_desc",
+        });
+
+        const hvResult = results.find((r) => r.company.slug === highVelocity.company.slug);
+        const lvResult = results.find((r) => r.company.slug === lowVelocity.company.slug);
+        const ucResult = results.find((r) => r.company.slug === uncomputed.company.slug);
+        expect(hvResult?.hiringVelocityScore).toBe(90);
+        expect(lvResult?.hiringVelocityScore).toBe(10);
+        expect(ucResult?.hiringVelocityScore).toBeNull();
+        // High before low, and null (uncomputed) sorts last -- not treated
+        // as 0, which would otherwise tie/outrank low_velocity's real 10.
+        expect(results.indexOf(hvResult!)).toBeLessThan(results.indexOf(lvResult!));
+        expect(results.indexOf(lvResult!)).toBeLessThan(results.indexOf(ucResult!));
+      } finally {
+        await cleanupCompany(highVelocity.company.id, highVelocity.source.id);
+        await cleanupCompany(lowVelocity.company.id, lowVelocity.source.id);
+        await cleanupCompany(uncomputed.company.id, uncomputed.source.id);
+      }
+    },
+    240_000,
+  );
 });

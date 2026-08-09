@@ -29,7 +29,8 @@ const hiring = defineCommand({
     since: { type: "string", description: "ISO-8601 datetime, window start (default 30d ago)" },
     sort: {
       type: "string",
-      description: "acceleration_desc | volume_desc | newest_signal (default acceleration_desc)",
+      description:
+        "acceleration_desc | volume_desc | newest_signal | velocity_desc (default acceleration_desc)",
     },
     limit: { type: "string", description: "Max results, 1-50 (default 20)" },
   },
@@ -41,7 +42,12 @@ const hiring = defineCommand({
       industry: args.industry,
       country: args.country,
       since: args.since,
-      sort: args.sort as "acceleration_desc" | "volume_desc" | "newest_signal" | undefined,
+      sort: args.sort as
+        | "acceleration_desc"
+        | "volume_desc"
+        | "newest_signal"
+        | "velocity_desc"
+        | undefined,
       limit: args.limit ? Number(args.limit) : undefined,
     });
     process.stdout.write(JSON.stringify(result) + "\n");

@@ -40,7 +40,9 @@ export const trendsQuerySchema = z.object({
     .transform((code) => code.toUpperCase())
     .optional(),
   since: z.string().datetime({ offset: true }).optional(),
-  sort: z.enum(["acceleration_desc", "volume_desc", "newest_signal"]).default("acceleration_desc"),
+  sort: z
+    .enum(["acceleration_desc", "volume_desc", "newest_signal", "velocity_desc"])
+    .default("acceleration_desc"),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 

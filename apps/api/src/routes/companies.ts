@@ -8,7 +8,7 @@ import {
   getRecentSignalsForCompany,
   searchCompanies,
 } from "@hiring-signals/db";
-import { companyTimelineQuerySchema } from "@hiring-signals/domain";
+import { HIRING_VELOCITY_DISCLAIMER, companyTimelineQuerySchema } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
 
 /** Milestone O.1's own cap: v1 rejects windows wider than 90 days. */
@@ -54,7 +54,11 @@ companiesRoute.get("/", async (c) => {
 
   return c.json({
     data: results,
-    meta: { requestId: c.get("requestId"), appliedFilters: parsed },
+    meta: {
+      requestId: c.get("requestId"),
+      appliedFilters: parsed,
+      hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
+    },
   });
 });
 
@@ -81,7 +85,10 @@ companiesRoute.get("/:slug", async (c) => {
 
   return c.json({
     data: { ...company, recentSignals },
-    meta: { requestId: c.get("requestId") },
+    meta: {
+      requestId: c.get("requestId"),
+      hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
+    },
   });
 });
 

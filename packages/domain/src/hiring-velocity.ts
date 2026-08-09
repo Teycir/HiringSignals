@@ -18,6 +18,17 @@ import { computeAcceleration, computeBreadth } from "./signal-score";
 
 export const VELOCITY_FORMULA_VERSION = "v1";
 
+/**
+ * ROADMAP.md Milestone Q.3, spec §11.3's exact disclaimer wording.
+ * Exported as a shared constant (not duplicated as a literal in each
+ * route) so `GET /api/v1/trends/hiring` and `GET /api/v1/companies/:slug`
+ * carry byte-identical text -- spec §11.3 calls for the same disclaimer
+ * in both places, not two independently-maintained copies that could
+ * drift.
+ */
+export const HIRING_VELOCITY_DISCLAIMER =
+  "Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget.";
+
 // Weights sum to 1.0 (ROADMAP.md Q.1's own formula):
 // V = clamp(0.40*acceleration + 0.25*breadth + 0.20*volume_norm + 0.15*persistence, 0, 1) * 100
 const WEIGHT_ACCELERATION = 0.4;
