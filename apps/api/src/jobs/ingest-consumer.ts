@@ -202,7 +202,7 @@ export async function handleIngestMessage(
   // out-of-scope (not just falsy) in the catch, so markSourceFailure's
   // two catch-block call sites had no way to pass companyId even when
   // the row had actually been loaded moments before the throw.
-  let source: SourceRow | null;
+  let source: SourceRow | null = null;
   try {
     source = await getSourceById(client, sourceId);
     if (!source) {
@@ -496,34 +496,54 @@ export async function handleIngestMessage(
       message: message_,
     });
 
-    if (attempt >= MAX_RETRY_ATTEMPTS) {
-      // Retry exhaustion -> persistent failure record for human review
-      // (spec §10.4: "a persistent failure table with a human-review
-      // workflow" -- a source_runs row with status='failed_final' is
-      // sufficient for v1, per ROADMAP.md Milestone D).
-      try {
-        const client2 = createD1Client(env.DB, { operationTimeoutMs });
-        const sourceRunId2 = await resolveSourceRun(client2, sourceId, runId, startedAt);
-        await recordSourceRunComplete(client2, sourceRunId2, {
-          completedAt: new Date().toISOString(),
-          status: "failed_final",
-          errorCode: "retry_exhausted",
-          errorMessageSafe: message_,
-          durationMs: Date.now() - startTime,
-        });
-        await markSourceFailure(client2, sourceId);
-      } catch (finalizeErr) {
-        console.error("ingest_finalize_failed", {
-          sourceId,
-          runId,
-          message: errorMessage(finalizeErr),
-        });
-      }
-      message.ack(); // stop retrying; failure is recorded for review
-      return;
+    // 2026-08-08 bugfix: this branch previously ended with a bare
+    // message.retry() -- Cloudflare Queues' native retry, which
+    // redelivers the SAME message body unchanged. `attempt` lives in
+    // IngestMessage's own payload, not in Queues' delivery metadata, so
+    // a native retry() never increments it: every redelivery re-enters
+    // this handler with the same attempt number it started with,
+    // meaning `attempt >= MAX_RETRY_ATTEMPTS` above could never become
+    // true for this branch and the row above never got finalized.
+    // Confirmed live: OpenAI's Ashby source (249 tracked jobs) hit
+    // "Too many API requests by single Worker invocation" -- a
+    // per-invocation subrequest cap that recurs identically on every
+    // retry of a board this size -- on attempt 1, every single
+    // 15-minute cron tick, leaving a fresh source_runs row stuck at
+    // status='running' forever (83 such rows found across the table,
+    // most from this one source). The 429/5xx branches above never had
+    // this bug: they already go through requeueOrGiveUp, which manually
+    // re-sends a fresh message with attempt+1 via env.INGEST_QUEUE
+    // (see that function's own header comment for why -- same root
+    // cause, already solved there, just not reused here).
+    try {
+      const client2 = createD1Client(env.DB, { operationTimeoutMs });
+      const sourceRunId2 = await resolveSourceRun(client2, sourceId, runId, startedAt);
+      await finalizeRetryable(client2, sourceId, source?.company_id ?? "", sourceRunId2, startTime, {
+        httpStatus: 0,
+        errorCode: "uncaught",
+        errorMessageSafe: message_,
+      });
+      await requeueOrGiveUp(
+        message,
+        env,
+        sourceId,
+        runId,
+        attempt,
+        backoffSeconds(attempt),
+        client2,
+        sourceRunId2,
+      );
+    } catch (finalizeErr) {
+      console.error("ingest_finalize_failed", {
+        sourceId,
+        runId,
+        message: errorMessage(finalizeErr),
+      });
+      // Finalize itself failed (e.g. D1 unreachable) -- fall back to a
+      // native retry rather than silently swallowing the message, same
+      // safety net the old code path provided.
+      message.retry();
     }
-
-    message.retry();
   }
 }
 

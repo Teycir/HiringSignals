@@ -1021,30 +1021,86 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
     }
   });
 
-  it("uncaught error mid-pipeline: retries via message.retry() below MAX_RETRY_ATTEMPTS", async () => {
+  it("uncaught error mid-pipeline, below MAX_RETRY_ATTEMPTS: finalizes this attempt as failed, re-enqueues attempt+1 via INGEST_QUEUE, does not use native message.retry()", async () => {
+    // 2026-08-08 bugfix regression test: this branch used to call bare
+    // message.retry(), which redelivers the SAME message body --
+    // `attempt` lives in IngestMessage's payload, not Queues' own
+    // delivery metadata, so a native retry() never increments it and
+    // `attempt >= MAX_RETRY_ATTEMPTS` could never become true here. That
+    // left the source_runs row stuck at status='running' forever on any
+    // error that recurs identically across retries (confirmed live:
+    // OpenAI's Ashby source hit a per-invocation subrequest cap on
+    // attempt 1 every single 15-minute cron tick, 83 rows stuck
+    // table-wide). Fixed to follow the same finalizeRetryable +
+    // requeueOrGiveUp pattern the 429/5xx branches already used.
     const company = await seedCompany("funcaught", "Uncaught Co");
     try {
       const source = await seedSource(company.id, testSlug("funcaught-src"));
+      const runId = testSlug("funcaught-run");
       normalizeImpl = vi.fn(() => {
         throw new Error("boom: unexpected normalize failure");
       });
       const { message, acked, retried } = makeMessage({
         version: 1,
         sourceId: source.id,
-        runId: testSlug("funcaught-run"),
+        runId,
         requestedAt: new Date().toISOString(),
-        attempt: 1,
+        attempt: 1, // well below MAX_RETRY_ATTEMPTS -- must not retry natively
       });
-      const { env } = makeLiveEnv(createLiveD1Database());
+      const { env, sent } = makeLiveEnv(createLiveD1Database());
 
       await handleIngestMessage(message, env);
 
-      expect(retried).toEqual([true]);
-      expect(acked).toEqual([]);
+      // The key assertions: no native retry, current message acked, a
+      // fresh message sent with attempt incremented so a future
+      // MAX_RETRY_ATTEMPTS check can actually be reached.
+      expect(retried).toEqual([]);
+      expect(acked).toEqual([true]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.message.attempt).toBe(2);
+      expect(sent[0]?.message.sourceId).toBe(source.id);
+      expect(sent[0]?.message.runId).toBe(runId); // same runId -- idempotency preserved
+
+      // This attempt's row is finalized as 'failed' (not left 'running'
+      // forever, and not 'failed_final' -- that status is reserved for
+      // retry exhaustion in requeueOrGiveUp).
+      const run = await getSourceRun(runId);
+      expect(run?.status).toBe("failed");
+      expect(run?.error_code).toBe("uncaught");
     } finally {
       await cleanupCompany(company.id);
     }
-  });
+  }, 150_000);
+
+  it("uncaught error mid-pipeline, at MAX_RETRY_ATTEMPTS: gives up, records failed_final, does not requeue", async () => {
+    const company = await seedCompany("funcaughtmax", "Uncaught Max Co");
+    try {
+      const source = await seedSource(company.id, testSlug("funcaughtmax-src"));
+      const runId = testSlug("funcaughtmax-run");
+      normalizeImpl = vi.fn(() => {
+        throw new Error("boom: unexpected normalize failure");
+      });
+      const { message, acked, retried } = makeMessage({
+        version: 1,
+        sourceId: source.id,
+        runId,
+        requestedAt: new Date().toISOString(),
+        attempt: 5, // MAX_RETRY_ATTEMPTS
+      });
+      const { env, sent } = makeLiveEnv(createLiveD1Database());
+
+      await handleIngestMessage(message, env);
+
+      expect(retried).toEqual([]);
+      expect(acked).toEqual([true]);
+      expect(sent).toEqual([]); // exhausted -- no further requeue
+      const run = await getSourceRun(runId);
+      expect(run?.status).toBe("failed_final");
+      expect(run?.error_code).toBe("retry_exhausted");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  }, 150_000);
 
   it("programmer bug mid-pipeline (TypeError): fails fast, does NOT retry (code-review P1 fix)", async () => {
     const company = await seedCompany("fprogbug", "ProgBug Co");
