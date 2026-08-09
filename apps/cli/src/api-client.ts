@@ -2,10 +2,16 @@ import type {
   CompanyHiringTimelineBucket,
   CompanySummary,
   Facets,
+  HiringTrendCompany,
   SignalDetail,
   SignalListItem,
 } from "@hiring-signals/db/src/types";
-import { apiErrorSchema, type CompanyTimelineQuery, type SignalsQuery } from "@hiring-signals/domain";
+import {
+  apiErrorSchema,
+  type CompanyTimelineQuery,
+  type SignalsQuery,
+  type TrendsQuery,
+} from "@hiring-signals/domain";
 
 /**
  * Single place apps/cli talks to the Worker API (spec 12.1, ROADMAP.md
@@ -204,6 +210,26 @@ export async function fetchCompanyTimeline(
     config,
     `/api/v1/companies/${encodeURIComponent(slug)}/timeline${qs ? `?${qs}` : ""}`,
   );
+}
+
+/**
+ * GET /api/v1/trends/hiring (ROADMAP.md Milestone P.2/P.3, spec
+ * §1.2/§2.3). Params validated by TrendsQuery (@hiring-signals/domain)
+ * upstream in the CLI command layer, same pattern as fetchSignals/
+ * fetchCompanyTimeline -- this function just serializes an
+ * already-validated object to a query string and calls the route.
+ */
+export interface HiringTrendsResponse {
+  data: HiringTrendCompany[];
+  meta: { requestId: string; appliedFilters: Record<string, unknown>; cached: boolean };
+}
+
+export async function fetchHiringTrends(
+  config: CliClientConfig,
+  params: Partial<TrendsQuery> = {},
+): Promise<HiringTrendsResponse> {
+  const qs = queryFromRecord(params);
+  return request<HiringTrendsResponse>(config, `/api/v1/trends/hiring${qs ? `?${qs}` : ""}`);
 }
 
 /** GET /api/v1/sources (no dedicated spec section beyond the route list in

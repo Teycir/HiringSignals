@@ -1,11 +1,13 @@
-import { computeReconciliationScore } from "@hiring-signals/domain";
+import { computeHiringVelocity, computeReconciliationScore } from "@hiring-signals/domain";
 import {
   appendSignalEvidence,
   createD1Client,
+  getCompanyActivityStats,
   getCompanyRoleActivityStats,
   listSignalsNeedingReconciliation,
   listStillActiveCandidates,
   markSignalStillActive,
+  updateCompanyVelocityScore,
   updateSignalScore,
 } from "@hiring-signals/db";
 import type { Bindings } from "../bindings";
@@ -75,6 +77,13 @@ export async function handleReconciliation(
     limit: MAX_SIGNALS_PER_RUN,
   });
 
+  // Q.2: companies whose signal got a real score recompute this run --
+  // fed to handleVelocityRecompute below so the velocity pass only
+  // touches companies with fresh activity, not every company in D1.
+  // A Set, not an array, so a company with several reconciled signals
+  // this run is only recomputed once.
+  const touchedCompanyIds = new Set<string>();
+
   for (const signal of signals) {
     try {
       const activityStats = await getCompanyRoleActivityStats(client, {
@@ -102,6 +111,8 @@ export async function handleReconciliation(
         });
         continue;
       }
+
+      touchedCompanyIds.add(signal.company_id);
 
       await appendSignalEvidence(client, {
         signalId: signal.id,
@@ -135,7 +146,55 @@ export async function handleReconciliation(
     }
   }
 
+  await handleVelocityRecompute(client, touchedCompanyIds, now);
   await handleStillActive(client, now);
+}
+
+/**
+ * Company-level hiring velocity recompute (ROADMAP.md Milestone Q.2).
+ * Runs once per company that had >=1 signal genuinely reconciled this
+ * run (touchedCompanyIds, built by the loop above) -- a company with no
+ * fresh reconciliation activity this run has no reason for its velocity
+ * score to have changed, so recomputing every company in D1 unconditionally
+ * would just be wasted round trips for an unchanged result.
+ *
+ * Same per-row best-effort discipline as the score-reconciliation loop
+ * above and handleStillActive below: one company's failure logs and
+ * moves on, never aborts the run for the rest.
+ */
+async function handleVelocityRecompute(
+  client: ReturnType<typeof createD1Client>,
+  companyIds: Set<string>,
+  now: Date,
+): Promise<void> {
+  const observedAt = now.toISOString();
+
+  for (const companyId of companyIds) {
+    try {
+      const activityStats = await getCompanyActivityStats(client, {
+        companyId,
+        now: observedAt,
+      });
+
+      const velocityResult = computeHiringVelocity(activityStats);
+
+      const updateResult = await updateCompanyVelocityScore(client, companyId, {
+        hiringVelocityScore: velocityResult.score,
+        velocityScoreVersion: velocityResult.formulaVersion,
+        velocityComputedAt: observedAt,
+      });
+
+      if (updateResult.changes === 0) {
+        console.warn("velocity_recompute_skipped_missing_company", { company_id: companyId });
+      }
+    } catch (error) {
+      console.error("velocity_recompute_failed", {
+        company_id: companyId,
+        error_code: error instanceof Error ? error.name : "UnknownError",
+        error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+      });
+    }
+  }
 }
 
 /**

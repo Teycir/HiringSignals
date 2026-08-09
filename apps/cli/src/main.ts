@@ -6,6 +6,7 @@ import { sourcesCommand } from "./commands/sources";
 import { exportCommand } from "./commands/export";
 import { adminCommand } from "./commands/admin";
 import { feedUrlCommand } from "./commands/feed-url";
+import { trendsCommand } from "./commands/trends";
 import { ApiClientError } from "./api-client";
 
 /**
@@ -36,6 +37,7 @@ const rootCommand = defineCommand({
     export: exportCommand,
     admin: adminCommand,
     "feed-url": feedUrlCommand,
+    trends: trendsCommand,
   },
 });
 

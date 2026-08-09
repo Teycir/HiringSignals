@@ -210,6 +210,53 @@ describe("handleReconciliation", () => {
       };
       expect(payload.reason).toBe("daily_reconciliation_decay");
       expect(payload.previousScore).toBe(90);
+
+      // Q.2: this signal's company should now have a fresh velocity
+      // score -- it had exactly 1 signal genuinely reconciled this run
+      // (touchedCompanyIds' trigger condition), so handleVelocityRecompute
+      // must have run for it.
+      const companyRow = await client.first<{
+        hiring_velocity_score: number | null;
+        velocity_score_version: string | null;
+        velocity_computed_at: string | null;
+      }>(
+        `SELECT hiring_velocity_score, velocity_score_version, velocity_computed_at FROM companies WHERE id = ?`,
+        [company.id],
+      );
+      expect(companyRow?.hiring_velocity_score).not.toBeNull();
+      expect(companyRow?.velocity_score_version).toBe("v1");
+      expect(companyRow?.velocity_computed_at).toBe("2026-07-31T06:00:00.000Z");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("does not compute a velocity score for a company with no signal reconciled this run", async () => {
+    const company = await seedCompany("no-touch", "Reconciliation No Touch Co");
+    try {
+      // 10 minutes before `now`, well inside the 24h staleness window --
+      // never selected by listSignalsNeedingReconciliation, so this
+      // company is never added to touchedCompanyIds.
+      const freshDetectedAt = "2026-07-31T05:50:00.000Z";
+      await createSignal(client, {
+        companyId: company.id,
+        roleCategory: "software_engineering",
+        signalType: "new_job",
+        score: 90,
+        scoreVersion: "v2",
+        detectedAt: freshDetectedAt,
+        headline: "Untouched headline",
+        summary: "Untouched summary.",
+      });
+
+      const db = createLiveD1Database();
+      await handleReconciliation(makeEnv(db), new Date("2026-07-31T06:00:00.000Z"), 60_000);
+
+      const companyRow = await client.first<{ hiring_velocity_score: number | null }>(
+        `SELECT hiring_velocity_score FROM companies WHERE id = ?`,
+        [company.id],
+      );
+      expect(companyRow?.hiring_velocity_score).toBeNull();
     } finally {
       await cleanupCompany(company.id);
     }

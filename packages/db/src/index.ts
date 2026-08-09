@@ -19,3 +19,4 @@ export * from "./sources-repo";
 export * from "./jobs-repo";
 export * from "./signals-write-repo";
 export * from "./company-role-stats-repo";
+export * from "./trends-repo";

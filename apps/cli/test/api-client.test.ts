@@ -4,6 +4,7 @@ import {
   fetchCompanies,
   fetchCompanyTimeline,
   fetchFacets,
+  fetchHiringTrends,
   fetchSignals,
   fetchSignalsCsv,
   reconcile,
@@ -152,6 +153,57 @@ describe("fetchCompanyTimeline (O.1/O.2, query serialization + envelope)", () =>
     await expect(fetchCompanyTimeline(config, "nope")).rejects.toMatchObject({
       code: "NOT_FOUND",
       requestId: "req_test_tl3",
+    });
+  });
+});
+
+describe("fetchHiringTrends (P.2/P.3, query serialization + envelope)", () => {
+  it("builds /api/v1/trends/hiring and returns the parsed data/meta envelope", async () => {
+    const fixture = {
+      data: [
+        {
+          company: { slug: "acme", displayName: "Acme", industry: "fintech", domain: "acme.example" },
+          newJobsCount: 4,
+          activeJobsCount: 9,
+          acceleration: 0.5,
+          topLocations: [{ countryCode: "US", count: 3 }],
+          latestSignalType: "hiring_burst",
+          latestSignalAt: "2026-08-08T00:00:00.000Z",
+        },
+      ],
+      meta: { requestId: "req_test_tr", appliedFilters: { roles: ["ai_machine_learning"] }, cached: false },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(fixture));
+
+    const result = await fetchHiringTrends(config, { roles: ["ai_machine_learning"], limit: 20 });
+
+    expect(result).toEqual(fixture);
+    const calledUrl = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(calledUrl).toBe("http://localhost:8787/api/v1/trends/hiring?roles=ai_machine_learning&limit=20");
+  });
+
+  it("omits the query string entirely with no params", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ data: [], meta: { requestId: "req_test_tr2", appliedFilters: {}, cached: false } }),
+    );
+
+    await fetchHiringTrends(config);
+
+    const calledUrl = vi.mocked(fetch).mock.calls[0]?.[0] as string;
+    expect(calledUrl).toBe("http://localhost:8787/api/v1/trends/hiring");
+  });
+
+  it("propagates a non-2xx ApiClientError the same way every other GET in this file does", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: "VALIDATION_ERROR", message: "roles is required.", requestId: "req_test_tr3" } },
+        400,
+      ),
+    );
+
+    await expect(fetchHiringTrends(config)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      requestId: "req_test_tr3",
     });
   });
 });

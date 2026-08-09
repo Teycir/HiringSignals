@@ -14,3 +14,5 @@ export * from "./embedding-text";
 export * from "./signal-search-merge";
 export * from "./signals-query";
 export * from "./company-timeline-query";
+export * from "./trends-query";
+export * from "./hiring-velocity";

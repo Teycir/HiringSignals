@@ -29,6 +29,14 @@ export interface CompanyRow {
   employee_band: string | null;
   created_at: string;
   updated_at: string;
+  // ROADMAP.md Milestone Q.3 (migration 0008) -- both null until
+  // Q.2's reconciliation pass first computes a velocity score for
+  // this company. Optional (not every SELECT in this file requests
+  // these columns yet) rather than required, so existing call sites
+  // that don't select them don't need a dummy null literal added to
+  // every query -- see toSummary's own null-coalescing below.
+  hiring_velocity_score?: number | null;
+  velocity_computed_at?: string | null;
 }
 
 // CompanySummary moved to ./types.ts so type-only consumers (apps/cli)
@@ -44,6 +52,8 @@ function toSummary(row: CompanyRow): CompanySummary {
     domain: row.domain,
     industry: row.industry,
     employeeBand: row.employee_band,
+    hiringVelocityScore: row.hiring_velocity_score ?? null,
+    velocityComputedAt: row.velocity_computed_at ?? null,
   };
 }
 
@@ -57,7 +67,8 @@ export async function searchCompanies(
     // instead of "R&D" + any single char + "Labs".
     const pattern = `%${escapeLikePattern(params.q)}%`;
     const rows = await client.all<CompanyRow>(
-      `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at
+      `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at,
+              hiring_velocity_score, velocity_computed_at
        FROM companies WHERE display_name LIKE ? ESCAPE '\\' OR slug LIKE ? ESCAPE '\\'
        ORDER BY display_name ASC LIMIT ?`,
       [pattern, pattern, params.limit],
@@ -66,7 +77,8 @@ export async function searchCompanies(
   }
 
   const rows = await client.all<CompanyRow>(
-    `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at
+    `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at,
+            hiring_velocity_score, velocity_computed_at
      FROM companies ORDER BY display_name ASC LIMIT ?`,
     [params.limit],
   );
@@ -78,7 +90,8 @@ export async function getCompanyBySlug(
   slug: string,
 ): Promise<CompanySummary | null> {
   const row = await client.first<CompanyRow>(
-    `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at
+    `SELECT id, slug, display_name, domain, industry, employee_band, created_at, updated_at,
+            hiring_velocity_score, velocity_computed_at
      FROM companies WHERE slug = ?`,
     [slug],
   );
@@ -378,5 +391,47 @@ export async function getCompanyHiringTimeline(
   }
 
   return buckets;
+}
+
+export interface UpdateCompanyVelocityScoreInput {
+  hiringVelocityScore: number;
+  velocityScoreVersion: string;
+  velocityComputedAt: string;
+}
+
+/**
+ * Persists a company's computed hiring velocity score (ROADMAP.md
+ * Milestone Q.2, migration 0008). Called from the daily reconciliation
+ * pass (apps/api/src/jobs/reconciliation.ts) after
+ * computeHiringVelocity (packages/domain/src/hiring-velocity.ts) runs
+ * against getCompanyActivityStats's fresh company-wide stats -- same
+ * "compute pure, persist via a thin repo write" split as
+ * updateSignalScore/signal-score.ts.
+ *
+ * No status/tenant guard the way signals-write-repo.ts's
+ * updateSignalScore needs one (that guards against a signal that
+ * expired mid-flight) -- a company row has no equivalent "expired"
+ * state, so a plain WHERE id = ? is sufficient here. Returns
+ * `{ changes: number }`, same convention as every other write-repo
+ * function in this codebase, so callers can detect a no-op update
+ * (e.g. companyId no longer exists) without a separate existence
+ * check.
+ */
+export async function updateCompanyVelocityScore(
+  client: D1Client,
+  companyId: string,
+  input: UpdateCompanyVelocityScoreInput,
+): Promise<{ changes: number }> {
+  return client.run(
+    `UPDATE companies SET hiring_velocity_score = ?, velocity_score_version = ?, velocity_computed_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [
+      input.hiringVelocityScore,
+      input.velocityScoreVersion,
+      input.velocityComputedAt,
+      input.velocityComputedAt,
+      companyId,
+    ],
+  );
 }
 

@@ -558,35 +558,62 @@ Adds read paths only — no new ingestion, no new schema beyond existing
 
 **Milestone P.1 acceptance: complete, verified 2026-08-09.**
 
-- [ ] **P.2 — Cross-company trend endpoint**
-      `GET /api/v1/trends/hiring`
+- [x] **P.2 — Cross-company trend endpoint** `GET /api/v1/trends/hiring`
+      — complete, corrected here 2026-08-09 (found already built and
+      unmarked; see note below).
   - Query params: `roles` (comma-delimited, required ≥1), `industry`
     (optional free-text), `country` (optional ISO), `since` (default
     30d), `sort` (`acceleration_desc` / `volume_desc` /
     `newest_signal`, default `acceleration_desc`), `limit` (1–50,
-    default 20).
+    default 20) — `trendsQuerySchema`
+    (`packages/domain/src/trends-query.ts`).
   - Returns ranked companies with most notable hiring activity:
     `{ company: { slug, displayName, industry, domain },
     newJobsCount, activeJobsCount, acceleration, topLocations,
-    latestSignalType, latestSignalAt }`. `acceleration` reuses
-    `computeAcceleration(n14, n56)` from `packages/domain` — same
-    formula, same version.
-  - New repo function `getHiringTrends(client, { roleCategoryFilter,
-    industryFilter?, countryFilter?, since, limit, sort })` in
-    `packages/db/src/signals-repo.ts` or new `trends-repo.ts`
-    (decide at impl time).
-  - Index check: joins `companies` → `jobs` filtered by `role_primary`
-    + `first_seen_at` window + optional `country_code`.
-    `idx_jobs_filters` covers role but not first_seen_at or
-    country_code. Run `EXPLAIN QUERY PLAN`; add migration for
-    `(role_primary, first_seen_at, country_code)` if scanning.
-  - Rate-limit: same `freeReadTier`. Consider 5-min TTL KV cache for
-    identical param combinations (same pattern as `facets-repo.ts`).
-  - Verify: repo test seeding companies across two industries with
-    varying role counts + sort order assertion; route test asserting
-    industry filter; `pnpm -r typecheck`/`lint`/`test` clean.
+    latestSignalType, latestSignalAt }` — `HiringTrendCompany`
+    (`packages/db/src/types.ts`, moved there 2026-08-09 from
+    `trends-repo.ts` so `apps/cli` can import it without pulling in
+    `D1Client`, same pattern `CompanyHiringTimelineBucket` already
+    follows). `acceleration` reuses `computeAcceleration(n14, n56)`
+    from `packages/domain` — same formula, same version.
+  - `getHiringTrends(client, { roleCategoryFilter, industryFilter?,
+    countryFilter?, since, limit, sort })` in new
+    `packages/db/src/trends-repo.ts` — two round trips (main
+    aggregation + top-locations, same pattern
+    `getCompanyHiringTimeline` uses), plus a third for latest-signal
+    lookup; see that file's own header comment for the full reasoning.
+  - Index: migration `0007_trends_role_first_seen_index.sql` adds
+    `idx_jobs_trends ON jobs(role_primary, first_seen_at,
+    country_code)` — `idx_jobs_filters` (migration 0001) leads with
+    `company_id`, which is backwards for a cross-company ranking query
+    with no company filter at all; see that migration file's own
+    header comment.
+  - Rate-limit: `freeReadTier`, same as every other public route. 5-min
+    TTL KV cache keyed on every param that affects the result
+    (`apps/api/src/routes/trends.ts`, same pattern as `facets.ts`).
+  - **Found already fully implemented, unmarked, 2026-08-09:** the repo
+    function, route, and migration all existed on disk (code reads as
+    landed 2026-08-08/09 alongside P.1, going by the migration's own
+    "P.2" references) but this checkbox was never checked and the route
+    had no test file — corrected here rather than re-implementing
+    already-shipped work, per this file's own top-level policy on
+    Milestone O's identical situation.
+  - Verify: `packages/db/test/trends-repo.test.ts`, 5 tests, live-D1
+    (acceleration-sort ordering, industry filter, volume_desc sort,
+    topLocations cap/count, zero-new-jobs-in-window exclusion) — already
+    existed, read and confirmed matching the implementation 2026-08-09.
+    **New 2026-08-09:** `apps/api/test/routes/trends.test.ts`, 5 tests —
+    `resolveTrendsSince`/`buildTrendsCacheKey` extracted as pure
+    functions out of the route handler (same `resolveTimelineWindow`
+    precedent `companies.ts`/O.1 established) and unit-tested without a
+    live D1/KV binding, matching `companies.test.ts`'s own file-level
+    reasoning: the live-D1 ranking logic is already covered by
+    `trends-repo.test.ts`, so the route test only needs to cover the
+    route's own non-pass-through logic (since-defaulting, cache-key
+    construction), not duplicate the repo suite.
 
-- [ ] **P.3 — `hs trends hiring` command (`apps/cli`)**
+- [x] **P.3 — `hs trends hiring` command (`apps/cli`)** — complete,
+      landed 2026-08-09.
   - **Resolved 2026-08-07 (decided with the user): CLI, not a web
     page.** Originally written against `apps/web` (a `/trends` route
     per spec §10.1: role selector chip-toggle, industry/country
@@ -595,18 +622,33 @@ Adds read paths only — no new ingestion, no new schema beyond existing
     `GET /api/v1/trends/hiring` is a working, queryable endpoint
     independent of any UI; P.3 is just giving it a command.
   - `hs trends hiring --role backend [--industry --country --since
-    --sort --limit]` — same params P.2's endpoint accepts. `--format
-    table` prints the ranked company list as columns (`company,
-    newJobs, active, acceleration, topLocations, latestSignal`);
-    `--format json` (CLI default) returns P.2's response unchanged,
-    for an agent to filter/re-rank further itself. No charts, same
-    "the ranked table is the product" framing the original design had
-    — a CLI table delivers that as directly as the deleted mockup did.
+    --sort --limit]` — same params P.2's endpoint accepts, wired
+    through new `apps/cli/src/commands/trends.ts` and a new
+    `fetchHiringTrends` in `apps/cli/src/api-client.ts` (same
+    `queryFromRecord`/envelope pattern as `fetchCompanyTimeline`).
+    **Correction to this section's own original text, found while
+    implementing:** F.1.1 dropped `--format table` CLI-wide before this
+    command was ever built (see that milestone's own scope note, and
+    `hs companies timeline`/O.2's identical resolution) — there is no
+    `--format` flag anywhere in `apps/cli/src`, so this command follows
+    that same JSON-only convention rather than the ASCII-table renderer
+    originally sketched here. Output is always the raw JSON envelope
+    P.2's route returns, for an agent to filter/re-rank further itself.
+  - Registered as `hs trends hiring` (nested, matching `hs companies
+    timeline`'s placement) in `apps/cli/src/main.ts`.
+  - Verify, 2026-08-09: `apps/cli/test/api-client.test.ts`, 3 new tests
+    for `fetchHiringTrends` (query serialization + envelope, no-params
+    case, non-2xx error propagation) and
+    `apps/cli/test/cli-process.test.ts`, 1 new test (`trends hiring`
+    NETWORK_ERROR/req_none on an unreachable API host — same assertion
+    shape as the existing `companies timeline` case).
   - **Sequence after Milestone F.1.2 + P.2** (needs the CLI's
     read-command pattern and the trends endpoint to exist first —
     dropped the prior "+ O.2" dependency since neither command's
     output depends on the other actually existing yet, only on their
-    shared backend endpoints).
+    shared backend endpoints). Both satisfied.
+
+**Milestone P acceptance: P.1–P.3 all complete, verified 2026-08-09.**
 
 ---
 
@@ -662,16 +704,22 @@ data already collected; no new ingestion beyond one migration.
   - Add `hiringVelocityScore` + `velocityComputedAt` to
     `GET /api/v1/companies/:slug` response.
   - Surface in `hs trends hiring` (P.3) and `hs companies timeline`
-    (O.2) `--format table` output as a labeled column/line — no visual
-    badge treatment (spec §11.4's chartreuse-at-80+ styling was a
-    dashboard concept, moot once O.2/P.3 are CLI tables); `--format
-    json` already carries the raw field once Q.3's API work lands, so
-    the CLI layer only needs to print it. Same disclaimer text inline:
-    "Based on pace, breadth, and persistence of public hiring
-    activity. Not a prediction of intent or budget." (spec §11.3).
+    (O.2) output. **Correction, 2026-08-09:** both commands are JSON-
+    only (F.1.1 dropped `--format table` CLI-wide before either was
+    built — see P.3's own corrected section above) — no visual badge
+    treatment applies either (spec §11.4's chartreuse-at-80+ styling
+    was a dashboard concept, moot now that O.2/P.3 are JSON-emitting
+    CLI commands with no table renderer). The raw `hiringVelocityScore`
+    field is what both commands need to carry once Q.3's API work
+    lands; no separate CLI-layer formatting work required. Same
+    disclaimer text inline in the API response: "Based on pace,
+    breadth, and persistence of public hiring activity. Not a
+    prediction of intent or budget." (spec §11.3).
   - Verify: route tests asserting fields present in both endpoints;
-    CLI output test asserting the disclaimer string appears in
-    `--format table` output.
+    CLI test (`api-client.test.ts`, same pattern as P.3's
+    `fetchHiringTrends` tests) asserting `hiringVelocityScore` and the
+    disclaimer field round-trip through `fetchHiringTrends`/
+    `fetchCompanyTimeline` unchanged.
 
 ---
 

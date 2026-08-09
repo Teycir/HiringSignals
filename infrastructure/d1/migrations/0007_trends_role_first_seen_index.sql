@@ -1,0 +1,21 @@
+-- Migration 0007: composite index for getHiringTrends (P.2)
+-- Applies to D1 database "hiring-signals".
+-- Run: pnpm --filter @hiring-signals/api run db:migrations:apply:local
+--      pnpm --filter @hiring-signals/api run db:migrations:apply:remote
+--
+-- getHiringTrends (packages/db/src/trends-repo.ts, ROADMAP.md Milestone
+-- P.2) joins companies -> jobs filtered by role_primary IN (...) plus a
+-- first_seen_at >= since window, with an optional country_code equality
+-- filter. idx_jobs_filters (migration 0001) leads with company_id, which
+-- is exactly backwards for this query -- P.2 has no company_id filter at
+-- all (it's ranking *across* companies), so that index can't be used to
+-- narrow the scan here. Without a matching index this query does a full
+-- table scan of jobs for every trends request.
+--
+-- Leading column is role_primary (always present, required >=1 role per
+-- trendsQuerySchema), then first_seen_at (range-scanned against the
+-- since window), then country_code (optional equality filter, placed
+-- last since SQLite can still use the index's first two columns when
+-- country_code is omitted from the query).
+CREATE INDEX idx_jobs_trends
+  ON jobs(role_primary, first_seen_at, country_code);

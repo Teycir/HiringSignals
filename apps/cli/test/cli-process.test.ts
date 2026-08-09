@@ -95,4 +95,22 @@ describe("hs CLI error paths (real subprocess)", () => {
     expect(parsed.error.code).toBe("NETWORK_ERROR");
     expect(parsed.error.requestId).toBe("req_none");
   });
+
+  it("trends hiring exits non-zero with NETWORK_ERROR/req_none when the API host is unreachable", () => {
+    // ROADMAP.md Milestone P.3: same NETWORK_ERROR-path assertion as the
+    // `companies timeline` case above, extended to the new `trends
+    // hiring` subcommand -- confirms it goes through the same
+    // api-client.ts request() error path, not a special-cased
+    // success-shape assumption.
+    const result = runCli(["trends", "hiring", "--role", "ai_machine_learning"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("NETWORK_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
 });

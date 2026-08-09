@@ -69,6 +69,13 @@ export interface CompanySummary {
   domain: string | null;
   industry: string | null;
   employeeBand: string | null;
+  // ROADMAP.md Milestone Q.3: precomputed by the daily reconciliation
+  // pass (Q.2's handleVelocityRecompute), not computed on read. Null
+  // until that pass has run at least once for this company -- same
+  // "null means not-yet-computed" convention migration 0008's own
+  // header comment documents for the underlying columns.
+  hiringVelocityScore: number | null;
+  velocityComputedAt: string | null;
 }
 
 export interface FacetCount {
@@ -99,4 +106,33 @@ export interface CompanyHiringTimelineBucket {
   roleBreakdown: Array<{ roleCategory: RoleCategory | null; count: number }>;
   locationBreakdown: Array<{ countryCode: string | null; count: number }>;
   signalTypes: SignalType[];
+}
+
+/**
+ * Cross-company hiring trend result (ROADMAP.md Milestone P.2, spec
+ * §1.2/§2.3), moved here from trends-repo.ts for the same reason this
+ * file's own top header comment describes: apps/cli's `hs trends
+ * hiring` command (P.3) needs this shape without pulling in D1Client.
+ * trends-repo.ts re-exports it (`export type { HiringTrendCompany }
+ * from "./types"`) so it stays the source of truth there too -- no
+ * shape duplication, same pattern CompanyHiringTimelineBucket already
+ * follows.
+ */
+export interface HiringTrendCompany {
+  company: {
+    slug: string;
+    displayName: string;
+    industry: string | null;
+    domain: string | null;
+  };
+  newJobsCount: number;
+  activeJobsCount: number;
+  acceleration: number;
+  topLocations: Array<{ countryCode: string | null; count: number }>;
+  latestSignalType: SignalType | null;
+  latestSignalAt: string | null;
+  // ROADMAP.md Milestone Q.3: the company's precomputed velocity score
+  // (Q.1/Q.2), joined in at read time -- same null-until-computed
+  // convention as CompanySummary's own field.
+  hiringVelocityScore: number | null;
 }
