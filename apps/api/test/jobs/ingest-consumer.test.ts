@@ -1217,7 +1217,15 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  }, 240_000);
+    // Raised 240s -> 480s (2026-08-09): timed out at 240s during a
+    // full-suite run under sustained machine load (uptime showed a
+    // load average of ~13-17 on a 16-core box, not this test's own
+    // logic -- isolated, unloaded wrangler d1 execute calls measured
+    // ~8-9.5s each that same session, ~2.4x the ~3.7s this file's
+    // overrides were originally sized against). See
+    // apps/api/vitest.config.ts's header comment for the fuller
+    // writeup of that investigation.
+  }, 480_000);
 
   it("multi_location: 3 distinct location_modes for the same (company, role) triggers a multi_location signal", async () => {
     const company = await seedCompany("multiloc", "MultiLoc Co");
@@ -1248,7 +1256,9 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  }, 240_000);
+    // Raised 240s -> 480s (2026-08-09) -- same load-related timeout and
+    // reasoning as hiring_burst above.
+  }, 480_000);
 
   it("role_acceleration: does NOT trigger on a single job's cold-start acceleration value (regression: false-positive fix)", async () => {
     // computeAcceleration(1, 0) = (1-0)/max(2,0) = 0.5 exactly -- below
@@ -1372,7 +1382,10 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
     } finally {
       await cleanupCompany(company.id);
     }
-  }, 300_000); // two full handleIngestMessage passes (run 1 + run 2) -- more headroom than the single-run H.4 tests above.
+    // Raised 300s -> 600s (2026-08-09) -- same load-related timeout as
+    // hiring_burst/multi_location above; two full handleIngestMessage
+    // passes here, so kept proportionally larger than their 480s.
+  }, 600_000); // two full handleIngestMessage passes (run 1 + run 2) -- more headroom than the single-run H.4 tests above.
 });
 
 /**
