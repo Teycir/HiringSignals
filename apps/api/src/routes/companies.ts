@@ -8,7 +8,11 @@ import {
   getRecentSignalsForCompany,
   searchCompanies,
 } from "@hiring-signals/db";
-import { HIRING_VELOCITY_DISCLAIMER, companyTimelineQuerySchema } from "@hiring-signals/domain";
+import {
+  HIRING_VELOCITY_DISCLAIMER,
+  companySlugParamSchema,
+  companyTimelineQuerySchema,
+} from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
 
 /** Milestone O.1's own cap: v1 rejects windows wider than 90 days. */
@@ -64,7 +68,11 @@ companiesRoute.get("/", async (c) => {
 
 // Company detail + recent signals (spec 9.2, company page in 10.5 trend block).
 companiesRoute.get("/:slug", async (c) => {
-  const slug = c.req.param("slug");
+  // Spec §16.3 "all API input is schema-validated" -- see
+  // companySlugParamSchema's own header comment (packages/domain/src/
+  // company-slug-param.ts) for why this validates shape rather than a
+  // security fix (getCompanyBySlug already parameterizes its query).
+  const { slug } = companySlugParamSchema.parse({ slug: c.req.param("slug") });
   const client = createD1Client(c.env.DB);
   const company = await getCompanyBySlug(client, slug);
 
@@ -107,7 +115,10 @@ companiesRoute.get("/:slug", async (c) => {
  * not get back fewer buckets than it asked for with no signal why.
  */
 companiesRoute.get("/:slug/timeline", async (c) => {
-  const slug = c.req.param("slug");
+  // Spec §16.3 "all API input is schema-validated" -- same
+  // companySlugParamSchema as the detail route above, so both `:slug`
+  // routes can't drift on what counts as a valid slug.
+  const { slug } = companySlugParamSchema.parse({ slug: c.req.param("slug") });
   const parsed = companyTimelineQuerySchema.parse(c.req.query());
   const client = createD1Client(c.env.DB);
   const company = await getCompanyBySlug(client, slug);

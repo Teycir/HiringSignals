@@ -412,12 +412,55 @@ it's a joint sign-off, not a G-only task.
       adapters` and `@hiring-signals/api` typecheck + lint clean;
       `test/breezy.test.ts` + `test/personio.test.ts` targeted run:
       38/38 passing, ~800ms, no live D1 needed for this layer.
-- [ ] Remaining §16.3 items (SSRF aside — rate limiting, input
-      sanitization elsewhere, secrets rotation posture, etc. per the
-      full §16.3 list) not yet walked.
+- [x] §16.3.3 ("all API input is schema-validated") — **found and
+      fixed a real gap 2026-08-11.** `signals.ts`'s `GET /:signalId`
+      and `companies.ts`'s `GET /:slug` and `GET /:slug/timeline` took
+      their path params as raw unchecked strings, unlike every other
+      route in the file (list routes already run their query params
+      through a shared Zod schema, and `admin.ts`'s `:sourceId` already
+      set the precedent of `.uuid()` + a clean 400 for a path param).
+      Not a security hole — `getSignalDetail`/`getCompanyBySlug` already
+      parameterize every query (`WHERE s.id = ?` / `WHERE slug = ?`,
+      confirmed by reading `signals-repo.ts`), so a malformed value was
+      never an injection risk — but a malformed id fell through to an
+      unvalidated DB miss and a 404 instead of a 400, which is the
+      literal gap the spec calls out. Added two new shared schemas in
+      `packages/domain/src` following the existing one-schema-per-file
+      convention (`signals-query.ts`, `company-timeline-query.ts`):
+      `signal-id-param.ts` (`.uuid()`, since `signals.id` is always
+      `crypto.randomUUID()` per `signals-write-repo.ts`'s two insert
+      sites) and `company-slug-param.ts` (lowercase-alphanumeric-
+      hyphen regex, bounded at 100 chars, checked against every slug in
+      `seed-local-d1.sql` so no real slug is wrongly rejected). Both
+      routes now `.parse()` the param and let the existing central
+      `errorHandler` map the thrown `ZodError` to 400/`INVALID_FILTER`
+      — the same convention the list routes already use, not a new
+      error-handling path. Live-verified against a fresh `wrangler dev`
+      on scratch port 8799 (a stale `workerd` process from before this
+      change was found still listening on that port and killed first,
+      so this wasn't tested against pre-change code by accident): valid
+      UUID/slug still 200, malformed UUID/slug now 400 on all three
+      routes, well-formed-but-nonexistent id/slug still correctly 404
+      (unchanged). No new test file added — `packages/domain`'s other
+      pure-passthrough query schemas (`signals-query.ts`, `trends-
+      query.ts`, `company-timeline-query.ts`) have no dedicated test
+      file either, and `companies.test.ts`'s own header comment already
+      documents that this repo verifies route-level 400/404 behavior
+      live against `wrangler dev` rather than a Hono-mocking harness,
+      so this follows the existing precedent rather than inventing a
+      new one. `@hiring-signals/domain`, `@hiring-signals/api`, and
+      `@hiring-signals/cli` typecheck clean; `@hiring-signals/domain`
+      and `@hiring-signals/api` lint clean (0 warnings); targeted tests
+      unchanged and still passing (`domain` 93/93, `api` routes/lib/
+      middleware 31/31) — no live D1 needed for this layer.
+- [ ] Remaining §16.3 items (rate limiting / dedup on source-fetch
+      retries, raw payload retention expiry, ingestion/source-health/
+      API-error-rate monitoring) not yet walked.
 - [ ] Any failing item gets its own follow-up task here rather than
-      being silently marked "close enough." Currently open: the
-      `--format table` spec/decision conflict above.
+      being silently marked "close enough." Nothing currently open in
+      §16 — `--format table` (§16.2) closed 2026-08-10 (commit
+      `7752205`); the schema-validation gap above (§16.3.3) closed
+      2026-08-11.
 
 ---
 

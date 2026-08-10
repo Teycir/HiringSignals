@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
   mergeSignalMatches,
+  signalIdParamSchema,
   signalsQuerySchema,
   type KeywordMatch,
 } from "@hiring-signals/domain";
@@ -150,7 +151,15 @@ signalsRoute.get("/", async (c) => {
 });
 
 signalsRoute.get("/:signalId", async (c) => {
-  const signalId = c.req.param("signalId");
+  // Spec §16.3 "all API input is schema-validated" -- signals.id is
+  // always a crypto.randomUUID() (signals-write-repo.ts), so a malformed
+  // path param is rejected with a clean 400/INVALID_FILTER via the
+  // central errorHandler (same ZodError-throws-on-.parse() convention
+  // the list route above already uses), rather than falling through to
+  // an unvalidated DB lookup and a 404. Not a security fix -- the query
+  // below already parameterizes `signalId` -- purely closing the
+  // validation gap the spec calls out.
+  const { signalId } = signalIdParamSchema.parse({ signalId: c.req.param("signalId") });
   const client = createD1Client(c.env.DB);
   const detail = await getSignalDetail(client, signalId);
 

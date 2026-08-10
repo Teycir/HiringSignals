@@ -16,3 +16,5 @@ export * from "./signals-query";
 export * from "./company-timeline-query";
 export * from "./trends-query";
 export * from "./hiring-velocity";
+export * from "./signal-id-param";
+export * from "./company-slug-param";
