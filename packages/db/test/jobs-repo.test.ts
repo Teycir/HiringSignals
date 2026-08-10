@@ -438,6 +438,90 @@ describe("upsertJob H1 tenant isolation (UPDATE branch)", () => {
   });
 });
 
+/**
+ * requisitionId persistence (ROADMAP.md G.3 gap, migration 0009): spec
+ * §7's third likely-duplicate field was parsed into NormalizedJob by
+ * 3 of 8 adapters but never reached the jobs table -- upsertJob's INSERT
+ * had no column for it and its UPDATE never touched it. Covers the
+ * INSERT branch (new job carries a requisitionId), the UPDATE branch
+ * (a later observation for the same job updates it), and the
+ * omitted-field case (adapters that never set requisitionId persist
+ * NULL, not a fabricated empty string).
+ */
+describe("upsertJob requisitionId persistence", () => {
+  it("persists requisitionId on INSERT and an updated value on a later UPDATE", async () => {
+    const company = await seedCompany("uj-reqid", "Upsert Job Requisition Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const now = new Date().toISOString();
+      const created = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-reqid-1",
+        canonicalUrl: `https://example.invalid/jobs/job-reqid-1`,
+        title: "Backend Engineer",
+        titleNormalized: "backend engineer",
+        requisitionId: "REQ-100",
+        contentHash: "hash-v1",
+        observedAt: now,
+      });
+
+      const afterInsert = await client.first<{ requisition_id: string | null }>(
+        `SELECT requisition_id FROM jobs WHERE id = ?`,
+        [created.id],
+      );
+      expect(afterInsert?.requisition_id).toBe("REQ-100");
+
+      const later = new Date(Date.now() + 60_000).toISOString();
+      await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-reqid-1",
+        canonicalUrl: `https://example.invalid/jobs/job-reqid-1`,
+        title: "Backend Engineer",
+        titleNormalized: "backend engineer",
+        requisitionId: "REQ-200",
+        contentHash: "hash-v2",
+        observedAt: later,
+      });
+
+      const afterUpdate = await client.first<{ requisition_id: string | null }>(
+        `SELECT requisition_id FROM jobs WHERE id = ?`,
+        [created.id],
+      );
+      expect(afterUpdate?.requisition_id).toBe("REQ-200");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("persists NULL when the adapter never sets requisitionId", async () => {
+    const company = await seedCompany("uj-reqid-null", "Upsert Job No Requisition Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const now = new Date().toISOString();
+      const created = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-reqid-2",
+        canonicalUrl: `https://example.invalid/jobs/job-reqid-2`,
+        title: "SRE",
+        titleNormalized: "sre",
+        contentHash: "hash-v1",
+        observedAt: now,
+      });
+
+      const row = await client.first<{ requisition_id: string | null }>(
+        `SELECT requisition_id FROM jobs WHERE id = ?`,
+        [created.id],
+      );
+      expect(row?.requisition_id).toBeNull();
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+});
+
 describe("applyLifecycleTransition", () => {
   async function seedJob(companyId: string, sourceId: string, externalJobId: string) {
     const now = new Date().toISOString();

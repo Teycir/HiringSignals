@@ -1,0 +1,19 @@
+-- Migration 0009: persist requisitionId on jobs (ROADMAP.md G.3 gap)
+-- Applies to D1 database "hiring-signals".
+-- Run: pnpm --filter @hiring-signals/api run db:migrations:apply:local
+--      pnpm --filter @hiring-signals/api run db:migrations:apply:remote
+--
+-- Found during G.3's 2026-08-08 ingestion-metrics audit: spec §7's
+-- third likely-duplicate field, requisitionId, is already parsed from
+-- adapter payloads into NormalizedJob (packages/domain/src/job.ts) by
+-- 3 of 8 adapters (greenhouse.ts, breezy.ts, workable.ts) but was never
+-- persisted -- no jobs column existed, so upsertJob silently dropped it.
+-- The other 5 adapters (ashby, lever, personio, recruitee,
+-- smartrecruiters) leave it undefined; their providers don't expose an
+-- equivalent field in the payloads this codebase currently maps.
+--
+-- Nullable, no backfill: existing rows have no requisition_id to
+-- recover (the field was never captured), same "column added later,
+-- old rows stay NULL rather than fabricating a value" precedent as
+-- migration 0008's velocity columns.
+ALTER TABLE jobs ADD COLUMN requisition_id TEXT;

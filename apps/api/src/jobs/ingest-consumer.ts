@@ -788,6 +788,7 @@ async function processNormalizedJob(
     city: job.city,
     postedAt: job.postedAt,
     sourceUpdatedAt: job.updatedAt,
+    requisitionId: job.requisitionId,
     contentHash,
     observedAt,
   });

@@ -29,6 +29,14 @@ export interface JobRow {
   missing_run_count: number;
   status: string;
   content_hash: string;
+  /** requisitionId as parsed by the adapter (spec §7's third
+   * likely-duplicate field), NULL for adapters that don't expose one
+   * and for every row created before migration 0009. Not part of
+   * content_hash (lib/text/content-hash.ts) -- it identifies the same
+   * requisition across re-postings rather than signaling a content
+   * edit, so a requisitionId change alone shouldn't trigger a
+   * job_updated evidence row. */
+  requisition_id: string | null;
 }
 
 /**
@@ -133,6 +141,7 @@ export interface UpsertJobInput {
   city?: string;
   postedAt?: string;
   sourceUpdatedAt?: string;
+  requisitionId?: string;
   contentHash: string;
   observedAt: string;
 }
@@ -220,7 +229,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
          description_text = ?, department_raw = ?, employment_type = ?,
          location_raw = ?, location_mode = ?, country_code = ?,
          region_code = ?, city = ?, posted_at = ?, source_updated_at = ?,
-         last_seen_at = ?, content_hash = ?
+         requisition_id = ?, last_seen_at = ?, content_hash = ?
        WHERE id = ? AND company_id = ?`,
       [
         input.canonicalUrl,
@@ -236,6 +245,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
         input.city ?? null,
         input.postedAt ?? null,
         input.sourceUpdatedAt ?? null,
+        input.requisitionId ?? null,
         input.observedAt,
         input.contentHash,
         existing.id,
@@ -262,9 +272,9 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
        employment_type, location_raw, location_mode, country_code,
        region_code, city, role_primary, role_tags_json,
        classification_confidence, classification_version, posted_at,
-       source_updated_at, first_seen_at, last_seen_at, missing_run_count,
-       status, content_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', NULL, NULL, ?, ?, ?, ?, 0, 'active', ?)`,
+       source_updated_at, requisition_id, first_seen_at, last_seen_at,
+       missing_run_count, status, content_hash
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', NULL, NULL, ?, ?, ?, ?, ?, 0, 'active', ?)`,
     [
       id,
       input.sourceId,
@@ -283,6 +293,7 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
       input.city ?? null,
       input.postedAt ?? null,
       input.sourceUpdatedAt ?? null,
+      input.requisitionId ?? null,
       input.observedAt,
       input.observedAt,
       input.contentHash,

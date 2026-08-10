@@ -19,16 +19,24 @@
 //      as two rows -- reported as a fixed 0%, not queried, since a
 //      structurally-impossible thing isn't worth a query.
 //   2. "Likely duplicate within a company" -- same normalized title,
-//      same location_mode/location, and same requisition identifier if
-//      available (spec §7.4 / §515). jobs.title_normalized and
-//      jobs.location_mode/location_raw exist and are queried below;
-//      requisitionId does NOT -- packages/domain/src/job.ts parses it
-//      from adapter payloads but no jobs-repo.ts column or migration
-//      ever persists it (confirmed 2026-08-05, not assumed). This
-//      script's "likely duplicate" count is therefore title+location+
-//      company only, an approximation of spec §7's full rule, not the
-//      rule itself -- printed with an explicit caveat rather than
-//      silently passed off as the complete metric.
+//      same location_mode/location, and same requisition identifier
+//      "if available" (spec §7.2, read literally: requisitionId is an
+//      extra matching dimension when present on both sides, not a
+//      required field -- a NULL requisitionId doesn't disqualify a
+//      title+location+company match, since 5 of 8 adapters never
+//      expose one). requisition_id was persisted 2026-08-09 (migration
+//      0009, ROADMAP.md G.3 gap) -- this script now queries it via two
+//      separate GROUP BYs rather than one, since folding a nullable
+//      column into a single GROUP BY would silently bucket every
+//      NULL-requisition job at a company/title/location into one
+//      giant "same requisitionId" group (NULL groups with NULL in
+//      SQL's GROUP BY), which is wrong per the "if available" reading
+//      above. Tier 2a groups only rows where requisition_id IS NOT
+//      NULL (title+location+company+requisitionId, the full spec §7
+//      rule); tier 2b groups the remaining requisition_id IS NULL rows
+//      (title+location+company only, the pre-migration approximation,
+//      now scoped to just the rows that genuinely lack the field
+//      rather than applied blanket).
 //
 // Usage:
 //   node infrastructure/scripts/ingestion-metrics.mjs [--remote] [--since=<ISO8601>]
@@ -63,10 +71,24 @@ async function main() {
     { local },
   );
 
-  const likelyDupRows = await d1Execute(
+  // Tier 2a: full spec §7 rule (title+location+company+requisitionId),
+  // scoped to rows that actually have a requisition_id -- see header
+  // comment on why NULL requisition_id rows can't share this GROUP BY.
+  const likelyDupWithReqIdRows = await d1Execute(
+    `SELECT company_id, title_normalized, location_mode, location_raw, requisition_id, COUNT(*) AS n
+     FROM jobs
+     WHERE first_seen_at >= ${sinceLit} AND requisition_id IS NOT NULL
+     GROUP BY company_id, title_normalized, location_mode, location_raw, requisition_id
+     HAVING COUNT(*) > 1`,
+    { local },
+  );
+
+  // Tier 2b: title+location+company approximation, scoped to rows that
+  // genuinely lack a requisition_id (adapter doesn't expose one).
+  const likelyDupNoReqIdRows = await d1Execute(
     `SELECT company_id, title_normalized, location_mode, location_raw, COUNT(*) AS n
      FROM jobs
-     WHERE first_seen_at >= ${sinceLit}
+     WHERE first_seen_at >= ${sinceLit} AND requisition_id IS NULL
      GROUP BY company_id, title_normalized, location_mode, location_raw
      HAVING COUNT(*) > 1`,
     { local },
@@ -75,7 +97,9 @@ async function main() {
   const totalRuns = Number(runStats?.total_runs ?? 0);
   const successRuns = Number(runStats?.success_runs ?? 0);
   const totalJobs = Number(jobStats?.total_jobs ?? 0);
-  const likelyDupJobs = likelyDupRows.reduce((sum, r) => sum + Number(r.n), 0);
+  const likelyDupWithReqIdJobs = likelyDupWithReqIdRows.reduce((sum, r) => sum + Number(r.n), 0);
+  const likelyDupNoReqIdJobs = likelyDupNoReqIdRows.reduce((sum, r) => sum + Number(r.n), 0);
+  const likelyDupJobs = likelyDupWithReqIdJobs + likelyDupNoReqIdJobs;
 
   console.log(`Ingestion metrics since ${since} (${local ? "local" : "remote"})`);
   console.log("-".repeat(60));
@@ -97,16 +121,28 @@ async function main() {
   } else {
     const dupPct = ((likelyDupJobs / totalJobs) * 100).toFixed(1);
     console.log(
-      `Likely-duplicate rate (title+location+company match): ${dupPct}% (${likelyDupJobs}/${totalJobs}) -- target < 1% (spec §15)`,
+      `Likely-duplicate rate (spec §7 full rule): ${dupPct}% (${likelyDupJobs}/${totalJobs}) -- target < 1% (spec §15)`,
     );
-    console.log("  CAVEAT: approximates spec §7's rule (title+location+requisitionId). requisitionId is");
-    console.log("  parsed from adapter payloads but never persisted to jobs -- this number omits that field.");
+    console.log(
+      `  Breakdown: ${likelyDupWithReqIdJobs} via title+location+company+requisitionId, ` +
+        `${likelyDupNoReqIdJobs} via title+location+company (requisitionId not available for these adapters).`,
+    );
   }
 
-  if (likelyDupRows.length > 0) {
+  if (likelyDupWithReqIdRows.length > 0) {
     console.log("");
-    console.log("Likely-duplicate groups:");
-    for (const r of likelyDupRows) {
+    console.log("Likely-duplicate groups (requisitionId matched):");
+    for (const r of likelyDupWithReqIdRows) {
+      console.log(
+        `  [${r.n}x] company=${r.company_id} title="${r.title_normalized}" location=${r.location_mode}/${r.location_raw ?? "—"} req=${r.requisition_id}`,
+      );
+    }
+  }
+
+  if (likelyDupNoReqIdRows.length > 0) {
+    console.log("");
+    console.log("Likely-duplicate groups (title+location+company, no requisitionId):");
+    for (const r of likelyDupNoReqIdRows) {
       console.log(
         `  [${r.n}x] company=${r.company_id} title="${r.title_normalized}" location=${r.location_mode}/${r.location_raw ?? "—"}`,
       );
