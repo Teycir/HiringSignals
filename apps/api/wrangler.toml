@@ -135,18 +135,23 @@ remote = true
 
 # --- Workers Analytics Engine: API-request metrics (spec §16.3
 # "monitoring exposes ... API error rates" -- see apps/api/src/
-# middleware/api-metrics.ts). Dataset is created automatically on first
-# writeDataPoint call after this binding exists, per Cloudflare's own
-# docs -- no separate provisioning command needed, unlike Vectorize
-# above. No local emulation exists (confirmed against Cloudflare's own
-# docs, 2026-08-11): c.env.API_METRICS is undefined under `wrangler
-# dev`, which api-metrics.ts's own guard treats as a normal no-op, not
-# an error. Querying data back requires the SQL API
+# middleware/api-metrics.ts). Dataset (hiring_signals_api_metrics) was
+# created manually via the Cloudflare dashboard 2026-08-11 after
+# `wrangler deploy` failed with error code 10089 ("You need to enable
+# Analytics Engine") -- the account-level feature was not yet activated,
+# a real one-time gate distinct from anything in this repo's code.
+# Local-dev behavior verified live (not assumed from docs), 2026-08-11:
+# under this repo's wrangler 4.114.0, c.env.API_METRICS reports
+# Mode: local under `wrangler dev` and is a real, defined binding --
+# NOT undefined the way AI/VECTORIZE are (those are forced remote-only,
+# confirmed by this same file's VECTORIZE comment above).
+# writeDataPoint completed without throwing across three real local
+# requests (200/400/404). Querying data back out is production-only --
+# Analytics Engine has no local read path -- via the SQL API
 # (api.cloudflare.com/client/v4/accounts/<id>/analytics_engine/sql,
-# bearer-token authenticated) -- infrastructure/scripts/api-metrics.mjs
-# is the ops-facing wrapper around that, following d1-exec.mjs's own
-# "ops scripts shell out / call REST directly, they cannot use a live
-# Worker binding" precedent. ---
+# bearer-token authenticated); no ops script wraps this yet, since
+# there was no production traffic through this binding to query until
+# this deploy (first production deploy since 2026-07-30). ---
 [[analytics_engine_datasets]]
 binding = "API_METRICS"
 dataset = "hiring_signals_api_metrics"
