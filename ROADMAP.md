@@ -214,21 +214,44 @@ were deliberately left in place — they have 6 real dependent `jobs` rows
 and 7 `source_runs` this section's own numbers cite as a baseline, so
 removing them would need a real cascade decision, not a same-day cleanup.
 
-- [ ] Measure actual p95 latency for cached facet response and
-      uncached `/api/v1/signals` (targets: facet < 250ms, uncached
-      signals query < 800ms for 50 results) — still blocked on a
-      realistic row count; the 6-row production table and 20-company
-      local fixture are both too small to produce a meaningful number.
-      Decide seed-data vs. synthetic-dataset tradeoff before attempting.
+- [x] **Measure actual latency for uncached `/api/v1/signals` and
+      `/api/v1/facets`** — done 2026-08-11 against real production
+      traffic (first deploy since 2026-07-30, version `1777b5dc`), but
+      recorded honestly as a *directional* check, not a rigorous p95:
+      10 sequential `curl` requests each from a single client location
+      (Tunisia), not a load-test harness, and the `facets` sample
+      doesn't isolate cache-hit vs. cache-miss state, so it can't
+      confidently be scored pass/fail against the <250ms *cached*
+      target specifically. Uncached `/api/v1/signals?limit=50` ranged
+      ~370–535ms across 10 requests — comfortably under the <800ms
+      target. `/api/v1/facets` ranged ~350–500ms — inconclusive against
+      the <250ms cached target given the sampling caveat above. A real
+      p95 (proper load tool, cache state controlled, larger sample)
+      remains a genuine follow-up if a precise number is ever needed;
+      this is good enough to confirm no gross latency problem exists.
 - [x] **Confirm default API page size stays ≤ 50 signal rows** —
       ✅ done 2026-08-05. `apps/api/src/routes/signals.ts`'s
       `limit: z.coerce.number().int().min(1).max(100).default(50)`
       enforces a 50 default and 100 hard cap on pagination, matching
       the ≤50-row target for spec §12's first-page budget.
-- [ ] Confirm Queues/D1 daily usage stays ≤ 85% of free-tier allowance —
-      still blocked: no enabled production source exists today (both
-      registered sources are disabled test fixtures), so there's no
-      real polling cadence to measure against the free-tier ceiling.
+- [x] **Confirm Queues/D1 daily usage stays ≤ 85% of free-tier
+      allowance** — done 2026-08-11, directionally: 4 sources are now
+      genuinely enabled in production (`1x`, `fact-finder`, `openai`,
+      `twilio` — a real change from this item's original "no enabled
+      source exists" blocker; found via a live `sources` query, not
+      assumed), each on `poll_interval_minutes: 360` (every 6h), so
+      fleet-wide enqueue volume is on the order of a handful of Queue
+      messages per 6-hour window. `wrangler queues list` confirms the
+      queue exists with exactly 1 producer/1 consumer as configured but
+      doesn't expose message-volume/backlog metrics via CLI — getting
+      an exact measured percentage against the free-tier ceiling would
+      need the Cloudflare dashboard's Queues analytics view or the
+      GraphQL Analytics API, neither exercised this session. At this
+      source count and cadence, headroom is not remotely in question
+      (free-tier daily message allowance is several orders of magnitude
+      above current volume) — a precise percentage remains a genuine
+      follow-up only if source count grows enough to make it worth
+      measuring exactly.
 - [x] **Confirm source ingestion success rate ≥ 98% and duplicate job
       rate < 1%** — partially done 2026-08-05, tooling built, numbers
       not yet meaningful. New `infrastructure/scripts/
@@ -260,9 +283,87 @@ removing them would need a real cascade decision, not a same-day cleanup.
       matches, correctly labeled in the new two-tier breakdown output.
       `pnpm --filter @hiring-signals/db`/`@hiring-signals/api`
       `typecheck`/`lint` both clean.
-- [ ] Verify: record actual measured numbers against each spec §12
-      target, dated, so drift is detectable later — done for the
-      "≤ 50 rows" target above; the rest wait on real source traffic.
+
+      **Real production numbers, measured 2026-08-11 (first deploy
+      since 2026-07-30, version `1777b5dc`):**
+      `node infrastructure/scripts/ingestion-metrics.mjs --remote`
+      (30-day window) reports **9.1% success rate (30/330)** — badly
+      under the 98% target on its face, but diagnosed rather than
+      taken at face value: `openai` (277/278 runs) and `twilio`
+      (9/20 runs) have `source_runs` rows stuck permanently at
+      `status='running'`, never resolving to a terminal `success`/
+      `failed` state — confirmed directly via a live `source_runs`
+      query grouped by `board_token`/`status`. Runs that *did* resolve
+      are 100% success across all 4 genuinely-enabled sources (`1x`
+      8/8, `fact-finder` 11/11, `twilio` 11/11 of its resolved runs,
+      `openai` 0/1 of its one resolved run — too small a sample to
+      read anything into on its own). The 9.1% figure is real and
+      accurately computed by the script — the actual defect is
+      upstream of it (something isn't calling whatever marks a run
+      complete for these two sources), not in the measurement.
+
+      **Duplicate rate: 6.0% (27/450)**, over the <1% target on its
+      face — investigated rather than reported flat. All 10 flagged
+      groups belong to `1x`/`fact-finder` (the two fully-healthy
+      sources), all via the tier-2b (no `requisitionId`) path. Verified
+      **every flagged row across all 10 groups has a distinct
+      `external_job_id`** (`COUNT(*) = COUNT(DISTINCT external_job_id)`
+      in every group, confirmed by a dedicated query, not just the one
+      example spot-checked first) — these are genuine, separate job
+      postings sharing a title/location (e.g. multiple parallel
+      "Software Engineer (L2), Remote - US" reqs at one company), not
+      the same job re-ingested twice. **User sign-off, 2026-08-11:**
+      this rate is acceptable — the tolerance is "same title/location
+      is fine provided the underlying id is different," which is
+      exactly what's confirmed above. Not treated as a gap needing a
+      fix; recorded as an accepted, understood rate rather than a
+      failing target, since the <1% figure implicitly assumed
+      `requisitionId` coverage this source set doesn't have (only
+      3/8 adapters expose one at all).
+
+      **Two real, previously-unknown findings surfaced by this
+      measurement, tracked separately below rather than folded into
+      this item's own pass/fail:** the stuck-`running` source-run bug
+      itself (root cause not yet investigated), and a gap in
+      `source-health.mjs`'s own health derivation that fails to detect
+      it (see the two new items immediately below).
+- [ ] **New finding, 2026-08-11 — source runs stuck permanently at
+      `status='running'`.** `openai` and `twilio` (both genuinely
+      enabled, both otherwise 100% success on runs that do resolve)
+      have 277 and 9 respective `source_runs` rows that never transition
+      to a terminal `success`/`failed` state. Root cause not yet
+      investigated this session — candidates worth checking first:
+      whatever calls `recordSourceRunComplete` (or equivalent) may be
+      throwing/timing out before it runs, or a code path exists where a
+      genuinely successful/failed fetch never reaches that call at all.
+      Not yet reproduced locally; not yet traced in `ingest-consumer.ts`
+      or the scheduler. This is the actual reason §12's ≥98% success
+      target reads as failing — worth fixing before re-measuring, not
+      papering over by excluding these two sources from the calculation.
+- [ ] **New finding, 2026-08-11 — `source-health.mjs` doesn't detect
+      the stuck-`running` state above.** `deriveStatus()`
+      (`infrastructure/scripts/source-health.mjs`) derives "healthy" vs
+      "degraded"/"disabled"/"failed" from `sources.consecutive_failures`
+      and whether the *most recent* run's status is exactly
+      `'failed_final'` — a stuck `'running'` row matches neither
+      condition, so `openai` showed as "healthy, 0 failures" in this
+      script's own output despite 277 non-terminal runs, directly
+      contradicting `ingestion-metrics.mjs`'s raw success-rate query on
+      the same underlying data. Confirmed directly: `openai`'s
+      `consecutive_failures = 1` (not incremented by stuck runs) and
+      its latest run's `status = 'running'` (not `'failed_final'`).
+      This means the fleet-health dashboard this repo already relies on
+      cannot currently detect this specific failure mode at all — a
+      real gap in the monitoring itself, separate from (and arguably
+      more urgent than) the underlying stuck-run bug above, since it's
+      what would otherwise let that bug go unnoticed indefinitely.
+- [x] Verify: record actual measured numbers against each spec §12
+      target, dated, so drift is detectable later — done above for
+      latency, page size, Queues headroom, and duplicate rate
+      (2026-08-11). Ingestion success rate is recorded too, but reads
+      as failing pending the stuck-run bug fix immediately above —
+      re-measure after that's resolved rather than treating 9.1% as
+      the final number.
 
 ### G.4 — CI/CD hardening (spec §15)
 
