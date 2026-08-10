@@ -294,9 +294,15 @@ Production) and a 7-step deployment sequence. Current CI
       mechanically available and testable once we're deploying again —
       not yet exercised.
 - [x] **Feature-flag pattern for scoring formula changes (spec §15.3) —
-      audited, partial gap found, 2026-08-06.** `packages/db`'s schema
-      has no `velocity_score_version` column at all (Milestone Q, the
-      feature that field would belong to, is unbuilt). `score_version`
+      audited, partial gap found, 2026-08-06.** **Correction, 2026-08-09:**
+      this note originally read "`packages/db`'s schema has no
+      `velocity_score_version` column at all (Milestone Q, the feature
+      that field would belong to, is unbuilt)" — Milestone Q has since
+      landed (2026-08-09) and `companies.velocity_score_version` is a
+      real column (migration `0008_company_velocity_score.sql`),
+      populated the same way `score_version` is below. The underlying
+      gap this item is actually about is unchanged by that, so the rest
+      of this note still stands as written. `score_version`
       (spec §7.2's existing signal score) is real and does one of spec
       §15.3's two asks: every scored signal persists
       `SCORE_FORMULA_VERSION` (currently `"v2"`), so old and new-formula
@@ -511,7 +517,7 @@ already-shipped work.**
 
 ---
 
-## Milestone P — Hiring trend API: cross-company analytics
+## Milestone P — Hiring trend API: cross-company analytics — complete, landed 2026-08-09
 
 Spec §1.2 (investor/analyst as secondary audience), §2.3 ("Trend
 charts" deferred — this is API layer without charts UI).
@@ -652,7 +658,7 @@ Adds read paths only — no new ingestion, no new schema beyond existing
 
 ---
 
-## Milestone Q — Hiring velocity score per company (investor-grade signal)
+## Milestone Q — Hiring velocity score per company (investor-grade signal) — complete, landed 2026-08-09
 
 **Why this is the real moat:** existing signal score (§7.2) ranks
 individual role-level signals. Investors need a single **company-level
