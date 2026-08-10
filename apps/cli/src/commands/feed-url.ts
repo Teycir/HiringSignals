@@ -1,6 +1,7 @@
 import { defineCommand } from "citty";
 import { signalsQuerySchema } from "@hiring-signals/domain";
 import { buildFeedUrl, resolveConfig } from "../api-client";
+import { printResult } from "../output";
 
 /**
  * `hs feed-url [filters]` -- prints the GET /api/v1/feed.rss URL for the
@@ -46,6 +47,6 @@ export const feedUrlCommand = defineCommand({
       observedSince: args.observedSince,
     });
     const url = buildFeedUrl(resolveConfig(), parsed);
-    process.stdout.write(JSON.stringify({ url }) + "\n");
+    printResult({ url });
   },
 });

@@ -167,11 +167,13 @@ export async function fetchFacets(
   return request(config, "/api/v1/facets");
 }
 
-/** GET /api/v1/companies (spec 9.2, 10.4's company-combobox typeahead). */
-export async function fetchCompanies(
-  config: CliClientConfig,
-  params: { q?: string; limit?: number } = {},
-): Promise<{
+/** GET /api/v1/companies (spec 9.2, 10.4's company-combobox typeahead).
+ * Named export (not inline in fetchCompanies's return type) so
+ * apps/cli/src/commands/companies.ts's --format table renderer
+ * (spec §16.2) can type its parameter against this without duplicating
+ * the shape -- same pattern SignalListResponse/CompanyTimelineResponse
+ * already follow in this file. */
+export interface CompanyListResponse {
   data: CompanySummary[];
   meta: {
     requestId: string;
@@ -179,7 +181,12 @@ export async function fetchCompanies(
     // ROADMAP.md Milestone Q.3, spec §11.3.
     hiringVelocityDisclaimer: string;
   };
-}> {
+}
+
+export async function fetchCompanies(
+  config: CliClientConfig,
+  params: { q?: string; limit?: number } = {},
+): Promise<CompanyListResponse> {
   const qs = queryFromRecord(params);
   return request(config, `/api/v1/companies?${qs}`);
 }
@@ -268,10 +275,17 @@ export interface SourceSummary {
   consecutiveFailures: number;
 }
 
+/** Named export (spec §16.2 --format table renderer, same reasoning as
+ * CompanyListResponse's own comment above). */
+export interface SourceListResponse {
+  data: SourceSummary[];
+  meta: { requestId: string; appliedFilters: Record<string, unknown> };
+}
+
 export async function fetchSources(
   config: CliClientConfig,
   params: { companyId?: string; limit?: number } = {},
-): Promise<{ data: SourceSummary[]; meta: { requestId: string; appliedFilters: Record<string, unknown> } }> {
+): Promise<SourceListResponse> {
   const qs = queryFromRecord(params);
   return request(config, `/api/v1/sources?${qs}`);
 }

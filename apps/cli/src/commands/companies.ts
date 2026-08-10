@@ -1,6 +1,19 @@
 import { defineCommand } from "citty";
-import { fetchCompanies, fetchCompanyDetail, fetchCompanyTimeline, resolveConfig } from "../api-client";
+import { fetchCompanies, fetchCompanyDetail, fetchCompanyTimeline, resolveConfig, type CompanyListResponse } from "../api-client";
 import type { RoleCategory } from "@hiring-signals/domain";
+import { printResult, renderTable, type TableColumn } from "../output";
+import type { CompanySummary } from "@hiring-signals/db/src/types";
+
+const COMPANY_LIST_COLUMNS: TableColumn<CompanySummary>[] = [
+  { header: "NAME", value: (c) => c.displayName },
+  { header: "SLUG", value: (c) => c.slug },
+  { header: "INDUSTRY", value: (c) => c.industry ?? "" },
+  { header: "VELOCITY", value: (c) => (c.hiringVelocityScore === null ? "" : String(c.hiringVelocityScore)) },
+];
+
+function renderCompanyListTable(result: CompanyListResponse): string {
+  return renderTable(result.data, COMPANY_LIST_COLUMNS);
+}
 
 /** `hs companies list [--q --limit]` -- GET /api/v1/companies (spec 9.2, 10.4). */
 const list = defineCommand({
@@ -14,11 +27,17 @@ const list = defineCommand({
       q: args.q,
       limit: args.limit ? Number(args.limit) : undefined,
     });
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result, renderCompanyListTable);
   },
 });
 
-/** `hs companies get <slug>` -- GET /api/v1/companies/:slug (spec 9.2, 10.5). */
+/** `hs companies get <slug>` -- GET /api/v1/companies/:slug (spec 9.2,
+ * 10.5). No table renderer: CompanyDetail nests a full `recentSignals`
+ * array (SignalListItem[]) inside a single company object -- there's no
+ * single-row flattening that doesn't either drop the signals or produce
+ * one absurdly wide row; printResult() falls back to JSON with a stderr
+ * note under --format table (use `hs signals list --company <slug>`
+ * for a tabular view of that company's signals instead). */
 const get = defineCommand({
   meta: { name: "get", description: "Get a company by slug, with recent signals." },
   args: {
@@ -26,7 +45,7 @@ const get = defineCommand({
   },
   async run({ args }) {
     const result = await fetchCompanyDetail(resolveConfig(), args.slug);
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result);
   },
 });
 
@@ -39,10 +58,11 @@ const get = defineCommand({
  * is purely a flag-surface naming choice, not a schema divergence --
  * `bucket-days` maps to `bucketDays` below before being sent).
  *
- * No `--format table` (F.1.1 dropped that flag CLI-wide, see that
- * milestone's own scope note) -- output is always the raw JSON envelope
- * O.1's route returns, for an agent to reformat however the person
- * actually needs it.
+ * No table renderer: each bucket carries its own nested roleBreakdown/
+ * locationBreakdown arrays (CompanyHiringTimelineBucket's own type
+ * comment) -- same "no honest single-row flattening" reasoning as
+ * `companies get` above, so this falls back to JSON under --format
+ * table too rather than silently dropping the breakdown detail.
  */
 const timeline = defineCommand({
   meta: { name: "timeline", description: "Company hiring timeline, time-bucketed (spec 1.4/10.1)." },
@@ -62,7 +82,7 @@ const timeline = defineCommand({
         ? (Number(args["bucket-days"]) as 7 | 14 | 30)
         : undefined,
     });
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result);
   },
 });
 

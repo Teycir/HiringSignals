@@ -1,6 +1,26 @@
 import { defineCommand } from "citty";
-import { fetchHiringTrends, resolveConfig } from "../api-client";
+import { fetchHiringTrends, resolveConfig, type HiringTrendsResponse } from "../api-client";
 import type { RoleCategory } from "@hiring-signals/domain";
+import { printResult, renderTable, type TableColumn } from "../output";
+import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
+
+/** topLocations is dropped from the table view (same "flat columns
+ * only, full detail stays in JSON" convention as signals.ts's
+ * SIGNAL_LIST_COLUMNS) -- every other field here is already flat or a
+ * one-level company.field projection, so this list IS honestly
+ * table-able, unlike companies get/timeline's genuinely nested shapes. */
+const TRENDS_COLUMNS: TableColumn<HiringTrendCompany>[] = [
+  { header: "COMPANY", value: (t) => t.company.displayName },
+  { header: "NEW JOBS", value: (t) => String(t.newJobsCount) },
+  { header: "ACTIVE", value: (t) => String(t.activeJobsCount) },
+  { header: "ACCELERATION", value: (t) => t.acceleration.toFixed(2) },
+  { header: "VELOCITY", value: (t) => (t.hiringVelocityScore === null ? "" : String(t.hiringVelocityScore)) },
+  { header: "LATEST SIGNAL", value: (t) => t.latestSignalType ?? "" },
+];
+
+function renderTrendsTable(result: HiringTrendsResponse): string {
+  return renderTable(result.data, TRENDS_COLUMNS);
+}
 
 /**
  * `hs trends hiring --role backend [--industry --country --since --sort
@@ -12,13 +32,11 @@ import type { RoleCategory } from "@hiring-signals/domain";
  * "role" for CLI-surface consistency with that sibling command, even
  * though the wire param is plural `roles`.
  *
- * No `--format table` (F.1.1 dropped that flag CLI-wide, see that
- * milestone's own scope note, and `hs companies timeline`/O.2 follows
- * the same convention) -- output is always the raw JSON envelope P.2's
- * route returns, for an agent to filter/re-rank further itself. This
- * corrects ROADMAP.md's P.3 section, which still sketches a
- * `--format table` renderer as a live plan; that was already superseded
- * by F.1.1's JSON-only decision before this command was ever built.
+ * `--format table` (spec §16.2) is now implemented CLI-wide (this
+ * comment previously said F.1.1 dropped it; that scope note has been
+ * corrected in ROADMAP.md's G.5 section -- it was an undocumented gap,
+ * not a real decision, per F.1.1's own "add a subtask if a human
+ * debugging by hand turns out to need it").
  */
 const hiring = defineCommand({
   meta: { name: "hiring", description: "Cross-company hiring trends, ranked (spec 1.2/2.3)." },
@@ -50,7 +68,7 @@ const hiring = defineCommand({
         | undefined,
       limit: args.limit ? Number(args.limit) : undefined,
     });
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result, renderTrendsTable);
   },
 });
 

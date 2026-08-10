@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { signalsQuerySchema } from "@hiring-signals/domain";
-import { fetchSignals, fetchSignalDetail, resolveConfig } from "../api-client";
+import { fetchSignals, fetchSignalDetail, resolveConfig, type SignalListResponse } from "../api-client";
 import {
   loadSavedFilters,
   saveFilters,
@@ -8,6 +8,8 @@ import {
   hasAnyFilter,
   type SavedFilterFlags,
 } from "../config-store";
+import { printResult, renderTable, truncate, type TableColumn } from "../output";
+import type { SignalListItem } from "@hiring-signals/db/src/types";
 
 const FILTER_FLAG_KEYS = [
   "role",
@@ -28,6 +30,32 @@ function pickFilterFlags(args: Record<string, unknown>): SavedFilterFlags {
     if (typeof value === "string") out[key] = value;
   }
   return out;
+}
+
+/**
+ * Columns picked for `--format table` scannability, not completeness --
+ * a human eyeballing results wants score/company/role/headline at a
+ * glance, not every SignalListItem field (scoreVersion, expiresAt,
+ * canonicalUrl, etc. are still in the JSON, just not this table; `hs
+ * signals get <id>` is the drill-down for full detail). headline is
+ * truncated (see output.ts's truncate() comment) since it's the field
+ * most likely to blow out column width otherwise.
+ */
+const SIGNAL_LIST_COLUMNS: TableColumn<SignalListItem>[] = [
+  { header: "SCORE", value: (s) => String(s.score) },
+  { header: "COMPANY", value: (s) => s.companyDisplayName },
+  { header: "ROLE", value: (s) => s.roleCategory },
+  { header: "TYPE", value: (s) => s.signalType },
+  { header: "STATUS", value: (s) => s.status },
+  { header: "HEADLINE", value: (s) => truncate(s.headline, 60) },
+];
+
+function renderSignalListTable(result: SignalListResponse): string {
+  const table = renderTable(result.data, SIGNAL_LIST_COLUMNS);
+  const cursorNote = result.meta.nextCursor
+    ? `\n(more results -- pass --cursor ${result.meta.nextCursor} for the next page)`
+    : "";
+  return table + cursorNote;
 }
 
 /**
@@ -72,7 +100,7 @@ const list = defineCommand({
   async run({ args }) {
     if (args.clearSaved) {
       await clearSavedFilters();
-      process.stdout.write(JSON.stringify({ data: { clearedSaved: true } }) + "\n");
+      printResult({ data: { clearedSaved: true } });
       return;
     }
 
@@ -107,11 +135,16 @@ const list = defineCommand({
       limit: args.limit,
     });
     const result = await fetchSignals(resolveConfig(), parsed);
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result, renderSignalListTable);
   },
 });
 
-/** `hs signals get <signalId>` -- GET /api/v1/signals/:signalId (spec 10.5). */
+/** `hs signals get <signalId>` -- GET /api/v1/signals/:signalId (spec
+ * 10.5). No table renderer: SignalDetail's `evidence` array has its own
+ * nested shape (payload is per-evidence-type unstructured JSON, see
+ * SignalDetail's own type comment) with no honest single-row-per-signal
+ * flattening -- printResult() falls back to JSON with a stderr note
+ * under --format table rather than mangling or silently dropping it. */
 const get = defineCommand({
   meta: { name: "get", description: "Get a single signal by id, with evidence." },
   args: {
@@ -119,7 +152,7 @@ const get = defineCommand({
   },
   async run({ args }) {
     const result = await fetchSignalDetail(resolveConfig(), args.signalId);
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result);
   },
 });
 

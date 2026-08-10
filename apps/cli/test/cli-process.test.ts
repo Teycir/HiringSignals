@@ -113,4 +113,37 @@ describe("hs CLI error paths (real subprocess)", () => {
     expect(parsed.error.code).toBe("NETWORK_ERROR");
     expect(parsed.error.requestId).toBe("req_none");
   });
+
+  // spec §16.2 --format table (ROADMAP.md G.5 16.2 closure): these two
+  // cases don't need a live server -- they confirm --format is stripped
+  // out of argv before citty ever parses it (so it can't surface as an
+  // "unknown flag" and break the existing error path) rather than
+  // testing the table renderer's actual output, which needs a real
+  // response body -- see cli-process-format.test.ts for that, run
+  // against a live `wrangler dev` instance.
+  it("--format table is stripped before citty parsing and doesn't change the NETWORK_ERROR error path", () => {
+    const result = runCli(["facets", "--format", "table"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("NETWORK_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
+
+  it("--format=table (equals form) is also stripped and doesn't change the error path", () => {
+    const result = runCli(["facets", "--format=table"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("NETWORK_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
 });

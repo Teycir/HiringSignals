@@ -344,19 +344,41 @@ it's a joint sign-off, not a G-only task.
       its R/V/A/B/Q/P breakdown); CSV export confirmed filter-scoped,
       no unfiltered path; source-health.mjs's stale/degraded/disabled
       derivation run live.
-- [ ] §16.2 (CLI output/scriptability) — 4/5 PASS (exit codes non-zero
+- [x] §16.2 (CLI output/scriptability) — 5/5 PASS (exit codes non-zero
       on error with network/server-validation distinctly coded, though
       CLI-local pre-flight Zod errors fall into a generic CLI_ERROR
       bucket rather than their own code; stdout/stderr never mixed,
       confirmed live on both success and error paths; no ANSI when
       piped, confirmed via `cat -A`; no long-running/`--watch` command
       exists so the "doesn't block a single poll" requirement is
-      vacuously true). **1/5 FAIL:** `--format table` doesn't exist —
-      grepped `apps/cli`, every reference is a comment noting it was
-      deliberately dropped in F.1.1 (agent-first, JSON-only design).
-      This is a real spec/decision conflict (spec §16.2 explicitly
-      requires it), not an oversight — needs an explicit call on
-      whether to implement it or amend the spec, not a silent pass.
+      vacuously true). **`--format table` closed for real 2026-08-10**
+      (was previously recorded here as a FAIL/spec-decision conflict):
+      implemented in `apps/cli/src/output.ts` (shared `renderTable`/
+      `printResult`, no ANSI, no external dep) with `--format` parsed
+      out of raw argv in `main.ts` before citty ever sees it — one
+      chokepoint rather than declaring the flag in every leaf command
+      (the exact way this got silently dropped the first time, per
+      F.1.1's own scope note). JSON stays byte-identical when
+      `--format` is omitted (still exactly one `JSON.stringify(result)
+      + "\n"` line) — live-verified via `wrangler dev` on scratch port
+      8799: `signals list`, `companies list`, `sources list`, `trends
+      hiring`, and `facets` (3 sub-tables, since Facets has 3
+      independent arrays, not 1 flat list) all render real aligned
+      tables against live local D1 data; `signals get`, `companies
+      get`, `companies timeline` correctly **decline** table mode
+      (genuinely nested shapes — evidence[]/recentSignals[]/per-bucket
+      breakdowns have no honest flat-row form) and fall back to JSON
+      with a one-line stderr note, confirmed live (exit 0, valid JSON
+      on stdout, note on stderr only). `export.ts` untouched by design
+      (CSV is already its own "table" format, per that file's own
+      header comment). Known minor nit, recorded rather than hidden:
+      `sources list`'s table shows raw company UUIDs, not display
+      names — `SourceSummary` only carries `companyId`, no join at
+      this layer; low-value follow-up if it matters in practice.
+      `@hiring-signals/cli` typecheck + lint clean; targeted tests
+      (`apps/cli/test`, all 5 files) 59/59 passing in ~14s, including
+      2 new `--format`-stripping cases in `cli-process.test.ts`.
+
 - [x] §16.3.1 (no secret in bundles/repo/logs) — PASS. `.env.local`
       and its `.history/` backups are gitignored and untracked; no
       grep hit echoes an actual secret value (only doc-pointer

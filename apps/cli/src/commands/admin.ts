@@ -1,5 +1,6 @@
 import { defineCommand } from "citty";
 import { runSource, flushScheduler, reconcile, resolveConfig } from "../api-client";
+import { printResult } from "../output";
 
 /**
  * Admin commands (ROADMAP.md F.1.4, spec 10.5). Each requires an explicit
@@ -25,7 +26,7 @@ const sourceRun = defineCommand({
   async run({ args }) {
     requireYes(args.yes, `run source ${args.sourceId}`);
     const result = await runSource(resolveConfig(), args.sourceId);
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result);
   },
 });
 
@@ -43,7 +44,7 @@ const schedulerFlush = defineCommand({
   async run({ args }) {
     requireYes(args.yes, "flush the scheduler");
     const result = await flushScheduler(resolveConfig());
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result);
   },
 });
 
@@ -61,7 +62,7 @@ const reconcileCmd = defineCommand({
   async run({ args }) {
     requireYes(args.yes, "run reconciliation");
     const result = await reconcile(resolveConfig());
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result);
   },
 });
 

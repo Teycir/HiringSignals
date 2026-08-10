@@ -8,6 +8,7 @@ import { adminCommand } from "./commands/admin";
 import { feedUrlCommand } from "./commands/feed-url";
 import { trendsCommand } from "./commands/trends";
 import { ApiClientError } from "./api-client";
+import { setOutputFormat, type OutputFormat } from "./output";
 
 /**
  * apps/cli entrypoint (ROADMAP.md Milestone F.1.1). Structured output by
@@ -53,9 +54,48 @@ function printErrorAndExit(err: unknown): never {
   process.exit(1);
 }
 
+/**
+ * `--format json|table` (spec §16.2) is parsed here, out of raw argv,
+ * rather than declared in every leaf command's citty `args` block --
+ * citty subcommands don't inherit a parent's args automatically, and
+ * hand-declaring the same flag in 8+ files risks silently missing one
+ * (exactly how F.1.1 lost this flag the first time, per that
+ * milestone's own scope note). Stripped out of the array passed to
+ * citty afterwards so it never reaches an individual command's `args`
+ * parser or shows up as an "unknown flag" in --help text. Accepts
+ * `--format=table` and `--format table` (two argv tokens) both, since
+ * citty's own flags support both forms and a human typing this by hand
+ * (the exact audience this flag is for) will use either interchangeably.
+ * An unrecognized value falls back to "json" (the safe, existing
+ * default) rather than throwing -- this flag is additive per output.ts's
+ * own header comment, so it should never be the reason an otherwise-
+ * valid command fails.
+ */
+function extractFormatFlag(argv: string[]): { format: OutputFormat; rest: string[] } {
+  const rest: string[] = [];
+  let format: OutputFormat = "json";
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--format") {
+      const value = argv[i + 1];
+      if (value === "table") format = "table";
+      i++;
+      continue;
+    }
+    if (arg?.startsWith("--format=")) {
+      if (arg.slice("--format=".length) === "table") format = "table";
+      continue;
+    }
+    rest.push(arg as string);
+  }
+  return { format, rest };
+}
+
 async function main(): Promise<void> {
+  const { format, rest } = extractFormatFlag(process.argv.slice(2));
+  setOutputFormat(format);
   try {
-    await runCommand(rootCommand, { rawArgs: process.argv.slice(2) });
+    await runCommand(rootCommand, { rawArgs: rest });
   } catch (err) {
     printErrorAndExit(err);
   }

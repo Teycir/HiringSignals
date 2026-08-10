@@ -1,5 +1,18 @@
 import { defineCommand } from "citty";
-import { fetchSources, resolveConfig } from "../api-client";
+import { fetchSources, resolveConfig, type SourceListResponse, type SourceSummary } from "../api-client";
+import { printResult, renderTable, type TableColumn } from "../output";
+
+const SOURCE_LIST_COLUMNS: TableColumn<SourceSummary>[] = [
+  { header: "PROVIDER", value: (s) => s.provider },
+  { header: "COMPANY", value: (s) => s.companyId },
+  { header: "ENABLED", value: (s) => (s.enabled ? "yes" : "no") },
+  { header: "FAILURES", value: (s) => String(s.consecutiveFailures) },
+  { header: "LAST SUCCESS", value: (s) => s.lastSuccessAt ?? "never" },
+];
+
+function renderSourceListTable(result: SourceListResponse): string {
+  return renderTable(result.data, SOURCE_LIST_COLUMNS);
+}
 
 /** `hs sources list [--company-id --limit]` -- GET /api/v1/sources. */
 const list = defineCommand({
@@ -13,7 +26,7 @@ const list = defineCommand({
       companyId: args.companyId,
       limit: args.limit ? Number(args.limit) : undefined,
     });
-    process.stdout.write(JSON.stringify(result) + "\n");
+    printResult(result, renderSourceListTable);
   },
 });
 
