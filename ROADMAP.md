@@ -453,14 +453,122 @@ it's a joint sign-off, not a G-only task.
       and `@hiring-signals/api` lint clean (0 warnings); targeted tests
       unchanged and still passing (`domain` 93/93, `api` routes/lib/
       middleware 31/31) — no live D1 needed for this layer.
-- [ ] Remaining §16.3 items (rate limiting / dedup on source-fetch
-      retries, raw payload retention expiry, ingestion/source-health/
-      API-error-rate monitoring) not yet walked.
-- [ ] Any failing item gets its own follow-up task here rather than
+- [x] §16.3.4 (source-fetch retries respect rate limits, no duplicate
+      signals) — PASS, verified 2026-08-11, no code changes needed.
+      `ingest-consumer.ts`: 429s honor `Retry-After`, 5xxs get capped
+      exponential backoff, `MAX_RETRY_ATTEMPTS = 5`; each retry is a
+      genuine re-enqueue via `env.INGEST_QUEUE.send` with `attempt`
+      correctly incremented (the 2026-08-08 fix that replaced a broken
+      native `message.retry()` which never incremented it). Dedup is
+      enforced at the schema level, confirmed directly on disk, not just
+      via code comments: `0004_*.sql`'s `UNIQUE` index on job
+      observations and `0006_*.sql`'s one-active-signal-per-triple
+      index. Fleet-level rate limiting also confirmed: the scheduler
+      jitters per-source enqueue time across a 10-minute window on every
+      15-minute cron tick (`scheduler.ts`), and `wrangler.toml`'s Queue
+      consumer is capped at `max_batch_size = 10` with no
+      `max_concurrency` override.
+- [x] §16.3.5 (raw payload retention expiry) — PASS, verified
+      2026-08-11, no code changes needed. `raw-payload-store.ts` →
+      `lib/kv/ttl-store.ts` passes `expirationTtl: 30 days` straight
+      through to KV's native `put`, matching spec §8.3 exactly. No
+      dedicated test file for `ttl-store.ts` — checked against this
+      repo's own precedent first: nothing in `lib/` (`circuit-breaker.ts`,
+      `content-hash.ts`, `unique-constraint.ts`) has a test file either,
+      so a config-passthrough wrapper with no branching logic follows
+      the existing pattern rather than inventing a new one for this
+      file alone.
+- [x] §16.3.6 (monitoring exposes ingestion success, source health, and
+      API error rates) — **found and closed a real gap 2026-08-11.**
+      `source-health.mjs` already covered ingestion success and source
+      health (reads `source_runs`' `status`/`errorCode`/`httpStatus`/
+      `durationMs`, derives stale/degraded/disabled). API error rates
+      had no coverage at all: the central `errorHandler` middleware did
+      one unstructured `console.error` per failure with no counter or
+      queryable aggregate — confirmed by grepping every route file for
+      `console.error`/`console.warn`, finding only that one call site
+      plus one unrelated corrupt-row-skip log. The spec's own
+      tech-stack table names Workers Analytics Engine as the intended
+      mechanism (`hiring-signals-spec.md` line ~164); it was entirely
+      unconfigured — no binding in `wrangler.toml`, zero references
+      anywhere in the repo, and never previously discussed or deferred
+      in this file (unlike the R2-vs-KV decision for retention above,
+      which was a deliberate, documented choice).
+      Added `[[analytics_engine_datasets]]` binding (`API_METRICS`,
+      dataset `hiring_signals_api_metrics`) to `wrangler.toml` and
+      `AnalyticsEngineDataset` to `bindings.ts`'s `AppEnv`, following
+      the existing per-binding doc-comment style. New
+      `apps/api/src/middleware/api-metrics.ts`: registered via
+      `app.use("*", ...)` immediately after `requestId()` (same
+      positioning as `clientIp()`/`securityHeaders()`), records one data
+      point per completed request (`blobs: [method, routeShape]`,
+      `doubles: [status, durationMs]`, `indexes: [routeShape]`) after
+      `await next()` resolves — confirmed via Hono's own documented
+      timing-middleware idiom that `next()` never throws (errors are
+      caught internally and routed to `app.onError()`, which sets
+      `c.res` before control returns), so `c.res.status` read here
+      already reflects whatever `errorHandler` produced. `writeDataPoint`
+      itself is wrapped in its own try/catch — it's synchronous and
+      could throw at the call site (missing binding, malformed args);
+      letting that propagate would fail an otherwise-successful request
+      over a dropped metric, which is a worse outcome than the metric
+      simply not being recorded.
+      `normalizeRoutePath` collapses resource-id path segments
+      (signal/source UUIDs via a UUID regex, company slugs via a
+      not-in-the-static-route-word-set fallback) into `:id`/`:param`
+      before use as Analytics Engine's `index1`, so cardinality stays
+      bounded to the route table rather than growing with every
+      signal/company ever created — cross-checked against every actual
+      route file (`signals.ts`, `companies.ts`, `sources.ts`,
+      `trends.ts`, `export.ts`, `admin.ts`, `feed.ts`) to build the
+      static-word set correctly, catching and fixing two real gaps in
+      an earlier draft (`sources.ts` has no `:sourceId` detail route;
+      `export.ts`'s route is the literal filename `signals.csv`, not a
+      param) before they became a shipped bug.
+      Local-dev behavior verified live, not assumed from docs: this
+      repo's wrangler 4.114.0 reports `env.API_METRICS` as `Mode: local`
+      under `wrangler dev` — a real, defined binding, not `undefined`
+      the way `AI`/`VECTORIZE` are forced `remote`-only. Confirmed
+      `writeDataPoint` completes without throwing or logging any warning
+      across three real local requests (`GET /api/v1/signals` → 200,
+      `GET /api/v1/signals/not-a-real-uuid` → 400, an unmatched route →
+      404). The binding-presence guard (`if (!dataset) return`) is kept
+      anyway as a genuine defensive check for any environment/version
+      where the binding truly isn't provisioned, not because it's
+      currently observed to fire.
+      Querying the data back out (production-only; Analytics Engine has
+      no local read path) uses Cloudflare's SQL API
+      (`https://api.cloudflare.com/client/v4/accounts/<id>/
+      analytics_engine/sql`) — no ops script built for this yet, since
+      there's no production traffic through the new binding to query
+      until this is deployed; a follow-up if/when that's needed.
+      `apps/api/test/middleware/api-metrics.test.ts`: 12 tests for
+      `normalizeRoutePath` (UUID→`:id`, slug→`:param`, static routes
+      including the `signals.csv`/`feed.rss` literal-filename cases,
+      case-insensitive UUID matching, malformed-near-UUID correctly NOT
+      matching, admin's nested `:id/run` shape) — same "pure function,
+      no live-binding dependency" category as `companies.test.ts`'s
+      `resolveTimelineWindow`, per AGENTS.md's zero-mocks policy
+      applying to Cloudflare resources, not plain functions. No test
+      covers `writeDataPoint` itself: `vitest-pool-workers` has no
+      assertion surface for "what data point did Analytics Engine
+      receive" the way it does for D1/KV, since Analytics Engine is
+      write-only from inside the Worker — the live-`wrangler-dev`
+      verification above and code review are the actual safety net for
+      that path. `@hiring-signals/api` typecheck clean; lint clean (0
+      warnings) on all 4 touched/new files; targeted suite
+      (`test/routes`, `test/lib`, `test/middleware`) 43/43 passing,
+      unchanged plus the 12 new tests.
+- [x] Any failing item gets its own follow-up task here rather than
       being silently marked "close enough." Nothing currently open in
       §16 — `--format table` (§16.2) closed 2026-08-10 (commit
-      `7752205`); the schema-validation gap above (§16.3.3) closed
-      2026-08-11.
+      `7752205`); the schema-validation gap (§16.3.3) closed 2026-08-11;
+      rate-limit/dedup (§16.3.4), retention (§16.3.5), and API-error-rate
+      monitoring (§16.3.6) all closed 2026-08-11. **§16 (acceptance
+      criteria) is now fully walked and PASS end to end** — G.5's own
+      "run this last" instruction is satisfied; remaining open work in
+      this file is G.3 (blocked on real traffic) and G.4's one
+      already-flagged conditional item.
 
 ---
 

@@ -39,6 +39,13 @@ export interface Bindings {
    *  MUST NEVER be committed to wrangler.toml or any repo file. Unset = every
    *  admin route returns 403 regardless of request headers. */
   ADMIN_SECRET: string;
+  /** Workers Analytics Engine dataset for API-request metrics (spec §16.3
+   *  "monitoring exposes ... API error rates"). Optional/undefined in
+   *  local dev -- Analytics Engine has no local emulation (confirmed
+   *  against Cloudflare's own docs, 2026-08-11), so middleware/
+   *  api-metrics.ts guards every access rather than assuming this is
+   *  always present. See that file's own header comment. */
+  API_METRICS?: AnalyticsEngineDataset;
 }
 
 /** Per-request context values set by middleware (spec 10.2), e.g. requestId. */

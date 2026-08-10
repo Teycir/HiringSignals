@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv, Bindings } from "./bindings";
 import { requestId } from "./middleware/request-id";
+import { apiMetrics } from "./middleware/api-metrics";
 import { clientIp } from "./middleware/client-ip";
 import { securityHeaders } from "./middleware/security-headers";
 import { errorHandler } from "./middleware/error-handler";
@@ -22,17 +23,27 @@ const app = new Hono<AppEnv>();
 
 // Middleware order follows spec 13.2:
 //   1. request id
-//   2. client ip + default verdict
-//   3. security headers / CORS
-//   4. per-route rate limit (anti-abuse tier -- no auth step; every
+//   2. API metrics (spec §16.3 "API error rates" -- records status +
+//      duration to Workers Analytics Engine after the full remaining
+//      chain resolves, including errorHandler's own onError mapping;
+//      see api-metrics.ts's header comment for why it's safe to place
+//      this early without a try/catch around next() itself). Placed
+//      right after requestId() since it needs c.get("requestId") for
+//      its own failure logging, and before every other middleware so
+//      its measured duration covers the full request, not a partial
+//      slice of the chain.
+//   3. client ip + default verdict
+//   4. security headers / CORS
+//   5. per-route rate limit (anti-abuse tier -- no auth step; every
 //      public/user-facing route is unauthenticated by design, spec
 //      3/13.5/14.1). /api/v1/admin/* is the one exception (spec
 //      13.5a): operator-only, secret-gated via adminAuth(), never
 //      reachable from apps/cli, never a login a user sees.
-//   5. zod validation (per-route)
-//   6. handler
-//   7. structured error mapping
+//   6. zod validation (per-route)
+//   7. handler
+//   8. structured error mapping
 app.use("*", requestId());
+app.use("*", apiMetrics());
 app.use("*", clientIp());
 app.use("*", securityHeaders());
 app.onError(errorHandler);

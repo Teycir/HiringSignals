@@ -133,6 +133,24 @@ index_name = "hiring-signals-jobs"
 # ingestion is confirmed stable end-to-end (see ROADMAP.md).
 remote = true
 
+# --- Workers Analytics Engine: API-request metrics (spec §16.3
+# "monitoring exposes ... API error rates" -- see apps/api/src/
+# middleware/api-metrics.ts). Dataset is created automatically on first
+# writeDataPoint call after this binding exists, per Cloudflare's own
+# docs -- no separate provisioning command needed, unlike Vectorize
+# above. No local emulation exists (confirmed against Cloudflare's own
+# docs, 2026-08-11): c.env.API_METRICS is undefined under `wrangler
+# dev`, which api-metrics.ts's own guard treats as a normal no-op, not
+# an error. Querying data back requires the SQL API
+# (api.cloudflare.com/client/v4/accounts/<id>/analytics_engine/sql,
+# bearer-token authenticated) -- infrastructure/scripts/api-metrics.mjs
+# is the ops-facing wrapper around that, following d1-exec.mjs's own
+# "ops scripts shell out / call REST directly, they cannot use a live
+# Worker binding" precedent. ---
+[[analytics_engine_datasets]]
+binding = "API_METRICS"
+dataset = "hiring_signals_api_metrics"
+
 # Cron routes:
 # - */15 * * * *: find due sources and enqueue ingest messages; never fetch providers here.
 # - 0 6 * * *: recompute stale active-signal scores; also no provider fetches.
