@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { NormalizedJob } from "@hiring-signals/domain";
 import type { SourceConfig } from "../src/adapter-contract";
-import { BreezySchemaError, breezyAdapter } from "../src/breezy";
+import {
+  BreezyInvalidBoardTokenError,
+  BreezySchemaError,
+  boardHost,
+  breezyAdapter,
+} from "../src/breezy";
 import boardFixture from "./fixtures/breezy-board.json";
 import malformedFixture from "./fixtures/breezy-board-malformed.json";
 
@@ -94,5 +99,31 @@ describe("breezyAdapter.normalize", () => {
 describe("breezyAdapter contract", () => {
   it("declares its provider as 'breezy'", () => {
     expect(breezyAdapter.provider).toBe("breezy");
+  });
+});
+
+// spec §11.1 SSRF allow-list: boardHost must never let a boardToken
+// escape the host position (scheme/userinfo/path/query injection), while
+// still supporting the documented custom-career-site-host feature for
+// genuinely bare custom hostnames.
+describe("breezy boardHost (spec §11.1 SSRF allow-list)", () => {
+  it("appends the default suffix for a plain (dotless) boardToken", () => {
+    expect(boardHost("example")).toBe("example.breezy.hr");
+  });
+
+  it("accepts a genuinely bare custom domain as-is", () => {
+    expect(boardHost("careers.example.com")).toBe("careers.example.com");
+  });
+
+  it("rejects a boardToken carrying a scheme/host-breakout attempt", () => {
+    expect(() => boardHost("evil.com/x?redirect=y")).toThrow(BreezyInvalidBoardTokenError);
+  });
+
+  it("rejects a boardToken embedding userinfo", () => {
+    expect(() => boardHost("user:pass@internal.local")).toThrow(BreezyInvalidBoardTokenError);
+  });
+
+  it("rejects a boardToken pointing at a path/port outside the host", () => {
+    expect(() => boardHost("169.254.169.254:80")).toThrow(BreezyInvalidBoardTokenError);
   });
 });

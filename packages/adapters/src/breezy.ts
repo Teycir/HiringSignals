@@ -72,8 +72,44 @@ const breezyBoardSchema = z.array(breezyPositionSchema);
 
 export type BreezyPosition = z.infer<typeof breezyPositionSchema>;
 
-function boardHost(boardToken: string): string {
-  return boardToken.includes(".") ? boardToken : `${boardToken}.breezy.hr`;
+/**
+ * A custom Breezy career-site host (spec §11.1's SSRF allow-list
+ * requirement) must be a bare hostname -- no scheme, userinfo, port,
+ * path, query, or fragment, none of which can appear in a valid DNS
+ * label anyway. `new URL()` on a bare hostname throws (no scheme), so
+ * validate by constructing a URL with a forced https:// prefix and
+ * checking the result's `host` round-trips to exactly the input --
+ * anything that smuggled a scheme/port/path/credentials into boardToken
+ * (e.g. "evil.com/x@breezy.hr", "internal:8080") fails this check
+ * instead of silently reaching fetch(). Same defense recruitee.ts
+ * already gets for free from encodeURIComponent (which escapes every
+ * one of those characters) -- boardHost's "already has a dot" branch
+ * bypassed that, this restores an equivalent guarantee for it.
+ */
+function isValidCustomHost(value: string): boolean {
+  try {
+    const url = new URL(`https://${value}`);
+    // Compare against `hostname` (port-free), not `host` (port-inclusive):
+    // https's default port (443) round-trips out of `host` on its own,
+    // but any *other* explicit port (e.g. "169.254.169.254:80", the
+    // cloud-metadata IP) survives in `host` and would silently pass a
+    // `url.host === value` check while still carrying attacker-supplied
+    // port routing. `port` must be empty and `hostname` must equal the
+    // raw input for this to be a bare, unadorned hostname.
+    return (
+      url.hostname === value && url.port === "" && url.pathname === "/" && !url.search && !url.username
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function boardHost(boardToken: string): string {
+  if (!boardToken.includes(".")) return `${boardToken}.breezy.hr`;
+  if (!isValidCustomHost(boardToken)) {
+    throw new BreezyInvalidBoardTokenError(boardToken);
+  }
+  return boardToken;
 }
 
 function boardUrl(boardToken: string): string {
@@ -158,6 +194,21 @@ export class BreezySchemaError extends Error {
   constructor(public readonly zodError: z.ZodError) {
     super(`Breezy board payload failed schema validation: ${zodError.message}`);
     this.name = "BreezySchemaError";
+  }
+}
+
+/**
+ * Thrown by boardHost when a dotted boardToken isn't a bare hostname
+ * (spec §11.1 SSRF allow-list). Distinct class (not a generic Error) so
+ * ingest-consumer.ts's config-error path (same handling as
+ * UnsupportedProviderError/GreenhouseSchemaError) can catch it
+ * specifically and mark the source degraded rather than retrying --
+ * a malformed boardToken won't fix itself on retry.
+ */
+export class BreezyInvalidBoardTokenError extends Error {
+  constructor(public readonly boardToken: string) {
+    super(`Breezy boardToken "${boardToken}" contains a dot but is not a valid bare hostname.`);
+    this.name = "BreezyInvalidBoardTokenError";
   }
 }
 

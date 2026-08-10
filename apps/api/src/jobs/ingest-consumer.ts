@@ -277,22 +277,50 @@ export async function handleIngestMessage(
     // minimal fix: construct the real timeout signal here so
     // `timeoutMs` does what its own name and doc comment already
     // claimed.
-    const fetchResult = await adapter.fetchBoard(
-      {
-        sourceId: source.id,
-        companyId: source.company_id,
-        provider,
-        boardToken: source.board_token,
-        publicUrl: source.public_url,
-      },
-      {
-        userAgent: "HiringSignalsBot/1.0 (+https://hiringsignals.example)",
-        timeoutMs: 15_000,
-        signal: AbortSignal.timeout(15_000),
-      },
-    );
-
-    // --- Failure branches per spec §10.4, one branch each (not collapsed) ---
+    let fetchResult;
+    try {
+      fetchResult = await adapter.fetchBoard(
+        {
+          sourceId: source.id,
+          companyId: source.company_id,
+          provider,
+          boardToken: source.board_token,
+          publicUrl: source.public_url,
+        },
+        {
+          userAgent: "HiringSignalsBot/1.0 (+https://hiringsignals.example)",
+          timeoutMs: 15_000,
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch (err) {
+      // spec §11.1 SSRF allow-list: a boardToken that fails an adapter's
+      // own hostname validation (currently only breezy.ts/personio.ts,
+      // whose custom-career-site-host support accepts a dotted
+      // boardToken as a literal host -- see those files' own
+      // boardHost() comments) is a config error, not a transient one --
+      // retrying won't produce a different, syntactically-valid host.
+      // Name-suffix check (not an `instanceof` union across every
+      // adapter's own error class) matches isAdapterSchemaError's
+      // existing convention below, so a future adapter's own
+      // "InvalidBoardTokenError" is caught here automatically without
+      // editing this file again. Same finalizeConfigError + ack
+      // treatment as UnsupportedProviderError above -- a malformed
+      // boardToken won't fix itself on retry.
+      if (err instanceof Error && err.name.endsWith("InvalidBoardTokenError")) {
+        await finalizeConfigError(
+          client,
+          source.id,
+          source.company_id,
+          sourceRunId,
+          startTime,
+          err.message,
+        );
+        message.ack();
+        return;
+      }
+      throw err;
+    }
 
     if (fetchResult.httpStatus === 429) {
       const retrySeconds = fetchResult.retryAfterSeconds ?? backoffSeconds(attempt);

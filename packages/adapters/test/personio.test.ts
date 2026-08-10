@@ -3,7 +3,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { NormalizedJob } from "@hiring-signals/domain";
 import type { SourceConfig } from "../src/adapter-contract";
-import { PersonioSchemaError, parseFeedXml, personioAdapter } from "../src/personio";
+import {
+  PersonioInvalidBoardTokenError,
+  PersonioSchemaError,
+  parseFeedXml,
+  personioAdapter,
+  resolveHost,
+} from "../src/personio";
 
 // Personio's fixture is real XML text (unlike every other provider's JSON
 // fixture), so it's read from disk instead of imported as a module -- see
@@ -118,5 +124,37 @@ describe("personioAdapter.normalize", () => {
 describe("personioAdapter contract", () => {
   it("declares its provider as 'personio'", () => {
     expect(personioAdapter.provider).toBe("personio");
+  });
+});
+
+// spec §11.1 SSRF allow-list: resolveHost must never let a boardToken
+// escape the host position (scheme/userinfo/path/query injection), while
+// still supporting the documented custom-career-site-host feature for
+// genuinely bare custom hostnames.
+describe("personio resolveHost (spec §11.1 SSRF allow-list)", () => {
+  it("appends the default suffix for a plain (dotless) boardToken", () => {
+    expect(resolveHost("examplecorp")).toBe("examplecorp.jobs.personio.de");
+  });
+
+  it("accepts a genuinely bare custom domain as-is", () => {
+    expect(resolveHost("careers.example.com")).toBe("careers.example.com");
+  });
+
+  it("rejects a boardToken carrying a scheme/host-breakout attempt", () => {
+    expect(() => resolveHost("evil.com/x?redirect=y")).toThrow(
+      PersonioInvalidBoardTokenError,
+    );
+  });
+
+  it("rejects a boardToken embedding userinfo", () => {
+    expect(() => resolveHost("user:pass@internal.local")).toThrow(
+      PersonioInvalidBoardTokenError,
+    );
+  });
+
+  it("rejects a boardToken pointing at a path/port outside the host", () => {
+    expect(() => resolveHost("169.254.169.254:80")).toThrow(
+      PersonioInvalidBoardTokenError,
+    );
   });
 });

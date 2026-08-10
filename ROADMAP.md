@@ -239,18 +239,27 @@ removing them would need a real cascade decision, not a same-day cleanup.
       not a live-cohort failure rate; not comparable to the ≥98% target
       until a real source is enabled. Duplicate rate: hard duplicates
       are structurally 0% (`jobs.UNIQUE(source_id, external_job_id)`
-      + `upsertJob`'s update-on-resight behavior); "likely duplicate"
-      (title+location+company, spec §7) is 0% on the 6 rows that exist,
-      but **found a real gap along the way**: spec §7's third
-      likely-duplicate field, `requisitionId`, is parsed from adapter
-      payloads into the domain model
-      (`packages/domain/src/job.ts`) but never persisted — no `jobs`
-      column, no migration, confirmed by reading the schema and every
-      call site, not assumed. The script's duplicate check is title+
-      location+company only and says so in its own output; closing the
-      `requisitionId` gap is new scope, not part of this verification
-      item, and isn't tracked as a separate task here since it's a
-      minor, spec-flagged approximation rather than a functional bug.
+      + `upsertJob`'s update-on-resight behavior).
+      **`requisitionId` gap closed 2026-08-10:** spec §7's third
+      likely-duplicate field is now persisted (migration `0009_jobs_
+      requisition_id.sql`, nullable `jobs.requisition_id`, applied to
+      both local and remote D1 — verified via `pragma_table_info` on
+      both before/after applying). `upsertJob` persists it on both the
+      INSERT and UPDATE branches; `ingest-consumer.ts` passes
+      `job.requisitionId` through. Two new live-D1 tests in
+      `jobs-repo.test.ts` (INSERT persistence + later-UPDATE, and
+      NULL-when-adapter-omits-it) — both passing. `ingestion-metrics.mjs`
+      now implements spec §7's full rule (title+location+company+
+      requisitionId "if available") via two separate `GROUP BY`
+      queries split on `requisition_id IS NULL`, rather than one query
+      that would silently bucket every NULL-requisition row at a
+      company/title/location together as if they shared a
+      requisitionId. Verified live against local D1: 0 requisitionId-
+      tier matches (no local fixture data has one set — expected, since
+      only 3/8 adapters expose one), 43 title+location+company-tier
+      matches, correctly labeled in the new two-tier breakdown output.
+      `pnpm --filter @hiring-signals/db`/`@hiring-signals/api`
+      `typecheck`/`lint` both clean.
 - [ ] Verify: record actual measured numbers against each spec §12
       target, dated, so drift is detectable later — done for the
       "≤ 50 rows" target above; the rest wait on real source traffic.
@@ -322,12 +331,71 @@ several §16 items are UI/interface-dependent and several are
 backend-dependent. Don't attempt this checklist until both are done;
 it's a joint sign-off, not a G-only task.
 
-- [ ] Walk every checkbox in spec §16.1 (functional), §16.2 (visual/
-      interaction), §16.3 (security/operations) and mark pass/fail with
-      a one-line note on how it was verified (manual test, automated
-      test, code audit).
+- [x] §16.1 (functional) — all 8 items PASS, each live-verified (not
+      just read): add-company.mjs/add-source.mjs against local D1;
+      scheduler traced to confirm zero adapter imports (no browser
+      credential exposure); processMissingJobs traced to confirm it's
+      unreachable from any fetch-failure branch (a failed fetch can't
+      close a job); GET /signals default sort + roles/company filters
+      confirmed in the shared Zod schema; score explanation confirmed
+      end-to-end (signal_evidence.payload_json stores component scores
+      + formula version, GET /signals/:signalId surfaces them — spot-
+      checked against a real local signal, score 90 fully explained by
+      its R/V/A/B/Q/P breakdown); CSV export confirmed filter-scoped,
+      no unfiltered path; source-health.mjs's stale/degraded/disabled
+      derivation run live.
+- [ ] §16.2 (CLI output/scriptability) — 4/5 PASS (exit codes non-zero
+      on error with network/server-validation distinctly coded, though
+      CLI-local pre-flight Zod errors fall into a generic CLI_ERROR
+      bucket rather than their own code; stdout/stderr never mixed,
+      confirmed live on both success and error paths; no ANSI when
+      piped, confirmed via `cat -A`; no long-running/`--watch` command
+      exists so the "doesn't block a single poll" requirement is
+      vacuously true). **1/5 FAIL:** `--format table` doesn't exist —
+      grepped `apps/cli`, every reference is a comment noting it was
+      deliberately dropped in F.1.1 (agent-first, JSON-only design).
+      This is a real spec/decision conflict (spec §16.2 explicitly
+      requires it), not an oversight — needs an explicit call on
+      whether to implement it or amend the spec, not a silent pass.
+- [x] §16.3.1 (no secret in bundles/repo/logs) — PASS. `.env.local`
+      and its `.history/` backups are gitignored and untracked; no
+      grep hit echoes an actual secret value (only doc-pointer
+      strings); `HS_ADMIN_SECRET` uses timing-safe comparison and is
+      never written to the CLI's local config file.
+- [x] §16.3.2 (all external source hosts allow-listed) — **found and
+      fixed a real gap 2026-08-10.** `adapter-contract.ts` documents
+      the invariant ("boardToken must NEVER be used to construct a
+      hostname"), and 6/8 adapters honor it (literal hostname + path-
+      only interpolation), but `breezy.ts` and `personio.ts`'s
+      documented custom-career-site-host feature let a dotted
+      `boardToken` become the *entire* raw host with only a same-file
+      `isValidCustomHost()` guard — and that guard checked `url.host`
+      (port-inclusive) instead of `url.hostname` (port-free), so an
+      explicit non-default port (e.g. `169.254.169.254:80`, the cloud
+      metadata IP) round-tripped through unchanged and passed
+      validation. Confirmed via a live `node` check of `new URL()`
+      behavior, not assumed. Fixed both adapters' `isValidCustomHost`
+      to require `url.port === ""`; added `resolveHost`/`boardHost`
+      export + 5 new targeted unit tests per adapter (default-suffix,
+      genuine custom domain, scheme/query injection, userinfo
+      injection, port injection) — the port-injection test is what
+      caught the bug in the first place (it failed against the
+      original code). `ingest-consumer.ts` catches both adapters'
+      `*InvalidBoardTokenError` via a name-suffix convention (matches
+      `isAdapterSchemaError`'s existing pattern) and routes to
+      `finalizeConfigError` + ack, since a malformed `boardToken` won't
+      fix itself on retry. Zero production/local sources currently use
+      the dotted-boardToken path (confirmed via D1 query), so this
+      closes a real but not-yet-exploited gap. `@hiring-signals/
+      adapters` and `@hiring-signals/api` typecheck + lint clean;
+      `test/breezy.test.ts` + `test/personio.test.ts` targeted run:
+      38/38 passing, ~800ms, no live D1 needed for this layer.
+- [ ] Remaining §16.3 items (SSRF aside — rate limiting, input
+      sanitization elsewhere, secrets rotation posture, etc. per the
+      full §16.3 list) not yet walked.
 - [ ] Any failing item gets its own follow-up task here rather than
-      being silently marked "close enough."
+      being silently marked "close enough." Currently open: the
+      `--format table` spec/decision conflict above.
 
 ---
 

@@ -52,14 +52,44 @@ const personioPositionSchema = z.object({
 
 export type PersonioPosition = z.infer<typeof personioPositionSchema>;
 
+/**
+ * A custom Personio career-site host (spec §11.1's SSRF allow-list
+ * requirement) must be a bare hostname -- no scheme, userinfo, port,
+ * path, query, or fragment. Validated the same way breezy.ts's
+ * isValidCustomHost does (see that file's own comment for the full
+ * reasoning) -- both adapters share this "dotted boardToken = literal
+ * custom host" convention, so both need the same guard.
+ */
+function isValidCustomHost(value: string): boolean {
+  try {
+    const url = new URL(`https://${value}`);
+    // hostname (port-free), not host: an explicit non-default port (e.g.
+    // "169.254.169.254:80", the cloud-metadata IP) survives in `host`
+    // and would pass a `host === value` check while still carrying
+    // attacker-supplied port routing. See breezy.ts's isValidCustomHost
+    // for the full reasoning -- both adapters share this guard.
+    return (
+      url.hostname === value && url.port === "" && url.pathname === "/" && !url.search && !url.username
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function resolveHost(boardToken: string): string {
+  if (!boardToken.includes(".")) return `${boardToken}.jobs.personio.de`;
+  if (!isValidCustomHost(boardToken)) {
+    throw new PersonioInvalidBoardTokenError(boardToken);
+  }
+  return boardToken;
+}
+
 function feedUrl(boardToken: string): string {
-  const host = boardToken.includes(".") ? boardToken : `${boardToken}.jobs.personio.de`;
-  return `https://${host}/xml?language=en`;
+  return `https://${resolveHost(boardToken)}/xml?language=en`;
 }
 
 function jobUrl(boardToken: string, jobId: string): string {
-  const host = boardToken.includes(".") ? boardToken : `${boardToken}.jobs.personio.de`;
-  return `https://${host}/job/${encodeURIComponent(jobId)}`;
+  return `https://${resolveHost(boardToken)}/job/${encodeURIComponent(jobId)}`;
 }
 
 async function fetchBoard(input: SourceConfig, ctx: FetchContext): Promise<AdapterFetchResult> {
@@ -155,6 +185,21 @@ export class PersonioSchemaError extends Error {
   constructor(public readonly zodError: z.ZodError) {
     super(`Personio board payload failed schema validation: ${zodError.message}`);
     this.name = "PersonioSchemaError";
+  }
+}
+
+/**
+ * Thrown by resolveHost when a dotted boardToken isn't a valid bare
+ * hostname (spec §11.1 SSRF allow-list). Mirrors
+ * BreezyInvalidBoardTokenError -- distinct class so ingest-consumer.ts's
+ * generic "*InvalidBoardTokenError" name-suffix catch (same handling as
+ * UnsupportedProviderError/PersonioSchemaError) picks it up with no
+ * extra wiring; a malformed boardToken won't fix itself on retry.
+ */
+export class PersonioInvalidBoardTokenError extends Error {
+  constructor(public readonly boardToken: string) {
+    super(`Personio boardToken "${boardToken}" contains a dot but is not a valid bare hostname.`);
+    this.name = "PersonioInvalidBoardTokenError";
   }
 }
 
