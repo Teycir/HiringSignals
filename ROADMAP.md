@@ -324,22 +324,77 @@ removing them would need a real cascade decision, not a same-day cleanup.
       **Two real, previously-unknown findings surfaced by this
       measurement, tracked separately below rather than folded into
       this item's own pass/fail:** the stuck-`running` source-run bug
-      itself (root cause not yet investigated), and a gap in
-      `source-health.mjs`'s own health derivation that fails to detect
-      it (see the two new items immediately below).
-- [ ] **New finding, 2026-08-11 — source runs stuck permanently at
-      `status='running'`.** `openai` and `twilio` (both genuinely
-      enabled, both otherwise 100% success on runs that do resolve)
-      have 277 and 9 respective `source_runs` rows that never transition
-      to a terminal `success`/`failed` state. Root cause not yet
-      investigated this session — candidates worth checking first:
-      whatever calls `recordSourceRunComplete` (or equivalent) may be
-      throwing/timing out before it runs, or a code path exists where a
-      genuinely successful/failed fetch never reaches that call at all.
-      Not yet reproduced locally; not yet traced in `ingest-consumer.ts`
-      or the scheduler. This is the actual reason §12's ≥98% success
-      target reads as failing — worth fixing before re-measuring, not
-      papering over by excluding these two sources from the calculation.
+      itself (root cause found and fixed same-day, see J.4 below), and
+      a gap in `source-health.mjs`'s own health derivation that fails
+      to detect it (still open, see the item immediately below).
+- [x] **New finding, 2026-08-11 — source runs stuck permanently at
+      `status='running'`. Root cause found and fixed, 2026-08-11
+      (J.4).** `openai` and `twilio` (both genuinely enabled, both
+      otherwise 100% success on runs that do resolve) had 277 and 9
+      respective `source_runs` rows that never transitioned to a
+      terminal `success`/`failed` state.
+
+      **Root cause, confirmed live via `wrangler tail` against a real
+      openai ingest run:** not a CPU-time kill as first hypothesized —
+      a genuine, explicit Cloudflare platform error, `Too many API
+      requests by single Worker invocation` (the free-plan's 1000-
+      Cloudflare-service-subrequest-per-invocation cap, confirmed
+      against Cloudflare's own changelog, dated 2026-02-11). The same
+      error also broke the fallback path that tries to record the
+      failure (`recordSourceRunComplete` inside `handleIngestMessage`'s
+      own catch block is itself another D1 call, and by then the
+      invocation had already exhausted its subrequest budget) — which
+      is exactly why these rows stayed stuck at `running` forever
+      rather than resolving to `failed_final`. `processNormalizedJob`
+      issued 3 unconditional D1 calls per job (`upsertJob` UPDATE/
+      INSERT + `insertObservationIdempotent` INSERT +
+      `applyLifecycleTransition` UPDATE) — at 732 jobs (`openai`'s
+      board size) that's 2,196+ subrequests, more than double the
+      1000-service ceiling, a deterministic failure for any board with
+      roughly 340+ jobs, not an intermittent one.
+
+      **Fix:** `packages/db/src/jobs-repo.ts` — split `upsertJob` into
+      `prepareJobUpsert` (does the prerequisite SELECT, returns the
+      write as `{sql, params}` instead of executing it) and a thin
+      `upsertJob` wrapper preserving the old signature for every other
+      call site. Same split for `applyLifecycleTransition` →
+      `buildLifecycleStatement` (pure, no I/O) + thin wrapper.
+      `apps/api/src/jobs/ingest-consumer.ts`'s `processNormalizedJob`
+      now does SELECT → compute lifecycle in JS → single
+      `client.batch([upsertStatement, lifecycleStatement])` — 2 D1
+      calls become 1 for that pair, cutting per-job subrequest cost
+      from 3 to 2. `insertObservationIdempotent` deliberately stays
+      separate/unbatched: its idempotency contract depends on catching
+      its own UNIQUE-constraint violation in isolation, and batching it
+      would let a legitimate idempotent retry's no-op roll back the
+      other writes too (documented in `ingest-consumer.ts`'s own header
+      comment). `processMissingJobs` left unbatched — no `upsertJob`
+      write in that loop to pair with.
+
+      Modeled on `ArxivExplorer`'s working sibling pattern (same
+      free-plan defaults, no `[limits]` block, stays healthy via
+      `db.batch()` + a hard per-run item cap + bounded concurrency,
+      rather than raising the ceiling) — this fix applies the same
+      `db.batch()` technique to the one write pair here that was safe
+      to combine; a per-run cap (ArxivExplorer's other technique) was
+      considered and not taken this round.
+
+      **Verified:** `pnpm --filter db`/`--filter api` `typecheck` both
+      clean. `jobs-repo.test.ts` run in isolation (live D1, no
+      contention from other suites): 11/14 pass, all 4 tests touching
+      `upsertJob`/`applyLifecycleTransition` (including both H1 tenant-
+      isolation cases) pass cleanly; the 3 failures are pre-existing
+      timeouts in `getDetectionLatencyStats`, a function untouched by
+      this change. Committed `7512473` (2026-08-11), pushed to `main`.
+
+      Does not by itself lower this section's still-cited 9.1% (30/330)
+      ingestion-success measurement — that number was taken before this
+      fix landed and needs re-measuring against fresh production
+      traffic, not corrected retroactively. The pre-existing 277+9
+      stuck `openai`/`twilio` rows this fix targets remain in
+      `source_runs` as historical stuck-`running` rows from before the
+      fix; those rows were not backfilled/corrected — only new runs
+      going forward benefit.
 - [ ] **New finding, 2026-08-11 — `source-health.mjs` doesn't detect
       the stuck-`running` state above.** `deriveStatus()`
       (`infrastructure/scripts/source-health.mjs`) derives "healthy" vs
