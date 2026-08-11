@@ -325,8 +325,8 @@ removing them would need a real cascade decision, not a same-day cleanup.
       measurement, tracked separately below rather than folded into
       this item's own pass/fail:** the stuck-`running` source-run bug
       itself (root cause found and fixed same-day, see J.4 below), and
-      a gap in `source-health.mjs`'s own health derivation that fails
-      to detect it (still open, see the item immediately below).
+      a gap in `source-health.mjs`'s own health derivation that failed
+      to detect it (fixed 2026-08-11, see the item immediately below).
 - [x] **New finding, 2026-08-11 — source runs stuck permanently at
       `status='running'`. Root cause found and fixed, 2026-08-11
       (J.4).** `openai` and `twilio` (both genuinely enabled, both
@@ -412,6 +412,32 @@ removing them would need a real cascade decision, not a same-day cleanup.
       real gap in the monitoring itself, separate from (and arguably
       more urgent than) the underlying stuck-run bug above, since it's
       what would otherwise let that bug go unnoticed indefinitely.
+
+      **Fixed and verified, 2026-08-11.** Added `running_minutes`
+      (correlated scalar subquery on the same latest-run lookup
+      `last_run_status` already uses: `(julianday('now') -
+      julianday(started_at)) * 24 * 60` for the most recent
+      `source_runs` row per source) to the existing single SELECT, plus
+      a `STALE_RUNNING_MINUTES = 90` threshold and a new `"stuck"`
+      branch in `deriveStatus()`, checked before the existing
+      `degraded`/`failed` branches so a stuck run can't be masked by a
+      low `consecutive_failures` count (exactly how `openai` slipped
+      through before). 90 minutes chosen as generous headroom over the
+      shortest configured `poll_interval_minutes` (360) and the largest
+      observed board's real run time, not a tight bound -- this is
+      about catching "never resolved," not flagging a slow-but-real
+      run. `node --check` clean; run live against both local D1 (16
+      sources, all `healthy`, confirming the new subquery doesn't
+      break the existing-healthy path) and remote/production D1 (10
+      sources) -- `openai` now correctly shows `healthy` with a real
+      `0m` p50 and no stuck run, consistent with the `ingest-consumer.ts`
+      subrequest-batching fix above having resolved the underlying bug
+      going forward; no source currently shows `stuck`, the expected
+      state post-fix. No dedicated test file added, matching this
+      script's existing precedent (no ops script in this directory has
+      one; `node --check` + a live run against real D1 is the
+      established verification bar here, same as P.1's own verify
+      note).
 - [x] Verify: record actual measured numbers against each spec §12
       target, dated, so drift is detectable later — done above for
       latency, page size, Queues headroom, and duplicate rate

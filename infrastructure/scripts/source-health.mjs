@@ -37,8 +37,26 @@ import { d1Execute } from "./lib/d1-exec.mjs";
  * error. */
 const DEGRADED_FAILURE_THRESHOLD = 3;
 
+/** Minutes a source_runs row can sit at status='running' before this
+ * script treats it as stuck rather than "still in progress" (ROADMAP.md
+ * G.3/§16.3.6, found 2026-08-11: a genuine Cloudflare per-invocation
+ * subrequest-cap error can crash a run *and* its own failure-recording
+ * fallback in the same invocation -- see ingest-consumer.ts's own fix --
+ * leaving the row at 'running' forever, and this script's deriveStatus()
+ * previously had no branch that could ever notice, so a source stuck
+ * this way still showed "healthy, 0 failures"). 90 minutes is
+ * deliberately generous relative to the shortest configured
+ * poll_interval_minutes (360, i.e. 6h) seen in production as of this
+ * fix -- a legitimate run should finish in well under an hour even for
+ * the largest observed board (openai, ~732 jobs); this threshold exists
+ * to catch "never resolved," not to flag an unusually slow-but-real run. */
+const STALE_RUNNING_MINUTES = 90;
+
 function deriveStatus(row) {
   if (row.enabled === 0) return "disabled";
+  if (row.last_run_status === "running" && row.running_minutes >= STALE_RUNNING_MINUTES) {
+    return "stuck";
+  }
   if (row.consecutive_failures >= DEGRADED_FAILURE_THRESHOLD) return "degraded";
   if (row.last_run_status === "failed_final") return "failed";
   return "healthy";
@@ -80,6 +98,7 @@ async function main() {
        c.display_name AS company_name,
        (SELECT COALESCE(SUM(jobs_normalized), 0) FROM source_runs WHERE source_id = s.id) AS total_jobs_normalized,
        (SELECT status FROM source_runs WHERE source_id = s.id ORDER BY started_at DESC LIMIT 1) AS last_run_status,
+       (SELECT (julianday('now') - julianday(started_at)) * 24 * 60 FROM source_runs WHERE source_id = s.id ORDER BY started_at DESC LIMIT 1) AS running_minutes,
        (
          WITH fo AS (
            SELECT jo.job_id, MIN(jo.observed_at) AS first_observed_at
