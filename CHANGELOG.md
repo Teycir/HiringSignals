@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README accuracy pass:** Corrected several stale claims: migration count updated from 0001-0004 to 0001-0009 (all 9 landed); `apps/api` description now lists RSS feed route and hiring-trends route; CLI commands now include `hs feed-url` and `hs trends hiring`; `lib/` description corrected (RSS serializer added to text utilities, `safeRateLimitIdentifier` de-listed as a standalone item — it lives inside `rate-limit.ts`); ops scripts list now includes `update-company.mjs` and `ingestion-metrics.mjs`; semantic search status corrected from "write path only" to fully live (both write and query paths wired, Milestone I.3 complete).
+
 ### Removed
 
 - **`apps/web` (dashboard) — deleted 2026-08-07:** Removed entirely, not deprioritized or left in place. Decided with the user that `apps/cli` (see ROADMAP.md Milestone F.1, shipped the same day) is the primary interface going forward, since the dashboard was a caller of `apps/api`'s existing routes and added no capability the API/CLI surface doesn't already have. The Added entries below for Milestone F (dashboard UI) and Milestone I.4 (search UI, which shipped inside `apps/web`) remain as an accurate historical record of work that was completed before this deletion — see ROADMAP.md Milestone F's header note for the full rationale.

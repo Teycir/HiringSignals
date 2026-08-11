@@ -11,36 +11,52 @@
 
 ---
 
-## 🎯 Use Cases
+## What it does
 
-Hiring Signals Intelligence provides actionable insights from hiring activity across multiple ATS providers.
+Hiring Signals watches company career pages — via official ATS APIs, no scraping — and turns raw job postings into scored, filterable **signals** you can query from a CLI or pipe into an AI agent.
 
-### Primary Use Case
+Instead of returning a flat list of job postings, it detects *what is actually happening* at a company:
 
-**Job Discovery & Hiring Intelligence** - A CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers. Built for job seekers who want to see openings before the crowd.
+- A role just appeared for the first time → `new_job` signal
+- A previously closed role came back → `reopened_job` signal
+- Three or more new postings for the same role in 14 days → `hiring_burst` signal
+- The pace of new postings is accelerating vs. the prior 56-day baseline → `role_acceleration` signal
+- The same role is now posted across three or more distinct locations → `multi_location` signal
+- A role has stayed continuously active for 30+ days → `persistent_demand` signal
 
-### Target Users
+Each signal gets a **priority score (0–100)** computed from freshness, posting volume, acceleration, location breadth, and classification confidence. Signals decay over time if no new evidence arrives, so a high score means something is actively happening right now.
 
-- **Job seekers (IT specialists)**: See genuine, matching, still-open postings as soon as possible after they go live
-- **Passive job seekers**: Ask their AI assistant to check saved role/location filters periodically via the CLI
-- **Administrators**: Manage source coverage, retention, and system health
+The intended workflow:
 
-| Scenario | What happens without Hiring Signals | What Hiring Signals does |
-| :--- | :--- | :--- |
-| **Company growth tracking** | Manual monitoring of individual company career pages and job boards | Automated ingestion from multiple ATS providers with normalized signal detection and trend analysis |
-| **Competitive intelligence** | Spotty visibility into competitor hiring patterns and expansion plans | Comprehensive signal feed with evidence tracking across companies, roles, and locations |
-| **Investment research** | Time-consuming manual research of target company hiring activity | Faceted search and filtering with signal evidence for informed investment decisions |
-| **Market analysis** | Limited understanding of industry-wide hiring trends and skill demand | Aggregated signals across companies with role taxonomy and location-based filtering |
-| **Talent acquisition** | Reactive approach to market talent availability and competition | Proactive monitoring of competitor hiring patterns and skill demand analysis |
+1. You (or your AI assistant) run `hs signals list --role software_engineering --country US` once or on a schedule.
+2. The CLI returns JSON — one object, stdout only, no interactive prompts — filtered and ranked by score.
+3. You act on the top results before they surface on aggregator job boards.
+
+Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usual search with no flags at all, making periodic checks fully automated.
+
+### What it covers
+
+- **8 ATS providers**: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy — all via their official documented APIs
+- **10 IT role categories**: `software_engineering`, `ai_machine_learning`, `cloud_platform_devops_sre`, `cybersecurity`, `data_engineering_analytics`, `qa_test_automation`, `systems_network_administration`, `it_support_help_desk`, `product_technical_program_management`, `erp_business_systems`
+- **Hybrid search**: `--q "distributed systems Rust"` runs keyword + semantic search (Workers AI embeddings + Vectorize) and merges results by relevance; falls back to keyword-only if the AI leg is unavailable
+- **Hiring trends**: `hs trends hiring --role ai_machine_learning` ranks companies by recent hiring velocity across the whole dataset — useful for spotting which companies are ramping up in a given area
+- **Export**: `hs export signals` dumps a filtered CSV (up to 2 000 rows) for offline analysis
+
+### Who uses it
+
+- **IT job seekers** who want to see a matching opening the day it goes live, not a week later when it's on LinkedIn
+- **Passive job seekers** who tell their AI assistant to check their saved filters every morning
+- **Analysts and investors** who want to track hiring velocity at specific companies or across an industry
+- **Operators/admins** who manage source coverage and monitor ingestion health
 
 ---
 
 ## 📑 Table of Contents
 
 - [Hiring Signals Intelligence](#hiring-signals-intelligence)
-  - [🎯 Use Cases](#-use-cases)
-    - [Primary Use Case](#primary-use-case)
-    - [Target Users](#target-users)
+  - [What it does](#what-it-does)
+    - [What it covers](#what-it-covers)
+    - [Who uses it](#who-uses-it)
   - [📑 Table of Contents](#-table-of-contents)
   - [Layout](#layout)
   - [🛠 Tech Stack](#-tech-stack)
@@ -64,22 +80,22 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 | Directory | Purpose | Status & Details |
 |-----------|---------|-----------------|
-| `apps/cli/` | CLI, primary interface | **Complete** → landed 2026-08-07. The real end-user is an AI agent, not a human typing commands, so it's JSON-by-default, no interactive prompts, machine-readable errors, thin client over `apps/api`'s existing routes. `hs signals list/get`, `hs companies list/get`, `hs facets`, `hs sources list`, `hs export signals`, `hs admin source run/scheduler flush/reconcile`. See `apps/cli/README.md` for exact invocations/output. |
+| `apps/cli/` | CLI, primary interface | **Complete** → landed 2026-08-07. The real end-user is an AI agent, not a human typing commands, so it's JSON-by-default, no interactive prompts, machine-readable errors, thin client over `apps/api`'s existing routes. `hs signals list/get`, `hs companies list/get`, `hs facets`, `hs sources list`, `hs export signals`, `hs feed-url`, `hs trends hiring`, `hs admin source run/scheduler flush/reconcile`. See `apps/cli/README.md` for exact invocations/output. |
 | `apps/web/` | *Deleted 2026-08-07* | **Removed, not deprioritized** → the Next.js/Cloudflare Pages dashboard was fully deleted (not left in place) once the CLI-first decision confirmed it added no capability the CLI/API surface didn't already have — every route it called is one of the same 7 `apps/api` endpoints the CLI uses. See ROADMAP.md for deletion rationale and full work-item history. |
-| `apps/api/` | Cloudflare Worker API | **Complete** → Routes, middleware, cron scheduler, queue consumer, reconciliation job, semantic-search service, CSV export route, secret-bearer-token admin triggers. |
+| `apps/api/` | Cloudflare Worker API | **Complete** → Routes, middleware, cron scheduler, queue consumer, reconciliation job, semantic-search service, RSS feed route, CSV export route, hiring-trends route, secret-bearer-token admin triggers. |
 | `packages/domain/` | Core domain logic | **Complete** → Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge logic. |
 | `packages/adapters/` | ATS provider integrations | **8 P0 providers built** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio, breezy. |
 | `packages/db/` | D1 database layer | **Complete** → D1 client + repository functions. Read paths: signals/companies/facets/export. Write paths: sources/jobs/signals. Company-role activity stats, signals-export repo. |
 | `packages/test-support/` | Testing infrastructure | **Complete** → Live Cloudflare bindings for zero-mocks integration testing (live D1 client, live AI/Vectorize/KV, remote transport layer). Used by packages/db and apps/api suites. |
-| `lib/` | Cross-workspace utilities | **Complete** → D1 helpers (client, LIKE pattern, unique-constraint), HTTP primitives (circuit-breaker, safeRateLimitIdentifier SHA-256 hashing, rate-limit, trusted IP extraction, security-headers), KV TTL store, audit logging, cursor pagination, text utilities (base64url, content-hash, CSV, location-mode). |
-| `infrastructure/` | DevOps & migrations | **Complete** → D1 migrations (0001-0004 landed). Ops scripts: add-source, update-source, add-company, source-health, backfill-embeddings, import-sources. |
+| `lib/` | Cross-workspace utilities | **Complete** → D1 helpers (client, LIKE pattern, unique-constraint), HTTP primitives (circuit-breaker, rate-limit with SHA-256-hashed identifiers, trusted IP extraction, security-headers), KV TTL store, audit logging, cursor pagination, text utilities (base64url, content-hash, CSV, location-mode, RSS serializer). |
+| `infrastructure/` | DevOps & migrations | **Complete** → D1 migrations (0001-0009 landed). Ops scripts: add-source, update-source, add-company, update-company, source-health, backfill-embeddings, import-sources, ingestion-metrics. |
 
 ## 🛠 Tech Stack
 
 - **CLI**: Node, TypeScript 5.x (complete — see `apps/cli/README.md`)
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
-- **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize (semantic search, write path only -- query path not yet wired into the live route)
+- **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize (hybrid semantic search — embeddings stored at ingestion, query path wired as of Milestone I.3; page-1-only, degrades gracefully to keyword-only)
 - **Package Manager**: pnpm workspace
 - **Deployment**: Cloudflare Workers (API only — no separate frontend deployment target)
 - **Validation**: Zod schemas
@@ -98,7 +114,7 @@ Hiring Signals Intelligence provides actionable insights from hiring activity ac
 
 - **Multi-ATS integration**: Official documented ATS API adapters (no scraping) — 8 of 11 P0 providers built
 - **Real-time monitoring**: Scheduled ingestion with adaptive cadence per provider
-- **Filtering**: By role, location, source, signal type, and company via `GET /api/v1/signals` query params; keyword `q` search on company/headline/summary works today; semantic search is write-path only (embeddings stored at ingestion, query route not yet wired). CLI exposure of these filters as flags is available via `hs signals list` — see `apps/cli/README.md`.
+- **Filtering**: By role, location, source, signal type, and company via `GET /api/v1/signals` query params; `q` triggers hybrid search (keyword + semantic via Workers AI + Vectorize) on page 1, falls back to keyword-only on subsequent pages or if the semantic leg degrades. CLI exposure of these filters as flags is available via `hs signals list` — see `apps/cli/README.md`.
 - **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; also exposed as `hs export signals` in CLI)
 - **Bulk onboarding**: CSV import (`import-sources.mjs`) for batch source/company onboarding
 - **Health isolation**: Per-source error isolation prevents cascading failures
@@ -132,8 +148,11 @@ Ops scripts (run from repo root, requires `nvm use 24.18.0` for wrangler's Node 
 ```bash
 node infrastructure/scripts/add-company.mjs --help
 node infrastructure/scripts/add-source.mjs --help
+node infrastructure/scripts/update-source.mjs --help
+node infrastructure/scripts/update-company.mjs --help
 node infrastructure/scripts/import-sources.mjs path/to/sources.csv   # bulk CSV onboarding
 node infrastructure/scripts/source-health.mjs                    # source status table
+node infrastructure/scripts/ingestion-metrics.mjs                # ingestion stats
 node infrastructure/scripts/backfill-embeddings.mjs               # Vectorize backfill (semantic search)
 ```
 
@@ -155,7 +174,7 @@ TTL raw source-response archive, `ABUSE_LOGS` for the abuse/audit event
 log -- split into separate namespaces so IAM can scope read access
 narrowly, per a security review); the `hiring-signals-ingest` queue; and
 the `hiring-signals-jobs` Vectorize index + Workers AI binding for
-semantic search (write path only so far -- embeddings stored at ingestion, query route not yet wired). Raw payloads
+hybrid semantic search (both paths live — embeddings stored at ingestion, query path wired as of Milestone I.3). Raw payloads
 live in KV under TTL-based keys rather than R2, so the project doesn't
 require Cloudflare billing/a credit card on the account.
 

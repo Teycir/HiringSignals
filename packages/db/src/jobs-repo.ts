@@ -205,7 +205,37 @@ export interface UpsertJobResult {
  * real call site derives companyId from the same source row that
  * produced sourceId) into a 0-row no-op instead of a cross-tenant write.
  */
-export async function upsertJob(client: D1Client, input: UpsertJobInput): Promise<UpsertJobResult> {
+export interface PreparedJobUpsert {
+  /** Same result shape upsertJob has always returned. */
+  result: UpsertJobResult;
+  /** The write this upsert still needs -- not yet executed. Pass to
+   * client.batch() (optionally alongside applyLifecycleTransition's
+   * own prepared statement -- see buildLifecycleStatement below) or
+   * run it alone via client.run(statement.sql, statement.params). */
+  statement: { sql: string; params: unknown[] };
+}
+
+/**
+ * Same read-then-decide logic upsertJob has always had, split so the
+ * resulting write statement can be deferred and batched by the caller
+ * instead of executed immediately (ROADMAP.md J.4, subrequest-limit
+ * fix, 2026-08-11: processNormalizedJob's per-job upsertJob +
+ * applyLifecycleTransition sequence was 2 of the 3+ D1 calls/job that
+ * blew past the free-plan 1000-Cloudflare-service-subrequest ceiling
+ * on large boards -- see ingest-consumer.ts's processNormalizedJob for
+ * the batched call site). Does the SELECT (a real prerequisite --
+ * lifecycle computation needs `existing` before the caller can even
+ * build the lifecycle statement, so this part cannot itself be
+ * deferred), then returns the write as data instead of running it.
+ *
+ * upsertJob (below) is now a thin wrapper: prepare, then run the one
+ * statement immediately -- every other call site keeps working exactly
+ * as before, unchanged signature and behavior.
+ */
+export async function prepareJobUpsert(
+  client: D1Client,
+  input: UpsertJobInput,
+): Promise<PreparedJobUpsert> {
   // ROADMAP.md J.1 (2026-08-04): SELECT widened from `id, content_hash`
   // to also include status/missing_run_count/first_seen_at/role_primary
   // -- the exact column set the ingest consumer's now-removed separate
@@ -223,15 +253,67 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
   );
 
   if (existing) {
-    await client.run(
-      `UPDATE jobs SET
+    return {
+      result: {
+        id: existing.id,
+        contentChanged: existing.content_hash !== input.contentHash,
+        existing: {
+          status: existing.status,
+          missing_run_count: existing.missing_run_count,
+          first_seen_at: existing.first_seen_at,
+          role_primary: existing.role_primary,
+        },
+      },
+      statement: {
+        sql: `UPDATE jobs SET
          canonical_url = ?, title_raw = ?, title_normalized = ?,
          description_text = ?, department_raw = ?, employment_type = ?,
          location_raw = ?, location_mode = ?, country_code = ?,
          region_code = ?, city = ?, posted_at = ?, source_updated_at = ?,
          requisition_id = ?, last_seen_at = ?, content_hash = ?
        WHERE id = ? AND company_id = ?`,
-      [
+        params: [
+          input.canonicalUrl,
+          input.title,
+          input.titleNormalized,
+          input.descriptionText ?? null,
+          input.department ?? null,
+          input.employmentType ?? null,
+          input.locationRaw ?? null,
+          input.locationMode ?? "unknown",
+          input.countryCode ?? null,
+          input.regionCode ?? null,
+          input.city ?? null,
+          input.postedAt ?? null,
+          input.sourceUpdatedAt ?? null,
+          input.requisitionId ?? null,
+          input.observedAt,
+          input.contentHash,
+          existing.id,
+          input.companyId,
+        ],
+      },
+    };
+  }
+
+  const id = crypto.randomUUID();
+  return {
+    result: { id, contentChanged: false, existing: null },
+    statement: {
+      sql: `INSERT INTO jobs (
+       id, source_id, company_id, external_job_id, canonical_url,
+       title_raw, title_normalized, description_text, department_raw,
+       employment_type, location_raw, location_mode, country_code,
+       region_code, city, role_primary, role_tags_json,
+       classification_confidence, classification_version, posted_at,
+       source_updated_at, requisition_id, first_seen_at, last_seen_at,
+       missing_run_count, status, content_hash
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', NULL, NULL, ?, ?, ?, ?, ?, 0, 'active', ?)`,
+      params: [
+        id,
+        input.sourceId,
+        input.companyId,
+        input.externalJobId,
         input.canonicalUrl,
         input.title,
         input.titleNormalized,
@@ -247,59 +329,23 @@ export async function upsertJob(client: D1Client, input: UpsertJobInput): Promis
         input.sourceUpdatedAt ?? null,
         input.requisitionId ?? null,
         input.observedAt,
+        input.observedAt,
         input.contentHash,
-        existing.id,
-        input.companyId,
       ],
-    );
-    return {
-      id: existing.id,
-      contentChanged: existing.content_hash !== input.contentHash,
-      existing: {
-        status: existing.status,
-        missing_run_count: existing.missing_run_count,
-        first_seen_at: existing.first_seen_at,
-        role_primary: existing.role_primary,
-      },
-    };
-  }
+    },
+  };
+}
 
-  const id = crypto.randomUUID();
-  await client.run(
-    `INSERT INTO jobs (
-       id, source_id, company_id, external_job_id, canonical_url,
-       title_raw, title_normalized, description_text, department_raw,
-       employment_type, location_raw, location_mode, country_code,
-       region_code, city, role_primary, role_tags_json,
-       classification_confidence, classification_version, posted_at,
-       source_updated_at, requisition_id, first_seen_at, last_seen_at,
-       missing_run_count, status, content_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', NULL, NULL, ?, ?, ?, ?, ?, 0, 'active', ?)`,
-    [
-      id,
-      input.sourceId,
-      input.companyId,
-      input.externalJobId,
-      input.canonicalUrl,
-      input.title,
-      input.titleNormalized,
-      input.descriptionText ?? null,
-      input.department ?? null,
-      input.employmentType ?? null,
-      input.locationRaw ?? null,
-      input.locationMode ?? "unknown",
-      input.countryCode ?? null,
-      input.regionCode ?? null,
-      input.city ?? null,
-      input.postedAt ?? null,
-      input.sourceUpdatedAt ?? null,
-      input.requisitionId ?? null,
-      input.observedAt,
-      input.observedAt,
-      input.contentHash,
-    ],
-  );
-  return { id, contentChanged: false, existing: null };
+/**
+ * Thin wrapper around prepareJobUpsert (above) that runs the write
+ * immediately -- unchanged signature/behavior from before the J.4
+ * split, so every call site other than processNormalizedJob's batched
+ * path keeps working exactly as before.
+ */
+export async function upsertJob(client: D1Client, input: UpsertJobInput): Promise<UpsertJobResult> {
+  const prepared = await prepareJobUpsert(client, input);
+  await client.run(prepared.statement.sql, prepared.statement.params);
+  return prepared.result;
 }
 
 export interface InsertJobObservationInput {
@@ -543,21 +589,47 @@ export interface ApplyLifecycleTransitionPatch {
  * rather than the source's, since it's the more precise scoping key for
  * a row already loaded from `jobs`) have it in scope.
  */
+/**
+ * Pure statement builder for applyLifecycleTransition's write -- no I/O,
+ * just SQL + params (ROADMAP.md J.4, subrequest-limit fix, 2026-08-11).
+ * Exists so processNormalizedJob can batch this statement together with
+ * prepareJobUpsert's (both are same-row UPDATE/INSERT writes on `jobs`
+ * with no idempotency-catch dependency between them, unlike
+ * insertObservationIdempotent -- see ingest-consumer.ts's header comment
+ * point 2 for why that one is never a batch candidate). Same
+ * lastSeenAt-optional branching applyLifecycleTransition has always had.
+ */
+export function buildLifecycleStatement(
+  jobId: string,
+  companyId: string,
+  patch: ApplyLifecycleTransitionPatch,
+): { sql: string; params: unknown[] } {
+  if (patch.lastSeenAt !== undefined) {
+    return {
+      sql: `UPDATE jobs SET status = ?, missing_run_count = ?, last_seen_at = ? WHERE id = ? AND company_id = ?`,
+      params: [patch.status, patch.missingRunCount, patch.lastSeenAt, jobId, companyId],
+    };
+  }
+  return {
+    sql: `UPDATE jobs SET status = ?, missing_run_count = ? WHERE id = ? AND company_id = ?`,
+    params: [patch.status, patch.missingRunCount, jobId, companyId],
+  };
+}
+
+/**
+ * Thin wrapper around buildLifecycleStatement (above) that runs the
+ * write immediately -- unchanged signature/behavior from before the J.4
+ * split. processMissingJobs (ingest-consumer.ts) keeps calling this
+ * directly: it has no upsertJob write in the same iteration to batch
+ * with (missing jobs are transitioned, not upserted), so there's
+ * nothing to gain by using the builder there.
+ */
 export async function applyLifecycleTransition(
   client: D1Client,
   jobId: string,
   companyId: string,
   patch: ApplyLifecycleTransitionPatch,
 ): Promise<void> {
-  if (patch.lastSeenAt !== undefined) {
-    await client.run(
-      `UPDATE jobs SET status = ?, missing_run_count = ?, last_seen_at = ? WHERE id = ? AND company_id = ?`,
-      [patch.status, patch.missingRunCount, patch.lastSeenAt, jobId, companyId],
-    );
-  } else {
-    await client.run(
-      `UPDATE jobs SET status = ?, missing_run_count = ? WHERE id = ? AND company_id = ?`,
-      [patch.status, patch.missingRunCount, jobId, companyId],
-    );
-  }
+  const statement = buildLifecycleStatement(jobId, companyId, patch);
+  await client.run(statement.sql, statement.params);
 }

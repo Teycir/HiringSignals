@@ -30,9 +30,11 @@ import {
   recordSourceRunComplete,
   updateSource,
   upsertJob,
+  prepareJobUpsert,
   insertJobObservation,
   getJobsMissingFromRun,
   applyLifecycleTransition,
+  buildLifecycleStatement,
   updateJobClassification,
   resolveSourceRun,
   findActiveSignal,
@@ -81,12 +83,16 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  * column rename breaks `pnpm --filter db test`, not a query string
  * hidden in apps/api.
  *
- * NOT wrapped in D1Client.batch() (data-integrity review, 2026-08-02):
+ * MOSTLY NOT wrapped in D1Client.batch() (data-integrity review,
+ * 2026-08-02; partially superseded by ROADMAP.md J.4, 2026-08-11):
  * processNormalizedJob/processMissingJobs below issue several sequential
- * D1 writes per job with no atomicity across them -- a crash mid-
- * sequence can leave e.g. a job upserted with no observation row, or a
- * signal created with no evidence row. This was deliberately left as-is
- * after investigation, not overlooked:
+ * D1 writes per job with no atomicity across most of them -- a crash
+ * mid-sequence can leave e.g. a job upserted with no observation row, or
+ * a signal created with no evidence row. This was deliberately left
+ * mostly as-is after investigation, not overlooked. The one exception:
+ * processNormalizedJob's prepareJobUpsert + buildLifecycleStatement
+ * pair IS batched (J.4) -- see point 3 below for why that one pair, and
+ * only that pair, was safe to combine:
  *   1. Cloudflare D1's batch() rolls back the ENTIRE sequence if any one
  *      statement fails (confirmed against Cloudflare's own D1 docs,
  *      2026-08-02) -- it is D1's real transaction primitive (no BEGIN/
@@ -102,15 +108,23 @@ import { storeRawPayload, rawPayloadKey } from "../services/raw-payload-store";
  *      UPDATE back too -- turning a correct retry into a lost write.
  *      Do NOT combine insertJobObservation/insertObservationIdempotent
  *      into a batch() with any other statement for this reason.
- *   3. Every other adjacent write pair in processNormalizedJob has a
- *      genuine branch between them (find-then-create-or-refresh via
- *      findActiveSignal, upsertJob's existing/new branch, the
- *      contentChanged/autoClassified conditionals) -- batch() takes a
- *      fixed statement list decided up front and cannot express an `if`
- *      partway through, so these cannot be batched without restructuring
- *      the pipeline into a read-everything-first / decide / write-batch
- *      shape, which is a real option but a separate, larger change from
- *      a batching pass alone.
+ *   3. The upsertJob-write + applyLifecycleTransition pair is the one
+ *      exception: prepareJobUpsert's SELECT is a genuine prerequisite
+ *      (lifecycle computation needs `existing` before the lifecycle
+ *      statement can even be built) but its own WRITE has no branch
+ *      relative to buildLifecycleStatement's write -- both are decided
+ *      by the time either runs, so J.4 (2026-08-11) restructured this
+ *      one pair into read (SELECT) -> decide (lifecycle, in JS) ->
+ *      write-batch (client.batch([upsertStatement, lifecycleStatement])),
+ *      cutting 2 D1 calls to 1 for this pair specifically. Every OTHER
+ *      adjacent write pair in processNormalizedJob still has a genuine
+ *      branch between them (find-then-create-or-refresh via
+ *      findActiveSignal, the contentChanged/autoClassified conditionals)
+ *      -- batch() takes a fixed statement list decided up front and
+ *      cannot express an `if` partway through, so those remain
+ *      unbatched; restructuring them the same way J.4 did for the
+ *      upsert/lifecycle pair is a real option but a separate, larger
+ *      change, not yet done.
  * Idempotency today instead relies on: the UNIQUE(job_id, source_run_id)
  * schema constraint (job_observations), upsertJob's own natural-key
  * upsert semantics, and findActiveSignal's read-before-write pattern for
@@ -789,17 +803,29 @@ async function processNormalizedJob(
   });
 
   // ROADMAP.md J.1 (2026-08-04): the separate getJobByExternalId call
-  // that used to live here is gone -- upsertJob's own internal
-  // existing-row lookup now returns the same lifecycle-relevant columns
-  // (status/missing_run_count/first_seen_at/role_primary) as part of
-  // its result (`upsertResult.existing`), so this function no longer
-  // pays for two SELECTs against the same row in the same call. Every
+  // that used to live here is gone -- prepareJobUpsert's (formerly
+  // upsertJob's) own internal existing-row lookup returns the same
+  // lifecycle-relevant columns (status/missing_run_count/
+  // first_seen_at/role_primary) as part of its result
+  // (`preparedUpsert.result.existing`), so this function doesn't pay
+  // for two SELECTs against the same row in the same call. Every
   // downstream use of the old `existing` binding below now reads
-  // `upsertResult.existing` instead -- same shape, same semantics
-  // (`null` for a brand-new job), one fewer D1 round trip per job in
-  // the pipeline's single largest per-job cost driver (see J.1's plan
-  // for the full call-count accounting).
-  const upsertResult = await upsertJob(client, {
+  // `preparedUpsert.result.existing` instead -- same shape, same
+  // semantics (`null` for a brand-new job), one fewer D1 round trip per
+  // job in the pipeline's single largest per-job cost driver (see J.1's
+  // plan for the full call-count accounting; superseded by J.4 below
+  // for the write side specifically).
+  // ROADMAP.md J.4 (2026-08-11, subrequest-limit fix): read-then-batch
+  // shape. prepareJobUpsert does the real prerequisite (the SELECT --
+  // lifecycle computation below needs `existing` before the lifecycle
+  // statement can even be built, so this part genuinely cannot be
+  // deferred) and returns its write as data instead of running it.
+  // insertObservationIdempotent stays separate and unbatched: its whole
+  // idempotency contract depends on catching a UNIQUE-constraint
+  // violation from ITS OWN statement in isolation (this file's header
+  // comment, point 2) -- batching it with anything else would let a
+  // legitimate idempotent retry's no-op roll back the other writes too.
+  const preparedUpsert = await prepareJobUpsert(client, {
     sourceId: source.id,
     companyId: source.company_id,
     externalJobId: job.externalJobId,
@@ -820,16 +846,8 @@ async function processNormalizedJob(
     contentHash,
     observedAt,
   });
-  const jobId = upsertResult.id;
-  const existing = upsertResult.existing;
-
-  await insertObservationIdempotent(client, {
-    jobId,
-    sourceRunId,
-    observedAt,
-    contentHash,
-    isPresent: true,
-  });
+  const jobId = preparedUpsert.result.id;
+  const existing = preparedUpsert.result.existing;
 
   const lifecycle = computeLifecycleTransition({
     currentState: existing?.status as "active" | "possibly_closed" | "closed" | undefined,
@@ -838,10 +856,25 @@ async function processNormalizedJob(
     daysSinceLastSeen: 0,
   });
 
-  await applyLifecycleTransition(client, jobId, source.company_id, {
+  const lifecycleStatement = buildLifecycleStatement(jobId, source.company_id, {
     status: lifecycle.nextState,
     missingRunCount: lifecycle.nextConsecutiveMissingRuns,
     lastSeenAt: observedAt,
+  });
+
+  // Both statements write different columns on the same `jobs` row
+  // (preparedUpsert.statement: canonical_url/title/.../content_hash;
+  // lifecycleStatement: status/missing_run_count/last_seen_at) with no
+  // read-after-write dependency between them -- safe as a single
+  // client.batch() call (1 subrequest instead of 2).
+  await client.batch([preparedUpsert.statement, lifecycleStatement]);
+
+  await insertObservationIdempotent(client, {
+    jobId,
+    sourceRunId,
+    observedAt,
+    contentHash,
+    isPresent: true,
   });
 
   // I.2: embed-and-upsert into Vectorize, gated on "this job is new or
@@ -859,7 +892,7 @@ async function processNormalizedJob(
   // (safe there specifically because it's NOT the one just upserted
   // this run -- no read-after-write race).
   let freshEmbedding: number[] | undefined;
-  if (!existing || upsertResult.contentChanged) {
+  if (!existing || preparedUpsert.result.contentChanged) {
     freshEmbedding = await embedAndUpsertJob(ai, {
       jobId,
       companyId: source.company_id,
@@ -889,7 +922,7 @@ async function processNormalizedJob(
     // there's an existing active signal for this (company, role) to
     // attach it to -- a content edit on a job with no active signal has
     // nothing to provide evidence *for* yet.
-    if (upsertResult.contentChanged && existing?.role_primary) {
+    if (preparedUpsert.result.contentChanged && existing?.role_primary) {
       const activeSignalForEdit = await findActiveSignal(client, {
         companyId: source.company_id,
         // role_primary is stored as TEXT in D1 (JobRow's `string | null`)
