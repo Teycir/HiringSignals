@@ -166,5 +166,5 @@ crons = ["*/15 * * * *", "0 6 * * *"]
 
 [vars]
 # Non-secret config only. Secrets go through `wrangler secret put`.
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
