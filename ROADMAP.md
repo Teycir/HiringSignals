@@ -10,17 +10,39 @@ Source of truth for *behavior* is always `hiring-signals-spec.md` —
 every task below cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
-**Completed milestones removed from this file (2026-08-07) to keep it
-current-work-focused:** Phase 0 (scaffolding), Phase 1 (D1 schema +
-read paths), Milestone A (write-path repos), B (classification/
-lifecycle), C (signal generation), D (scheduler/queue/ops scripts), E
-(8 ATS adapters), F (dashboard UI — built, then deleted 2026-08-07 in
-favor of the CLI), G.1–G.2 (security audit + gap closure), H
-(signal-quality logic pass), I (semantic search, I.1–I.5), J (live-D1
-test migration), K (`still_active` signal + latency metric), L (CSV
-export), M (bulk CSV import). Full history for all of these remains in
-git (`git log -- ROADMAP.md`) and in `CHANGELOG.md`. Nothing below
-describes work that's already shipped.
+**Milestone status summary (last updated 2026-08-13):** Every milestone
+currently described in this file is complete and verified against
+on-disk code; no open implementation work remains in the roadmap
+below.
+
+- **Shipped & removed from this file to keep scope focused** (git
+  history + `CHANGELOG.md` carry the full detail): Phase 0
+  (scaffolding), Phase 1 (D1 schema + read paths), Milestone A
+  (write-path repos), B (classification/lifecycle), C (signal
+  generation), D (scheduler/queue/ops scripts), E (8 ATS adapters), F
+  (dashboard UI — built, then deleted 2026-08-07 in favor of the CLI),
+  G.1–G.2 (security audit + gap closure), H (signal-quality logic
+  pass), I (semantic search, I.1–I.5), J (live-D1 test migration), K
+  (`still_active` signal + latency metric), L (CSV export), M (bulk
+  CSV import).
+
+- **Shipped & retained below for reference** (each carries its
+  completion date, acceptance criteria, and verification notes —
+  useful context for future work that builds on them): F.1 (CLI
+  primary interface, landed 2026-08-07), G.3–G.5 (performance
+  verification, CI/CD hardening, acceptance criteria sign-off — all
+  walked and PASS end-to-end 2026-08-11; G.4 retains one intentionally
+  open guardrail item for future deploy automation), N (saved filter
+  profiles, landed 2026-08-07), O (company hiring timeline API + CLI,
+  landed 2026-08-08), P (cross-company hiring trend API + CLI, landed
+  2026-08-09), Q (company-level hiring velocity score, landed
+  2026-08-09), R (RSS feed route + `hs feed-url`, landed 2026-08-07).
+
+Only one item remains unchecked in the entire file: G.4's conditional
+deploy-automation guardrail ("never point preview/staging at
+production secrets"), which is an explicit future constraint, not a
+task to build today — the G.4 section's own note records why it's
+kept open rather than checked off or deleted.
 
 ---
 
