@@ -395,7 +395,7 @@ removing them would need a real cascade decision, not a same-day cleanup.
       `source_runs` as historical stuck-`running` rows from before the
       fix; those rows were not backfilled/corrected — only new runs
       going forward benefit.
-- [ ] **New finding, 2026-08-11 — `source-health.mjs` doesn't detect
+- [x] **New finding, 2026-08-11 — `source-health.mjs` doesn't detect
       the stuck-`running` state above.** `deriveStatus()`
       (`infrastructure/scripts/source-health.mjs`) derives "healthy" vs
       "degraded"/"disabled"/"failed" from `sources.consecutive_failures`

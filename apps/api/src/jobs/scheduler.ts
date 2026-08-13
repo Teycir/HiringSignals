@@ -78,6 +78,7 @@ export async function handleScheduled(
       runId: crypto.randomUUID(),
       requestedAt,
       attempt: 1,
+      chunkOffset: 0,
     };
 
     // Queue send delaySeconds spreads actual dequeue timing to match the

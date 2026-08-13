@@ -26,7 +26,33 @@ import { getHiringTrends } from "../src/trends-repo";
  * run, while the one test seeding a single job passed comfortably
  * inside 90s. Same "raise per-test, don't lower the file default"
  * approach ROADMAP.md's ingest-consumer.test.ts fixes already used.
+ *
+ * `limit` fix (2026-08-12): every getHiringTrends() call below
+ * originally used `limit: 20`. getHiringTrends ranks and slices across
+ * *every* company in the live `ai_machine_learning` role matching the
+ * query, not just this file's own seeded `test-trends-*` companies --
+ * correct production behavior (see trends-repo.ts's own header
+ * comment), but it means as real ingested company/job volume in that
+ * role grows over time, real companies with higher genuine
+ * newJobsCount/acceleration/velocity than this file's small synthetic
+ * seeds (1-5 fake jobs each) can push the seeded companies below rank
+ * 20 and out of the returned page entirely -- `results.find(...)` then
+ * returns undefined and every assertion built on it fails, not because
+ * getHiringTrends is wrong but because the test assumed its own fixtures
+ * would always be near the top of an unbounded, ever-growing live
+ * ranking. Raised to TEST_LIMIT (a large constant, not literal
+ * "unbounded") so the seeded companies are guaranteed to appear
+ * regardless of how much unrelated real data exists, while still
+ * exercising the real query/sort/slice path exactly as before.
  */
+
+// Large enough that this file's 2-3 seeded companies per test can never
+// be pushed out of the returned page by real production companies also
+// matching ai_machine_learning -- see the `limit` fix note above. Not a
+// magic "all rows" sentinel: getHiringTrends still genuinely sorts and
+// slices to this bound, this just keeps the bound comfortably above
+// realistic real-company counts for one role category.
+const TEST_LIMIT = 5000;
 
 const TEST_PREFIX = "test-trends";
 let seq = 0;
@@ -127,7 +153,7 @@ describe("getHiringTrends", () => {
         const results = await getHiringTrends(client, {
           roleCategoryFilter: ["ai_machine_learning"],
           since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-          limit: 20,
+          limit: TEST_LIMIT,
           sort: "acceleration_desc",
         });
 
@@ -143,7 +169,19 @@ describe("getHiringTrends", () => {
         await cleanupCompany(slow.company.id, slow.source.id);
       }
     },
-    240_000,
+    // 2026-08-13: raised 240_000 -> 300_000 after the trends-repo.ts
+    // perf fix (rank+slice on query 1's raw rows before fanning
+    // getTopLocationsByCompany/getLatestSignalByCompany out over only
+    // `limit` companies, instead of every matching row) brought every
+    // other test in this file comfortably under its existing budget
+    // (e.g. volume_desc: 240s timeout -> 210s pass) -- this is the one
+    // test seeding the most jobs (9, across 2 companies, ~18+
+    // sequential wrangler d1 execute round trips via seedJob's own 2
+    // D1 calls each), so its total seed+query cost is seed-bound, not
+    // query-bound, and still needed slightly more headroom even after
+    // the query-side fix. Re-ran clean at 5/6 passing before this
+    // change; this bump addresses the last one, not a new regression.
+    300_000,
   );
 
   it(
@@ -160,7 +198,7 @@ describe("getHiringTrends", () => {
           roleCategoryFilter: ["ai_machine_learning"],
           industryFilter: "healthtech",
           since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-          limit: 20,
+          limit: TEST_LIMIT,
           sort: "volume_desc",
         });
 
@@ -189,7 +227,7 @@ describe("getHiringTrends", () => {
         const results = await getHiringTrends(client, {
           roleCategoryFilter: ["ai_machine_learning"],
           since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-          limit: 20,
+          limit: TEST_LIMIT,
           sort: "volume_desc",
         });
 
@@ -219,7 +257,7 @@ describe("getHiringTrends", () => {
         const results = await getHiringTrends(client, {
           roleCategoryFilter: ["ai_machine_learning"],
           since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-          limit: 20,
+          limit: TEST_LIMIT,
           sort: "volume_desc",
         });
 
@@ -286,7 +324,7 @@ describe("getHiringTrends", () => {
         const results = await getHiringTrends(client, {
           roleCategoryFilter: ["ai_machine_learning"],
           since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-          limit: 20,
+          limit: TEST_LIMIT,
           sort: "velocity_desc",
         });
 

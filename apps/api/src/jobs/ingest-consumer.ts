@@ -29,7 +29,6 @@ import {
   markSourceSuccess,
   recordSourceRunComplete,
   updateSource,
-  upsertJob,
   prepareJobUpsert,
   insertJobObservation,
   getJobsMissingFromRun,
@@ -141,6 +140,39 @@ const MAX_RETRY_ATTEMPTS = 5;
 const BASE_BACKOFF_SECONDS = 30;
 const MAX_BACKOFF_SECONDS = 15 * 60;
 
+/**
+ * Max jobs processed per invocation before re-enqueuing the remainder as
+ * a continuation message (ROADMAP.md G.3/J.4-followup, 2026-08-11). The
+ * queue consumer's default 30s CPU-time limit (Workers Free plan, not
+ * raised here -- see IngestMessage.chunkOffset's own comment for the
+ * full incident writeup) was found being silently exceeded on large
+ * boards (openai's Ashby board, 739 jobs), killing the invocation with
+ * zero log output and leaving source_runs stuck at status='running'
+ * forever. 150 is a conservative per-chunk budget: each job does 2
+ * batched D1 writes (J.4) plus, conditionally, one AI embedding call and
+ * one Vectorize upsert, and possibly a second AI/Vectorize round trip
+ * for a low-confidence classification nudge -- comfortably under 30s of
+ * cumulative CPU time even in the worst case, based on this file's own
+ * per-job cost breakdown (see the header comment above processNormalizedJob).
+ */
+export const JOBS_PER_CHUNK = 150;
+
+/**
+ * Resolves the effective per-chunk job limit for one invocation: the real
+ * JOBS_PER_CHUNK=150 in every real deployment, or env.JOBS_PER_CHUNK_OVERRIDE
+ * when it's set to a positive integer (test-only seam -- see that binding's
+ * own comment in bindings.ts for why it exists). Any unset/non-numeric/
+ * non-positive override value falls back to JOBS_PER_CHUNK rather than
+ * silently producing a 0- or negative-length chunk, since a malformed test
+ * env var should degrade to production behavior, not to a broken loop.
+ */
+function resolveJobsPerChunk(env: Pick<Bindings, "JOBS_PER_CHUNK_OVERRIDE">): number {
+  const raw = env.JOBS_PER_CHUNK_OVERRIDE;
+  if (raw === undefined) return JOBS_PER_CHUNK;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : JOBS_PER_CHUNK;
+}
+
 function backoffSeconds(attempt: number): number {
   return Math.min(MAX_BACKOFF_SECONDS, BASE_BACKOFF_SECONDS * 2 ** (attempt - 1));
 }
@@ -204,7 +236,7 @@ export async function handleIngestMessage(
    */
   operationTimeoutMs?: number,
 ): Promise<void> {
-  const { sourceId, runId, attempt } = message.body;
+  const { sourceId, runId, attempt, chunkOffset } = message.body;
   const client = createD1Client(env.DB, { operationTimeoutMs });
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
@@ -352,6 +384,7 @@ export async function handleIngestMessage(
         retrySeconds,
         client,
         sourceRunId,
+        chunkOffset,
       );
       return;
     }
@@ -371,6 +404,7 @@ export async function handleIngestMessage(
         backoffSeconds(attempt),
         client,
         sourceRunId,
+        chunkOffset,
       );
       return;
     }
@@ -429,11 +463,30 @@ export async function handleIngestMessage(
     await storeRawPayload(env.RAW_PAYLOADS, source.id, runId, JSON.stringify(fetchResult.rawBody));
 
     const observedAt = new Date().toISOString();
+    // Full-board list, always -- getJobsMissingFromRun (processMissingJobs)
+    // needs every externalId ever seen this run to correctly detect
+    // absence, not just the ones processed in this chunk. seenExternalIds
+    // is therefore intentionally NOT sliced below; only the per-job
+    // processing loop is chunked.
     const seenExternalIds = normalizedJobs.map((j) => j.externalJobId);
+
+    // Chunking (ROADMAP.md G.3/J.4-followup, 2026-08-11): process at
+    // most JOBS_PER_CHUNK jobs starting at chunkOffset, then either
+    // continue to the next chunk (re-enqueue, ack, return -- source_runs
+    // stays status='running', which is correct since the run genuinely
+    // isn't done) or, on the final chunk, run the absence-detection pass
+    // and finalize as success. The board is re-fetched/re-normalized
+    // from scratch on every chunk (cheap -- one HTTP GET + JSON parse,
+    // see JOBS_PER_CHUNK's own comment) rather than persisted between
+    // invocations, so normalizedJobs here is always the complete,
+    // current board regardless of which chunk this is.
+    const chunkEnd = Math.min(chunkOffset + resolveJobsPerChunk(env), normalizedJobs.length);
+    const chunkJobs = normalizedJobs.slice(chunkOffset, chunkEnd);
+    const isFinalChunk = chunkEnd >= normalizedJobs.length;
 
     let signalsCreated = 0;
 
-    for (const job of normalizedJobs) {
+    for (const job of chunkJobs) {
       signalsCreated += await processNormalizedJob(
         client,
         env,
@@ -442,6 +495,37 @@ export async function handleIngestMessage(
         job,
         observedAt,
       );
+    }
+
+    if (!isFinalChunk) {
+      // More jobs remain -- re-enqueue a continuation for the same
+      // logical run (same runId, so resolveSourceRun reuses the same
+      // source_runs row) at the next offset. attempt resets to 1: this
+      // is forward progress within the same run, not a retry of a
+      // failure, so it shouldn't count against MAX_RETRY_ATTEMPTS.
+      const continuationMessage: IngestMessage = {
+        version: 1,
+        sourceId,
+        runId,
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+        chunkOffset: chunkEnd,
+      };
+      await env.INGEST_QUEUE.send(continuationMessage);
+
+      console.warn("ingest_chunk_continued", {
+        sourceId: source.id,
+        provider: source.provider,
+        runId,
+        chunkOffset,
+        chunkEnd,
+        jobsInChunk: chunkJobs.length,
+        totalJobs: normalizedJobs.length,
+        signalsCreated,
+      });
+
+      message.ack();
+      return;
     }
 
     signalsCreated += await processMissingJobs(
@@ -574,6 +658,7 @@ export async function handleIngestMessage(
         backoffSeconds(attempt),
         client2,
         sourceRunId2,
+        chunkOffset,
       );
     } catch (finalizeErr) {
       console.error("ingest_finalize_failed", {
@@ -1550,6 +1635,16 @@ async function requeueOrGiveUp(
   delaySeconds: number,
   client: ReturnType<typeof createD1Client>,
   sourceRunId: string,
+  /**
+   * Chunk offset this attempt started at (ROADMAP.md G.3/J.4-followup,
+   * 2026-08-11). A retry here is retrying THIS chunk after a transient
+   * failure (429/5xx/uncaught error), not restarting the whole run --
+   * carrying it forward avoids reprocessing already-completed earlier
+   * chunks. Idempotent writes mean reprocessing them would be safe, just
+   * wasteful; defaults to 0 so every pre-chunking call site (and any
+   * caller that genuinely wants to restart from the top) is unaffected.
+   */
+  chunkOffset = 0,
 ): Promise<void> {
   if (attempt >= MAX_RETRY_ATTEMPTS) {
     await recordSourceRunComplete(client, sourceRunId, {
@@ -1568,6 +1663,7 @@ async function requeueOrGiveUp(
     runId,
     requestedAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
     attempt: attempt + 1,
+    chunkOffset,
   };
   await env.INGEST_QUEUE.send(nextMessage, { delaySeconds });
   message.ack(); // ack the current message; the re-enqueued one carries the retry forward

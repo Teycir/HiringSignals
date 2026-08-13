@@ -118,9 +118,10 @@ const client: D1Client = createD1Client(createLiveD1Database(), {
  * (embedding failed mid-test, or was never written) must not fail the
  * test's own cleanup step, same spirit as the app code's own
  * embed-is-best-effort policy. */
-async function cleanupVector(jobId: string): Promise<void> {
+async function cleanupVector(jobIds: string[]): Promise<void> {
+  if (jobIds.length === 0) return;
   try {
-    await createLiveVectorizeIndex().deleteByIds([jobId]);
+    await createLiveVectorizeIndex().deleteByIds(jobIds);
   } catch {
     // best-effort -- see header comment
   }
@@ -155,7 +156,11 @@ async function cleanupCompany(companyId: string): Promise<void> {
     { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
   ]);
-  await Promise.all(jobRows.map((j) => cleanupVector(j.id)));
+  // One Vectorize delete_by_ids call for all of this company's jobs,
+  // instead of one HTTP round trip per job (2026-08-12 follow-up to the
+  // chunking-test timeout investigation -- mirrors the 2026-08-08
+  // createLiveKvNamespace fix's same "batch the real API call" shape).
+  await cleanupVector(jobRows.map((j) => j.id));
 }
 
 /**
@@ -223,7 +228,7 @@ afterAll(async () => {
   ]);
 
   const allJobIds = jobRowsByCompany.flat().map((j) => j.id);
-  await Promise.all(allJobIds.map((id) => cleanupVector(id)));
+  await cleanupVector(allJobIds);
 });
 
 /** Every binding this handler doesn't use throws if touched, so a wiring
@@ -542,6 +547,7 @@ describe("handleIngestMessage - happy path", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -589,6 +595,7 @@ describe("handleIngestMessage - happy path", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -633,6 +640,7 @@ describe("handleIngestMessage - happy path", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
       aiRunOverride = async () => {
@@ -674,6 +682,7 @@ describe("handleIngestMessage - happy path", () => {
           runId,
           requestedAt: new Date().toISOString(),
           attempt,
+          chunkOffset: 0,
         });
         const { env } = makeLiveEnv(createLiveD1Database());
         await handleIngestMessage(message, env);
@@ -717,6 +726,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("f4-run1"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -743,6 +753,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("f4-run2"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -779,6 +790,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("f4none-run1"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -802,6 +814,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("f4none-run2"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -827,6 +840,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("lifecycle-run1"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -841,6 +855,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("lifecycle-run2"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -859,6 +874,7 @@ describe("handleIngestMessage - happy path", () => {
           runId: testSlug("lifecycle-run3"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
       );
@@ -874,6 +890,186 @@ describe("handleIngestMessage - happy path", () => {
   });
 });
 
+/**
+ * ROADMAP.md G.3/J.4-followup, 2026-08-11: verifies the chunking design
+ * added to handleIngestMessage after the free-plan default 30s
+ * queue-consumer CPU-time limit was found silently killing large-board
+ * runs (openai's Ashby board, 739 jobs) mid-invocation with zero log
+ * output, leaving source_runs stuck at status='running' forever. Uses
+ * JOBS_PER_CHUNK + 10 synthetic jobs (imported from ingest-consumer.ts)
+ * so the board is guaranteed to span exactly two chunks regardless of
+ * the constant's current value. aiRunOverride forces the (best-effort,
+ * non-blocking-on-failure) embed step to reject immediately instead of
+ * making 160 real Workers AI round trips -- this file's own "AI.run
+ * rejection is logged and does not fail the job/message" test already
+ * covers embed-failure correctness in isolation, so reusing that same
+ * mechanism here to keep D1 writes the only real cost is consistent
+ * with, not a gap relative to, existing coverage.
+ */
+describe("handleIngestMessage - chunked ingestion (ROADMAP.md G.3/J.4-followup)", () => {
+  // Test-only chunk size (bindings.ts's JOBS_PER_CHUNK_OVERRIDE), NOT the
+  // real JOBS_PER_CHUNK=150 -- each real job upsert costs several separate
+  // `wrangler d1 execute --remote` subprocess round trips (no in-memory D1
+  // fake in this repo, per its zero-mocks-on-D1 policy), so 150+10=160 real
+  // jobs was costing on the order of an hour per test run. Production
+  // behavior (real JOBS_PER_CHUNK=150) is untouched --
+  // this only takes effect when JOBS_PER_CHUNK_OVERRIDE is explicitly set,
+  // which no real wrangler.toml/deployment ever does.
+  // 2026-08-12: dropped from 5 to 2 -- even at 5, each new job's ~5 real
+  // sequential `wrangler d1 execute` calls (prepareJobUpsert's SELECT,
+  // the batched write, the observation insert, findActiveSignal,
+  // classification/scoring) still blew the 300s/600s test timeouts
+  // (measured ~921s combined). 2 is the smallest value that still proves
+  // a real multi-job chunk boundary.
+  const TEST_CHUNK_SIZE = 2;
+
+  it("processes only the first JOBS_PER_CHUNK jobs, re-enqueues a continuation, and leaves the run 'running'", async () => {
+    const company = await seedCompany("fchunk1", "Chunk First Co");
+    try {
+      const source = await seedSource(company.id, testSlug("fchunk1-src"));
+      const runId = testSlug("fchunk1-run");
+      const totalJobs = TEST_CHUNK_SIZE + 3;
+      normalizeImpl = vi.fn(() =>
+        Array.from({ length: totalJobs }, (_, i) => makeNormalizedJob(`fchunk1-job-${i}`)),
+      );
+      aiRunOverride = async () => {
+        throw new Error("skip real embedding for this bulk test");
+      };
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleWarn = vi.spyOn(console, "warn");
+
+      const { message, acked } = makeMessage({
+        version: 1,
+        sourceId: source.id,
+        runId,
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+        chunkOffset: 0,
+      });
+      const { env, sent } = makeLiveEnv(createLiveD1Database());
+      env.JOBS_PER_CHUNK_OVERRIDE = String(TEST_CHUNK_SIZE);
+
+      await handleIngestMessage(message, env);
+
+      // Acked (chunk 1 completed its own work successfully), not
+      // retried -- a continuation isn't a retry/failure.
+      expect(acked).toEqual([true]);
+
+      // Exactly one continuation message, same run, next offset, fresh
+      // attempt count (forward progress within a run, not a retry).
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.message.sourceId).toBe(source.id);
+      expect(sent[0]?.message.runId).toBe(runId);
+      expect(sent[0]?.message.attempt).toBe(1);
+      expect(sent[0]?.message.chunkOffset).toBe(TEST_CHUNK_SIZE);
+
+      // Only the first chunk's jobs exist in D1 -- the rest haven't
+      // been processed yet, proving the loop actually stopped at the
+      // chunk boundary rather than processing everything in one pass.
+      const jobs = await getJobsForCompany(company.id);
+      expect(jobs).toHaveLength(TEST_CHUNK_SIZE);
+
+      // The run is NOT finalized -- recordSourceRunComplete/
+      // markSourceSuccess must not run until the final chunk, since the
+      // board genuinely isn't fully processed yet.
+      const run = await getSourceRun(runId);
+      expect(run?.status).toBe("running");
+
+      // ingest_chunk_continued (not ingest_success) is the log signal
+      // for a non-final chunk.
+      expect(consoleWarn).toHaveBeenCalledWith(
+        "ingest_chunk_continued",
+        expect.objectContaining({
+          runId,
+          chunkOffset: 0,
+          chunkEnd: TEST_CHUNK_SIZE,
+          totalJobs,
+        }),
+      );
+
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  }, 300_000); // TEST_CHUNK_SIZE (5) sequential live-D1 job upserts -- see that constant's own comment for why this isn't the real JOBS_PER_CHUNK=150. 120_000 measured too tight: each new job costs ~5 real wrangler D1 calls (prepareJobUpsert's SELECT, the batched write, the observation insert, findActiveSignal, classification/scoring), so 5 jobs ran ~160s+ even after the client.batch() fix.
+
+  it("a continuation message resuming at chunkOffset finishes the board, runs absence detection, and finalizes as success", async () => {
+    const company = await seedCompany("fchunk2", "Chunk Continuation Co");
+    try {
+      const source = await seedSource(company.id, testSlug("fchunk2-src"));
+      const runId = testSlug("fchunk2-run");
+      // 2026-08-12 fix: must be < 2*TEST_CHUNK_SIZE, and specifically
+      // TEST_CHUNK_SIZE*2-1 keeps the remainder after chunk 1
+      // (totalJobs - TEST_CHUNK_SIZE = TEST_CHUNK_SIZE-1) strictly less
+      // than TEST_CHUNK_SIZE, so chunk 2 always finishes the board in
+      // one pass. A fixed "+3" offset (this test's original shape, sized
+      // for the old TEST_CHUNK_SIZE=5) silently broke when
+      // TEST_CHUNK_SIZE dropped to 2: the remainder (3) exceeded the new
+      // chunk size, so chunk 2 sent an unexpected 3rd continuation
+      // instead of finalizing -- caught by this test's own
+      // `expect(sent2).toEqual([])` assertion.
+      const totalJobs = TEST_CHUNK_SIZE * 2 - 1;
+      normalizeImpl = vi.fn(() =>
+        Array.from({ length: totalJobs }, (_, i) => makeNormalizedJob(`fchunk2-job-${i}`)),
+      );
+      aiRunOverride = async () => {
+        throw new Error("skip real embedding for this bulk test");
+      };
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      // Chunk 1: seeds the source_runs row and the first TEST_CHUNK_SIZE
+      // jobs, exactly like a real chunk-1 invocation would.
+      const chunk1 = makeMessage({
+        version: 1,
+        sourceId: source.id,
+        runId,
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+        chunkOffset: 0,
+      });
+      const liveEnv = makeLiveEnv(createLiveD1Database());
+      liveEnv.env.JOBS_PER_CHUNK_OVERRIDE = String(TEST_CHUNK_SIZE);
+      await handleIngestMessage(chunk1.message, liveEnv.env);
+      expect(await getJobsForCompany(company.id)).toHaveLength(TEST_CHUNK_SIZE);
+      expect((await getSourceRun(runId))?.status).toBe("running");
+
+      // Chunk 2: same runId, resuming at the offset chunk 1's own
+      // continuation message would have carried -- this is what a real
+      // queue redelivery of that continuation message looks like.
+      const chunk2 = makeMessage({
+        version: 1,
+        sourceId: source.id,
+        runId,
+        requestedAt: new Date().toISOString(),
+        attempt: 1,
+        chunkOffset: TEST_CHUNK_SIZE,
+      });
+      const { env: env2, sent: sent2 } = makeLiveEnv(createLiveD1Database());
+      env2.JOBS_PER_CHUNK_OVERRIDE = String(TEST_CHUNK_SIZE);
+
+      await handleIngestMessage(chunk2.message, env2);
+
+      // Final chunk: no further continuation.
+      expect(sent2).toEqual([]);
+
+      // All jobs now present -- the second chunk processed the
+      // remainder, not the whole board again from offset 0.
+      const jobs = await getJobsForCompany(company.id);
+      expect(jobs).toHaveLength(totalJobs);
+
+      // The run is now finalized as success -- processMissingJobs and
+      // recordSourceRunComplete only run on the final chunk.
+      const run = await getSourceRun(runId);
+      expect(run?.status).toBe("success");
+
+      consoleError.mockRestore();
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  }, 600_000); // two small chunks (TEST_CHUNK_SIZE=5 each) -- see the test above's timeout comment for why this isn't a JOBS_PER_CHUNK=150-scale duration. Double the first test's budget since this one processes two chunks plus absence detection.
+});
+
 describe("handleIngestMessage - failure branches (spec 13.4)", () => {
   it("acks (does not retry) when the source no longer exists", async () => {
     // No source seeded -- a random UUID-shaped id that won't match any row.
@@ -883,6 +1079,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
       runId: testSlug("missing-run"),
       requestedAt: new Date().toISOString(),
       attempt: 1,
+      chunkOffset: 0,
     });
     await handleIngestMessage(message, makeLiveEnv(createLiveD1Database()).env);
 
@@ -906,6 +1103,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env, sent } = makeLiveEnv(createLiveD1Database());
 
@@ -933,6 +1131,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId: testSlug("f5xx-run"),
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env, sent } = makeLiveEnv(createLiveD1Database());
 
@@ -958,6 +1157,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 5, // MAX_RETRY_ATTEMPTS
+        chunkOffset: 0,
       });
       const { env, sent } = makeLiveEnv(createLiveD1Database());
 
@@ -983,6 +1183,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env, sent } = makeLiveEnv(createLiveD1Database());
 
@@ -1008,6 +1209,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1046,6 +1248,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1, // well below MAX_RETRY_ATTEMPTS -- must not retry natively
+        chunkOffset: 0,
       });
       const { env, sent } = makeLiveEnv(createLiveD1Database());
 
@@ -1086,6 +1289,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 5, // MAX_RETRY_ATTEMPTS
+        chunkOffset: 0,
       });
       const { env, sent } = makeLiveEnv(createLiveD1Database());
 
@@ -1119,6 +1323,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1, // well below MAX_RETRY_ATTEMPTS -- must still not retry
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1153,6 +1358,7 @@ describe("handleIngestMessage - failure branches (spec 13.4)", () => {
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1201,6 +1407,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
         runId: testSlug("burst-run"),
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1243,6 +1450,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
         runId: testSlug("multiloc-run"),
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1275,6 +1483,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
         runId: testSlug("accel0-run"),
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1305,6 +1514,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
         runId: testSlug("accel1-run"),
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       const { env } = makeLiveEnv(createLiveD1Database());
 
@@ -1334,6 +1544,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
           runId: testSlug("persist-run1"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
         30_000,
@@ -1372,6 +1583,7 @@ describe("handleIngestMessage - H.4 company-level signal generation (spec 7.1)",
           runId: testSlug("persist-run2"),
           requestedAt: new Date().toISOString(),
           attempt: 1,
+          chunkOffset: 0,
         }).message,
         makeLiveEnv(createLiveD1Database()).env,
         30_000,
@@ -1431,6 +1643,7 @@ describe("handleIngestMessage - I.5c/I.5d classification-assist nudge (spec 9.4)
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
 
       await handleIngestMessage(message, makeLiveEnv(createLiveD1Database()).env, 30_000);
@@ -1490,6 +1703,7 @@ describe("handleIngestMessage - I.5c/I.5d classification-assist nudge (spec 9.4)
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
+        chunkOffset: 0,
       });
       vectorizeQueryOverride = async () => {
         throw new Error("Vectorize outage");

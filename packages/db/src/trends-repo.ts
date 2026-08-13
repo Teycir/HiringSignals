@@ -24,6 +24,28 @@ export type { HiringTrendCompany } from "./types";
  * legible against idx_jobs_trends (migration 0007) independently.
  */
 
+/**
+ * Query 1's raw per-company aggregation row shape -- extracted to a
+ * named type (rather than inline in the client.all<...>() call) so
+ * sortRowsBySort below can accept/return this exact same full shape
+ * instead of a hand-picked field subset, which previously caused
+ * `rankedRows` to widen to a narrower inferred type and drop
+ * company_slug/company_display_name/etc (TS2339 at the results.map
+ * below) -- see sortRowsBySort's own comment.
+ */
+interface TrendRow {
+  company_id: string;
+  company_slug: string;
+  company_display_name: string;
+  company_industry: string | null;
+  company_domain: string | null;
+  hiring_velocity_score: number | null;
+  new_jobs_count: number;
+  active_jobs_count: number;
+  n14: number;
+  n56: number;
+}
+
 export interface GetHiringTrendsParams {
   roleCategoryFilter: RoleCategory[];
   industryFilter?: string;
@@ -65,18 +87,7 @@ export async function getHiringTrends(
   // same jobs rows per company -- one query with conditional aggregation
   // (SUM(CASE WHEN ...)), same pattern as getCompanyRoleActivityStats,
   // rather than five separate per-company queries.
-  const rows = await client.all<{
-    company_id: string;
-    company_slug: string;
-    company_display_name: string;
-    company_industry: string | null;
-    company_domain: string | null;
-    hiring_velocity_score: number | null;
-    new_jobs_count: number;
-    active_jobs_count: number;
-    n14: number;
-    n56: number;
-  }>(
+  const rows = await client.all<TrendRow>(
     `SELECT
        c.id AS company_id,
        c.slug AS company_slug,
@@ -96,23 +107,59 @@ export async function getHiringTrends(
      WHERE ${roleFragment} ${industryFragment} ${countryFragment}
      GROUP BY c.id
      HAVING new_jobs_count > 0`,
-    [since, ...baseParams, now, now, now, now],
+    // Param order must match the SQL's own textual ? order, not the
+    // order values are logically grouped in code: the SELECT list's 5
+    // placeholders (new_jobs_count's since, then n14/n56's 4 nows) all
+    // appear before the WHERE clause's roleFragment/industryFragment/
+    // countryFragment placeholders (baseParams) in the query text above
+    // -- baseParams must come LAST here, not right after since. Fixed
+    // 2026-08-12: this was previously [since, ...baseParams, now, now,
+    // now, now], which put baseParams in positions 2..N, silently
+    // binding role/industry/country values into the n14/n56 datetime()
+    // calls and pushing the trailing `now`s into roleFragment's WHERE
+    // placeholder(s) instead -- SQLite does not error on this (a string
+    // bound where a date-ish value was expected just fails the range
+    // comparison silently), so the query always returned 0 rows without
+    // ever throwing. Caught via direct instrumentation: a manually
+    // reproduced query using the correct param order returned the
+    // expected rows against the same live data this one returned zero
+    // for.
+    [since, now, now, now, now, ...baseParams],
   );
+
+
+  // Perf fix (2026-08-12): the two follow-up queries below used to fan
+  // out over EVERY row query 1 returned (every company matching the
+  // role/industry/country filter, live-table-wide), then sort+slice to
+  // `limit` only at the very end -- so `limit` never actually bounded
+  // the expensive part. At production data volume this made
+  // getTopLocationsByCompany/getLatestSignalByCompany's own IN (...)
+  // clauses balloon to hundreds of company_ids regardless of how small
+  // `limit` was, which is what pushed trends-repo.test.ts past even a
+  // 240s per-test timeout once TEST_LIMIT (2026-08-12, see that
+  // constant's own comment) stopped capping query 1's effective fan-out
+  // early. Fix: rank+slice on `rows` directly first (acceleration/
+  // newJobsCount/hiringVelocityScore are all already present on `rows`,
+  // no enrichment needed), THEN only fan queries 2/3 out over that
+  // `limit`-sized slice -- for every sort except `newest_signal`, which
+  // genuinely can't be decided without querying signals first (a
+  // company's rank under that sort depends on latestSignalAt, which
+  // doesn't exist until query 3 runs), so that one sort keeps the old
+  // full-fan-out behavior rather than faking a pre-signal ordering.
+  const rankedRows = sort === "newest_signal" ? rows : sortRowsBySort(rows, sort).slice(0, limit);
+  const companyIdsForFanout = rankedRows.map((r) => r.company_id);
 
   const topLocationsByCompany = await getTopLocationsByCompany(client, {
     roleCategoryFilter,
     industryFilter,
     countryFilter,
     since,
-    companyIds: rows.map((r) => r.company_id),
+    companyIds: companyIdsForFanout,
   });
 
-  const latestSignalByCompany = await getLatestSignalByCompany(
-    client,
-    rows.map((r) => r.company_id),
-  );
+  const latestSignalByCompany = await getLatestSignalByCompany(client, companyIdsForFanout);
 
-  const results: HiringTrendCompany[] = rows.map((row) => {
+  const results: HiringTrendCompany[] = rankedRows.map((row) => {
     const latest = latestSignalByCompany.get(row.company_id);
     return {
       company: {
@@ -131,7 +178,39 @@ export async function getHiringTrends(
     };
   });
 
+  // `newest_signal` still needs the general sortTrends path (its sort
+  // key, latestSignalAt, only exists on `results` post-enrichment) --
+  // every other sort was already applied to `rows` above, so re-sorting
+  // `results` here is a cheap no-op re-derivation of the same order,
+  // kept only so the function has one single return path/shape.
   return sortTrends(results, sort).slice(0, limit);
+}
+
+/**
+ * Same ranking `sortTrends` applies, but operating directly on query 1's
+ * raw aggregated rows instead of the fully-enriched HiringTrendCompany[]
+ * -- lets the caller rank+slice BEFORE paying for the topLocations/
+ * latestSignal fan-out queries. Only supports the three sorts whose key
+ * is already present on `rows` (acceleration, new_jobs_count,
+ * hiring_velocity_score); `newest_signal` is intentionally not handled
+ * here (see getHiringTrends's own comment on why) and callers must not
+ * pass it.
+ */
+function sortRowsBySort(rows: TrendRow[], sort: GetHiringTrendsParams["sort"]): TrendRow[] {
+  const sorted = [...rows];
+  if (sort === "volume_desc") {
+    sorted.sort((a, b) => b.new_jobs_count - a.new_jobs_count);
+  } else if (sort === "velocity_desc") {
+    sorted.sort((a, b) => {
+      if (a.hiring_velocity_score === null && b.hiring_velocity_score === null) return 0;
+      if (a.hiring_velocity_score === null) return 1;
+      if (b.hiring_velocity_score === null) return -1;
+      return b.hiring_velocity_score - a.hiring_velocity_score;
+    });
+  } else {
+    sorted.sort((a, b) => computeAcceleration(b.n14, b.n56) - computeAcceleration(a.n14, a.n56));
+  }
+  return sorted;
 }
 
 function sortTrends(

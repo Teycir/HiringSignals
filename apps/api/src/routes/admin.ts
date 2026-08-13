@@ -90,6 +90,7 @@ adminRoute.post("/sources/:sourceId/run", async (c) => {
     runId,
     requestedAt: now.toISOString(),
     attempt: 1,
+    chunkOffset: 0,
   };
 
   await c.env.INGEST_QUEUE.send(message);

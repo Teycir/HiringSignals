@@ -712,7 +712,11 @@ export async function getSignalDetail(
       let payload: unknown;
       try {
         payload = JSON.parse(e.payload_json);
-      } catch {
+      } catch (err) {
+        console.error("corrupt_evidence_payload_json", {
+          evidenceId: e.id,
+          reason: err instanceof Error ? err.message : String(err),
+        });
         payload = null;
       }
       return {

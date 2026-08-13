@@ -59,8 +59,28 @@
 import type { D1Database, D1PreparedStatement, D1Result, D1ExecResult } from "@cloudflare/workers-types";
 import { execRemote, inlineParams } from "./d1-remote-transport";
 
+/**
+ * Module-private symbol keys used to smuggle each statement's own
+ * sql/boundParams out to `batch()` below, without adding them to the
+ * public `D1PreparedStatement` surface (bind/first/run/all/raw is the
+ * real type's full public contract -- adding a getter would make this
+ * shape diverge from it). Symbols, not string properties, so nothing
+ * outside this module can accidentally collide with or depend on these
+ * -- `batch()` is the only intended reader, in the same file.
+ */
+const STMT_SQL = Symbol("sql");
+const STMT_PARAMS = Symbol("boundParams");
+
+interface StatementInternals {
+  [STMT_SQL]: string;
+  [STMT_PARAMS]: unknown[];
+}
+
 function makeStatement(sql: string, boundParams: unknown[]): D1PreparedStatement {
-  const statement: Pick<D1PreparedStatement, "bind" | "first" | "run" | "all" | "raw"> = {
+  const statement: Pick<D1PreparedStatement, "bind" | "first" | "run" | "all" | "raw"> & StatementInternals = {
+    [STMT_SQL]: sql,
+    [STMT_PARAMS]: boundParams,
+
     bind(...values: unknown[]): D1PreparedStatement {
       // A fresh statement, not a mutation -- matches the real
       // D1PreparedStatement contract (see this file's header comment).
@@ -148,30 +168,64 @@ export function createLiveD1Database(): D1Database {
     },
 
     async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-      // Every statement here was produced by makeStatement's bind(),
-      // which closes over its own sql/boundParams -- re-derive the
-      // inlined SQL from each and run them together in one wrangler
-      // invocation, mirroring live-d1-client.ts's createLiveD1Client
-      // batch() (same "one ;-joined --command call" approach).
-      const inlinedStatements = statements.map((stmt) => {
-        // D1PreparedStatement's public interface has no getter for its
-        // own sql/params, so `.run()` on each individually (sequential,
-        // not batched) is the only option through the public shape --
-        // acceptable here since `batch()` has no real caller among
-        // apps/api/src/jobs/*.ts's handlers today (none of
-        // handleScheduled/handleReconciliation/handleIngestMessage call
-        // env.DB.batch() -- confirmed by reading all three; only
-        // packages/db's own createD1Client.batch() wraps db.batch(),
-        // and no packages/db repo function used by those handlers calls
-        // client.batch() either). Kept correct-but-simple rather than
-        // reaching into internals of the statement object.
-        return stmt;
-      });
-      const results: D1Result<T>[] = [];
-      for (const stmt of inlinedStatements) {
-        results.push(await stmt.run<T>());
+      // 2026-08-12 perf fix (was: one .run() per statement, i.e. one
+      // wrangler subprocess per statement). Each `wrangler d1 execute`
+      // invocation costs ~6.5s of fixed CLI-startup overhead (measured:
+      // user-time-dominated, not network -- a 2-statement SELECT pair
+      // costs the same ~6.2s wall time as a single statement), so a
+      // 2-statement batch previously cost ~13s instead of ~6.5s, and
+      // every extra batched statement was free money left on the table.
+      // apps/api/src/jobs/ingest-consumer.ts's processNormalizedJob
+      // (ROADMAP.md J.4) calls client.batch([upsertStatement,
+      // lifecycleStatement]) once per job -- with a 150-job chunk (G.3
+      // chunking's own JOBS_PER_CHUNK), the old per-statement-.run()
+      // behavior alone was worth ~150 * 6.5s = ~16min of pure,
+      // eliminable overhead. Real fix: reach each statement's own
+      // sql/boundParams via the STMT_SQL/STMT_PARAMS symbols above
+      // (same object makeStatement built, just read internally instead
+      // of through the public bind/first/run/all/raw surface), inline
+      // params exactly as run()/first()/all() already do, join every
+      // statement into one `;`-separated --command string, and issue
+      // ONE execRemote call for the whole batch -- confirmed live
+      // (2026-08-12) that `wrangler d1 execute --json` with a
+      // `;`-joined multi-statement --command returns one JSON result
+      // object per statement, in statement order, as
+      // WranglerStatementResult[] -- exactly the shape this function
+      // already destructures per-statement below.
+      //
+      // D1's real batch() contract is atomic (all-or-nothing in one
+      // transaction) -- a single joined --command string is exactly
+      // that: one SQLite connection, one implicit transaction for the
+      // whole multi-statement script, so this preserves atomicity
+      // rather than trading it away for speed (unlike the sequential
+      // per-statement .run() loop this replaces, which was NOT atomic:
+      // a mid-batch wrangler failure could leave only the first N
+      // statements committed).
+      if (statements.length === 0) return [];
+      const internals = statements as unknown as StatementInternals[];
+      const inlinedStatements = internals.map((stmt) => inlineParams(stmt[STMT_SQL], stmt[STMT_PARAMS]));
+      const joined = inlinedStatements.join(";\n");
+      const results = await execRemote(joined);
+      if (results.length !== statements.length) {
+        throw new Error(
+          `createLiveD1Database.batch(): sent ${statements.length} statement(s) but wrangler returned ` +
+            `${results.length} result(s) -- one of the joined statements likely produced zero or multiple ` +
+            `result sets (e.g. a statement containing its own internal ';'). Joined SQL: ${joined}`,
+        );
       }
-      return results;
+      return results.map((result) => ({
+        success: result?.success ?? true,
+        results: (result?.results ?? []) as T[],
+        meta: {
+          changes: result?.meta?.changes ?? 0,
+          duration: 0,
+          last_row_id: 0,
+          changed_db: (result?.meta?.changes ?? 0) > 0,
+          size_after: 0,
+          rows_read: 0,
+          rows_written: result?.meta?.changes ?? 0,
+        },
+      })) as D1Result<T>[];
     },
 
     async exec(): Promise<D1ExecResult> {

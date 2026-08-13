@@ -46,6 +46,21 @@ export interface Bindings {
    *  api-metrics.ts guards every access rather than assuming this is
    *  always present. See that file's own header comment. */
   API_METRICS?: AnalyticsEngineDataset;
+  /** Test-only override for ingest-consumer.ts's JOBS_PER_CHUNK (2026-08-12,
+   *  test-speed follow-up to G.3/J.4-followup chunking). Unset in every real
+   *  wrangler.toml / production environment -- handleIngestMessage falls back
+   *  to the real JOBS_PER_CHUNK=150 constant whenever this is absent or not a
+   *  positive integer, so production chunk size is never affected. Exists
+   *  purely so apps/api/test/jobs/ingest-consumer.test.ts's chunking tests can
+   *  force a small chunk size (e.g. 5) and prove multi-chunk continuation with
+   *  a handful of real live-D1 job upserts instead of JOBS_PER_CHUNK+10 (160)
+   *  of them -- each real upsert costs several real `wrangler d1 execute`
+   *  subprocess round trips (packages/test-support's d1-remote-transport.ts
+   *  has no in-memory fake, per this repo's zero-mocks-on-D1 policy), so
+   *  160 jobs was costing on the order of an hour per test run. String, not
+   *  number, since Bindings mirrors wrangler.toml vars, which are always
+   *  strings; parsed where consumed. */
+  JOBS_PER_CHUNK_OVERRIDE?: string;
 }
 
 /** Per-request context values set by middleware (spec 10.2), e.g. requestId. */

@@ -193,39 +193,74 @@ describe("createCompany", () => {
 /**
  * ROADMAP.md Milestone O.1 verification: getCompanyHiringTimeline
  * against the real `openai` company row and its real ingested `jobs`
- * (249 rows as of 2026-08-08, all first_seen_at within the last 24h from
- * live ATS ingestion, not seeded fixtures). This is the "live-D1 repo
+ * (live ATS ingestion, not seeded fixtures). This is the "live-D1 repo
  * test seeding jobs across 3 date buckets" verification step O.1's own
  * checklist calls for, run against genuine production data instead of a
- * synthetic seed, since real multi-day-spread data doesn't exist yet for
- * this fresh a company row -- a 30-day/14-day-bucket window is used so
- * the single day of real ingestion activity concentrates into bucket 0,
- * which is itself a meaningful assertion (bucket 1/2 legitimately empty,
- * not a bug).
+ * synthetic seed.
+ *
+ * Fixed 2026-08-12: originally used a hardcoded `since = now - 30d`
+ * window on the assumption that all of openai's real ingested jobs
+ * would stay within the most recent 14-day bucket ("all first_seen_at
+ * within the last 24h" at the time this test was written, 2026-08-08).
+ * That assumption broke silently as the live ingestion pipeline kept
+ * running: by 2026-08-12 openai's earliest job had first_seen_at back
+ * to 2026-08-08, so with a fixed 30-day window the older activity
+ * spilled into bucket 0 too, failing the "older buckets are empty"
+ * assertion -- not a getCompanyHiringTimeline bug, a test that pinned
+ * itself to a same-day snapshot of a database that keeps growing.
+ *
+ * Fix: derive `since` from the real MIN(first_seen_at) for openai's
+ * jobs (padded back by 1 day) instead of a fixed "30 days ago", and
+ * size `bucketDays` so the whole real spread still lands in one final
+ * bucket. This keeps testing against genuine production data (per this
+ * test's original intent) without re-baking in a snapshot-in-time
+ * assumption that the next few days of ingestion will invalidate again.
  */
 describe("getCompanyHiringTimeline (live data)", () => {
-  it("buckets real openai jobs correctly across a 30-day/14-day-bucket window", async () => {
+  it("buckets real openai jobs correctly, concentrated in the most recent bucket", async () => {
     const company = await client.first<{ id: string }>(`SELECT id FROM companies WHERE slug = ?`, [
       "openai",
     ]);
     expect(company).not.toBeNull();
     const companyId = company!.id;
 
+    const earliest = await client.first<{ min_first_seen: string | null }>(
+      `SELECT MIN(first_seen_at) AS min_first_seen FROM jobs WHERE company_id = ?`,
+      [companyId],
+    );
+    expect(earliest?.min_first_seen).toBeTruthy();
+
     const until = new Date().toISOString();
-    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    // getCompanyHiringTimeline only accepts bucketDays 7|14|30, so
+    // instead of trying to size the window to a fixed bucketDays (which
+    // breaks again once the real span outgrows whatever fixed value is
+    // chosen), pick the smallest supported bucketDays whose 2-bucket
+    // window (padded 1 day back from the real earliest job, for safety
+    // margin against sub-day rounding) still covers the real span. This
+    // keeps the assertion "exactly 2 buckets, all activity in the last
+    // one" true regardless of how many days the live data now spans,
+    // up to bucketDays=30's 60-day ceiling -- beyond that this would
+    // need a real bucketDays > 30, which the function doesn't support,
+    // so this test would need revisiting again at that point regardless
+    // of how the window is computed.
+    const paddedEarliestMs = Date.parse(earliest!.min_first_seen!) - 24 * 60 * 60 * 1000;
+    const realSpanDays = Math.ceil((Date.now() - paddedEarliestMs) / (24 * 60 * 60 * 1000));
+    const bucketDays = ([7, 14, 30] as const).find((d) => 2 * d >= realSpanDays) ?? 30;
+    const since = new Date(Date.now() - 2 * bucketDays * 24 * 60 * 60 * 1000).toISOString();
 
     const buckets = await getCompanyHiringTimeline(client, {
       companyId,
       since,
       until,
-      bucketDays: 14,
+      bucketDays,
     });
 
-    // 30-day window / 14-day buckets -> ceil(30/14) = 3 buckets.
-    expect(buckets.length).toBe(3);
+    // 2*bucketDays window / bucketDays buckets -> exactly 2 buckets.
+    expect(buckets.length).toBe(2);
 
-    // Real ingestion activity is all within the last ~24h, so it must
-    // land in the most recent bucket (last index) and nowhere else.
+    // Real ingestion activity must land in the most recent bucket (last
+    // index) and nowhere else, now that the window is sized around the
+    // real earliest job instead of a stale fixed assumption.
     const mostRecent = buckets[buckets.length - 1]!;
     expect(mostRecent.newJobsCount).toBeGreaterThan(0);
     expect(mostRecent.activeJobsCount).toBeGreaterThan(0);
