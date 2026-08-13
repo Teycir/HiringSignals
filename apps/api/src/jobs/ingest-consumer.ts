@@ -148,18 +148,34 @@ const MAX_BACKOFF_SECONDS = 15 * 60;
  * full incident writeup) was found being silently exceeded on large
  * boards (openai's Ashby board, 739 jobs), killing the invocation with
  * zero log output and leaving source_runs stuck at status='running'
- * forever. 150 is a conservative per-chunk budget: each job does 2
- * batched D1 writes (J.4) plus, conditionally, one AI embedding call and
- * one Vectorize upsert, and possibly a second AI/Vectorize round trip
- * for a low-confidence classification nudge -- comfortably under 30s of
- * cumulative CPU time even in the worst case, based on this file's own
- * per-job cost breakdown (see the header comment above processNormalizedJob).
+ * forever.
+ *
+ * Lowered from 150 to 40, 2026-08-13 (post-J.4 follow-up): 150 was sized
+ * against CPU-time budget only (see the paragraph this replaces), not
+ * against the Free-plan's separate 1,000-subrequest-per-invocation cap
+ * -- J.4's "2 batched D1 writes... plus, conditionally, one AI embedding
+ * call and one Vectorize upsert" undercounted the real per-job Cloudflare
+ * service-call cost. A manual count of a brand-new job's full path
+ * (upsert+lifecycle batch, observation insert, embed+Vectorize-upsert,
+ * classification update, activity-stats + active-signal reads,
+ * signal create, evidence append, plus company-level signal triggers
+ * in generateCompanySignals) comes to roughly 14 subrequests per new
+ * job in the worst case, not ~2 -- confirmed as the live cause of
+ * openai's board (640 jobs) never completing even its first chunk since
+ * J.4 shipped (source_runs stuck at status='running' on every run,
+ * ROADMAP.md G.3 follow-up, 2026-08-13). 40 keeps that same worst-case
+ * estimate (~560 subrequests/chunk) comfortably under the 1,000 cap.
+ * Not measured via a live wrangler tail (unavailable in the environment
+ * this was diagnosed from) -- self-verifying via source_runs: if a
+ * large-board source's next run produces a real jobs_normalized count
+ * instead of staying stuck at running, this was directionally correct;
+ * tune further from there if not.
  */
-export const JOBS_PER_CHUNK = 150;
+export const JOBS_PER_CHUNK = 40;
 
 /**
  * Resolves the effective per-chunk job limit for one invocation: the real
- * JOBS_PER_CHUNK=150 in every real deployment, or env.JOBS_PER_CHUNK_OVERRIDE
+ * JOBS_PER_CHUNK=40 in every real deployment, or env.JOBS_PER_CHUNK_OVERRIDE
  * when it's set to a positive integer (test-only seam -- see that binding's
  * own comment in bindings.ts for why it exists). Any unset/non-numeric/
  * non-positive override value falls back to JOBS_PER_CHUNK rather than
