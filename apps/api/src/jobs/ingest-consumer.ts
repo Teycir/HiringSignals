@@ -36,6 +36,7 @@ import {
   buildLifecycleStatement,
   updateJobClassification,
   resolveSourceRun,
+  recordSourceRunProgress,
   findActiveSignal,
   findActiveSignalsBatch,
   findActiveSignalIgnoringLookback,
@@ -502,6 +503,23 @@ export async function handleIngestMessage(
 
     let signalsCreated = 0;
 
+    // Temporary diagnostic checkpoint (ROADMAP.md G.3 follow-up,
+    // 2026-08-13, see recordSourceRunProgress's own doc comment):
+    // writes jobs_normalized every PROGRESS_CHECKPOINT_INTERVAL jobs so
+    // a platform-level kill mid-chunk (Cloudflare's subrequest cap,
+    // which bypasses this function's own try/catch entirely -- no
+    // JS-catchable error, nothing reaches the outer catch below) still
+    // leaves a real number in source_runs instead of NULL. Only fires
+    // when JOBS_PER_CHUNK is large enough for more than one interval to
+    // land inside a single chunk; a chunk smaller than the interval
+    // just never checkpoints mid-chunk, which is fine -- the whole
+    // point is bisecting where in a chunk the kill happens, and a small
+    // enough chunk doesn't need bisecting. REMOVE once JOBS_PER_CHUNK
+    // is confirmed correctly sized against a real measured number
+    // instead of the current manual estimate.
+    const PROGRESS_CHECKPOINT_INTERVAL = 10;
+    let jobsProcessedThisChunk = 0;
+
     for (const job of chunkJobs) {
       signalsCreated += await processNormalizedJob(
         client,
@@ -511,6 +529,10 @@ export async function handleIngestMessage(
         job,
         observedAt,
       );
+      jobsProcessedThisChunk += 1;
+      if (jobsProcessedThisChunk % PROGRESS_CHECKPOINT_INTERVAL === 0) {
+        await recordSourceRunProgress(client, sourceRunId, chunkOffset + jobsProcessedThisChunk);
+      }
     }
 
     if (!isFinalChunk) {

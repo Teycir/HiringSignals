@@ -378,6 +378,33 @@ export async function recordSourceRunComplete(
 }
 
 /**
+ * Diagnostic-only progress checkpoint (ROADMAP.md G.3 follow-up,
+ * 2026-08-13): writes jobs_normalized mid-loop, WITHOUT touching status
+ * or completed_at, so a source_runs row still reads status='running'
+ * afterward -- this is deliberately NOT a state transition, just a
+ * breadcrumb. Exists because the openai board (Ashby, 700+ jobs) has
+ * been silently killed by Cloudflare's per-invocation subrequest cap
+ * before completing even a single JOBS_PER_CHUNK-sized chunk, and that
+ * kill happens at the platform level with zero JS-catchable error --
+ * the ordinary completed_at/status/error_message_safe fields in
+ * recordSourceRunComplete never get written for that failure mode, so
+ * there was no way to tell how many jobs got through before the kill.
+ * A temporary instrumentation aid, not a permanent feature -- remove
+ * once the actual cap is confirmed and JOBS_PER_CHUNK is sized
+ * correctly against real numbers instead of a manual estimate.
+ */
+export async function recordSourceRunProgress(
+  client: D1Client,
+  sourceRunId: string,
+  jobsNormalizedSoFar: number,
+): Promise<void> {
+  await client.run(`UPDATE source_runs SET jobs_normalized = ? WHERE id = ?`, [
+    jobsNormalizedSoFar,
+    sourceRunId,
+  ]);
+}
+
+/**
  * Marks a source run as successful: resets consecutive_failures to 0 and
  * advances the polling schedule. `nextPollAt` is computed by the caller
  * (now + poll_interval_minutes + jitter, per spec §5.2) -- this function
