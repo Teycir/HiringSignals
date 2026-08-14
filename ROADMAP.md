@@ -10,10 +10,11 @@ Source of truth for *behavior* is always `hiring-signals-spec.md` —
 every task below cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
-**Milestone status summary (last updated 2026-08-13):** Every milestone
+**Milestone status summary (last updated 2026-08-14):** Every milestone
 currently described in this file is complete and verified against
-on-disk code; no open implementation work remains in the roadmap
-below.
+on-disk code, with one open exception: G.3's `openai`-ingestion
+follow-up (2026-08-13/14 entry) has an un-root-caused per-chunk kill
+still outstanding — everything else below is closed.
 
 - **Shipped & removed from this file to keep scope focused** (git
   history + `CHANGELOG.md` carry the full detail): Phase 0
@@ -467,6 +468,132 @@ removing them would need a real cascade decision, not a same-day cleanup.
       as failing pending the stuck-run bug fix immediately above —
       re-measure after that's resolved rather than treating 9.1% as
       the final number.
+- [ ] **Follow-up, 2026-08-13/14 — J.4's fix above was necessary but not
+      sufficient for `openai`'s board (700+ jobs, Ashby).** J.4 cut
+      per-job subrequest cost from ~3 calls to ~2 for the upsert/
+      lifecycle pair, but a fuller accounting of `processNormalizedJob`'s
+      real worst-case cost (observation insert, conditional embed +
+      Vectorize upsert, classification update, activity-stats +
+      active-signal reads, signal create, evidence append, plus
+      company-level signal triggers in `generateCompanySignals`) comes
+      to roughly 14 subrequests per new job, not ~2 — confirmed as the
+      live cause of `openai` still never completing even its first
+      chunk after J.4 shipped.
+
+      **Chunking added, 2026-08-13** (`JOBS_PER_CHUNK`,
+      `apps/api/src/jobs/ingest-consumer.ts`): processes at most
+      `JOBS_PER_CHUNK` jobs per invocation starting at `chunkOffset`,
+      then re-enqueues a continuation message for the remainder rather
+      than processing the full board in one invocation. Initially 150
+      (sized against the CPU-time cap only), lowered to 40 same-day
+      once the ~14-subrequest/job real cost was worked out (150 × 14 ≈
+      2,100, over the 1,000-subrequest cap; 40 × 14 ≈ 560, comfortable
+      headroom). `JOBS_PER_CHUNK_OVERRIDE` test-only env seam added
+      alongside so tests can use a small chunk size without touching
+      the real constant.
+
+      **Still failed after the chunking fix, observed live 2026-08-13:**
+      two full cron cycles (15-min ticks) after deploying
+      `JOBS_PER_CHUNK=40`, `openai`'s run still died with no
+      continuation message and no error record — identical symptom to
+      before chunking. Diagnostic checkpoint instrumentation added
+      (`recordSourceRunProgress`, `packages/db/src/sources-repo.ts`):
+      writes `source_runs.jobs_normalized` every 10 jobs inside the
+      chunk loop, without touching `status`/`completed_at`, so a
+      platform-level kill (which bypasses this function's own
+      try/catch entirely — no JS-catchable error reaches
+      `recordSourceRunComplete`) still leaves a real number instead of
+      permanent `NULL`. Explicitly a temporary diagnostic aid, not a
+      permanent feature.
+
+      **Real root cause found, 2026-08-14 — not the chunking or the
+      per-job cost at all.** `getDueSources`
+      (`packages/db/src/sources-repo.ts`) selects any source where
+      `next_poll_at IS NULL OR next_poll_at <= now()`. `next_poll_at`
+      only ever advances via `markSourceSuccess`, which only fires on a
+      fully successful, final-chunk completion. Since `openai`'s board
+      never completed a run (whatever the original per-chunk kill is —
+      still not itself root-caused, see below), `next_poll_at` stayed
+      `NULL` forever, so **every single 15-minute cron tick re-enqueued
+      a brand-new `runId` for `openai` from `chunkOffset: 0`**,
+      regardless of whether a prior run's own chunk-continuation chain
+      was still actively working through the queue. Nothing ever
+      marked these abandoned runs as failed (no staleness sweep
+      existed), so they accumulated indefinitely: **confirmed live at
+      577 concurrent `status='running'` `source_runs` rows** across 3
+      sources by the time this was found (562 `openai`, 14 a healthy
+      `twilio` — see below, 1 a leaked test-fixture source — see
+      cleanup below). The queue consumer's batch handler
+      (`apps/api/src/index.ts`'s `queue()`: `max_batch_size=10`,
+      sequential `for` loop, single invocation, no per-message
+      isolation) very plausibly processes several of these overlapping
+      runs' messages together in one invocation, contending for the
+      same per-invocation subrequest/CPU budget — a materially worse
+      failure mode than one slow run alone, and a confound that made
+      the original per-chunk kill impossible to diagnose cleanly, since
+      every observed "stuck at N" data point could have been reflecting
+      more than one run's interleaved progress.
+
+      **Fix, committed `35b6824`, deployed 2026-08-14 (version
+      `6f82cd4a`):** new `hasRecentRunningRun(client, sourceId, now,
+      staleAfterMinutes)` (`packages/db/src/sources-repo.ts`) — true if
+      a source has a `source_runs` row still `status='running'` and
+      started within a staleness window. `handleScheduled`
+      (`apps/api/src/jobs/scheduler.ts`) now skips enqueueing any due
+      source with a recent in-flight run instead of stacking a new one
+      on top; window set to 45 minutes (well above one 15-min cron
+      interval) so a large board's legitimate multi-chunk run in
+      progress is never mistaken for abandoned. 5 new live-D1 tests in
+      `sources-repo.test.ts`, 3 new in `scheduler.test.ts` (all
+      passing); `scheduler.test.ts`'s own cleanup fixed to delete
+      `source_runs` before `sources` (FK-safe), since it's this file's
+      first time seeding running rows. `pnpm typecheck`/`lint` clean on
+      both `db` and `api`.
+
+      **Verified live post-deploy, 2026-08-14:** concurrent
+      `status='running'` count for `openai` held flat across 2 full
+      cron ticks post-deploy (no new stacking); directly observed the
+      00:30 tick correctly skip `openai` (`scheduler_skip_already_
+      running` logged) while a prior run was still active and making
+      real progress (`jobs_normalized` climbing 320→480 across ~15
+      min). Confirms the fix works as intended in production, not just
+      against synthetic test fixtures.
+
+      **Cleanup performed, 2026-08-14:** the 577 pre-fix orphaned
+      `running` rows (all `started_at` before the fix's deploy cutoff,
+      `2026-08-14T00:00:00Z`) closed out via a direct D1 write:
+      `status='failed'`, `error_code='abandoned_run_cleanup'`, a
+      descriptive `error_message_safe`, and a computed `duration_ms` —
+      verified 0 remain before the cutoff and the 2 genuinely still-
+      active runs (`started_at` after the cutoff) were left untouched.
+      Separately found and removed a leaked test-fixture company/source
+      (`board_token: "test-ic-happy-src-2-..."`, `public_url: https://
+      example.invalid/...`, company slug `test-ic-happy-1-...`) sitting
+      live in production — 1 of the 577 orphaned rows belonged to it.
+      Full dependency chain (`signal_evidence` → `signals` →
+      `job_observations` → `jobs` → `source_runs` → `sources` →
+      `companies`) deleted in FK-safe order, verified 0 residue after.
+      Unrelated to this fix's own root cause — a pre-existing test-run
+      leak into shared production D1, worth a broader audit for other
+      `test-`/`example.invalid` residue at some point, not done here.
+
+      **Still open, not resolved by any of the above:** the original
+      per-chunk kill itself — why a given chunk-continuation run dies
+      silently partway through, with zero JS-catchable error and no
+      `source_runs.error_code` ever populated for this failure mode —
+      remains un-root-caused. Watched live post-fix (run `26d1eb0a`,
+      started `2026-08-14T00:15:49Z`): climbed to `jobs_normalized=480`
+      then stalled again with no further progress ~15+ minutes later,
+      the same symptom as before the scheduler fix, now observed in
+      isolation without multi-run contention as a confound. This rules
+      out "it was just contention" as the sole explanation — something
+      about the per-invocation kill itself is still unexplained.
+      `wrangler tail` remains unavailable from this environment's
+      network egress (Cloudflare edge IPs not in the allowed domain
+      list); the Cloudflare dashboard's Observability/Logs view, or a
+      local `wrangler tail` run during a live `openai` tick, remain the
+      most direct ways to capture the actual platform error text.
+      Genuine next step, not started.
 
 ### G.4 — CI/CD hardening (spec §15)
 
