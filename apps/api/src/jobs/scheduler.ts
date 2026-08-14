@@ -1,5 +1,5 @@
 import type { Bindings } from "../bindings";
-import { createD1Client, getDueSources } from "@hiring-signals/db";
+import { createD1Client, getDueSources, hasRecentRunningRun } from "@hiring-signals/db";
 import type { IngestMessage } from "@hiring-signals/domain";
 
 /**
@@ -37,6 +37,24 @@ const MAX_SOURCES_PER_TICK = 200;
 const JITTER_SPREAD_SECONDS = 600; // 10 minutes
 
 /**
+ * A source with a source_runs row still status='running' and started
+ * more recently than this many minutes ago is treated as "already has
+ * an in-flight run" and skipped this tick, rather than re-enqueued from
+ * chunkOffset 0 (2026-08-13 incident fix -- see hasRecentRunningRun's
+ * own doc comment in sources-repo.ts for the full incident writeup:
+ * openai's Ashby source accumulated 558 concurrent "running" rows
+ * because next_poll_at never advances for a source whose runs never
+ * reach success, so getDueSources kept re-selecting it every tick).
+ *
+ * Set well above one cron interval (15 min) so a large board's
+ * legitimate multi-chunk run in progress is never mistaken for
+ * abandoned mid-flight -- 45 minutes is 3 full cron ticks' worth of
+ * headroom. Tune upward if a real (non-stuck) board's full chunk chain
+ * is ever observed taking longer than this.
+ */
+const RUNNING_RUN_STALE_AFTER_MINUTES = 45;
+
+/**
  * Deterministic, non-cryptographic hash of a source id into a stable
  * jitter offset. Same source_id always produces the same offset (spec's
  * explicit requirement), which also makes this trivially unit-testable:
@@ -69,6 +87,23 @@ export async function handleScheduled(
   });
 
   for (const source of dueSources) {
+    // 2026-08-13 incident fix (see RUNNING_RUN_STALE_AFTER_MINUTES's own
+    // comment): a source whose runs never reach success has
+    // next_poll_at permanently NULL, so it's re-selected by
+    // getDueSources above on every tick -- skip enqueueing a duplicate
+    // run while a recent one is still (or plausibly still) in flight,
+    // rather than stacking overlapping runs for the same source.
+    const alreadyRunning = await hasRecentRunningRun(
+      client,
+      source.id,
+      now.toISOString(),
+      RUNNING_RUN_STALE_AFTER_MINUTES,
+    );
+    if (alreadyRunning) {
+      console.warn("scheduler_skip_already_running", { sourceId: source.id });
+      continue;
+    }
+
     const jitterSeconds = jitterSecondsForSource(source.id);
     const requestedAt = new Date(now.getTime() + jitterSeconds * 1000).toISOString();
 

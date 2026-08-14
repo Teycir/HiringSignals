@@ -69,6 +69,52 @@ export async function getSourceById(client: D1Client, sourceId: string): Promise
   return client.first<SourceRow>(`SELECT ${SOURCE_COLUMNS} FROM sources WHERE id = ?`, [sourceId]);
 }
 
+/**
+ * True if `sourceId` has a source_runs row that is still `status='running'`
+ * and started within the last `staleAfterMinutes` minutes (2026-08-13
+ * incident fix, ROADMAP.md G.3 follow-up: the scheduler previously had no
+ * way to know a run was already in flight for a source, because
+ * next_poll_at is only ever advanced by markSourceSuccess -- a source
+ * whose runs never reach success therefore has next_poll_at permanently
+ * NULL and is re-selected by getDueSources on *every* cron tick, 15
+ * minutes apart, regardless of whether a prior run's chunk-continuation
+ * chain is still working through the queue. Confirmed live against
+ * openai's Ashby source: 558 concurrent status='running' source_runs
+ * rows, stacked one per missed cron tick, with the queue consumer's
+ * batch handler (`max_batch_size=10`, sequential, single invocation --
+ * apps/api/src/index.ts's `queue()`) very likely processing several of
+ * these overlapping runs' messages together and contending for the same
+ * per-invocation subrequest/CPU budget -- a materially worse failure
+ * mode than one slow run alone.
+ *
+ * The staleness cutoff exists so a genuinely abandoned run (the
+ * invocation that owned it was killed by the platform and nothing ever
+ * called recordSourceRunComplete/markSourceFailure -- the exact failure
+ * mode this fix responds to) doesn't block that source forever; after
+ * `staleAfterMinutes` a "running" row is no longer trusted as evidence
+ * of real in-flight work and the scheduler is allowed to enqueue a fresh
+ * run. Callers should pick a window comfortably longer than one chunk's
+ * real observed wall-clock cost (see JOBS_PER_CHUNK's own comment in
+ * ingest-consumer.ts for the ~700ms/job baseline this was sized
+ * against), not just one cron interval, so a large board's legitimate
+ * multi-chunk run isn't mistaken for abandoned mid-flight.
+ */
+export async function hasRecentRunningRun(
+  client: D1Client,
+  sourceId: string,
+  now: string,
+  staleAfterMinutes: number,
+): Promise<boolean> {
+  const cutoff = new Date(new Date(now).getTime() - staleAfterMinutes * 60 * 1000).toISOString();
+  const row = await client.first<{ id: string }>(
+    `SELECT id FROM source_runs
+     WHERE source_id = ? AND status = 'running' AND started_at > ?
+     LIMIT 1`,
+    [sourceId, cutoff],
+  );
+  return row !== null;
+}
+
 export interface SourceSummary {
   id: string;
   companyId: string;

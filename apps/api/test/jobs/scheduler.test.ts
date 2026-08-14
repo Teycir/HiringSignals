@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { IngestMessage } from "@hiring-signals/domain";
 import { createLiveD1Database } from "@hiring-signals/test-support";
-import { createD1Client, createCompany, createSource, updateSource } from "@hiring-signals/db";
+import {
+  createD1Client,
+  createCompany,
+  createSource,
+  updateSource,
+  resolveSourceRun,
+} from "@hiring-signals/db";
 import type { D1Client } from "@hiring-signals/db";
 import type { Bindings } from "../../src/bindings";
 import { handleScheduled } from "../../src/jobs/scheduler";
@@ -49,13 +55,22 @@ function testSlug(label: string): string {
 
 const client: D1Client = createD1Client(createLiveD1Database());
 
-/** Both statements run in one client.batch() call -- D1's real atomicity
- * primitive (see lib/d1/client.ts's batch() header comment; D1 has no
- * BEGIN/COMMIT SQL surface via the Workers binding) -- so a mid-sequence
- * process kill can't leave this company's rows half-deleted (data-
- * integrity concern, 2026-08-02). */
+/**
+ * One client.batch() call -- D1's real atomicity primitive (see
+ * lib/d1/client.ts's batch() header comment; D1 has no BEGIN/COMMIT SQL
+ * surface via the Workers binding) -- so a mid-sequence process kill
+ * can't leave this company's rows half-deleted (data-integrity concern,
+ * 2026-08-02). source_runs deleted before sources (FK-safe -- same
+ * ordering as sources-repo.test.ts's cleanupCompany, needed here since
+ * the hasRecentRunningRun-driven tests below are this file's first to
+ * seed source_runs rows via resolveSourceRun).
+ */
 async function cleanupCompany(companyId: string): Promise<void> {
   await client.batch([
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id = ?)`,
+      params: [companyId],
+    },
     { sql: `DELETE FROM sources WHERE company_id = ?`, params: [companyId] },
     { sql: `DELETE FROM companies WHERE id = ?`, params: [companyId] },
   ]);
@@ -64,6 +79,10 @@ async function cleanupCompany(companyId: string): Promise<void> {
 /** Same batch() atomicity reasoning as cleanupCompany above. */
 afterEach(async () => {
   await client.batch([
+    {
+      sql: `DELETE FROM source_runs WHERE source_id IN (SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?))`,
+      params: [`${TEST_PREFIX}-%`],
+    },
     {
       sql: `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
       params: [`${TEST_PREFIX}-%`],
@@ -226,6 +245,68 @@ describe("handleScheduled", () => {
       // message.
       expect(typeof a?.delaySeconds).toBe("number");
       expect(typeof b?.delaySeconds).toBe("number");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  /**
+   * 2026-08-13 incident fix (see hasRecentRunningRun's own doc comment
+   * in sources-repo.ts and RUNNING_RUN_STALE_AFTER_MINUTES's comment in
+   * scheduler.ts): a due source (next_poll_at NULL, since it's never
+   * completed) must not be re-enqueued while it already has a recent
+   * status='running' row, or every cron tick stacks another overlapping
+   * run on top of the last -- this is exactly what happened live to
+   * openai's Ashby source (558 concurrent running rows).
+   */
+  it("does not enqueue a due source that already has a recent running source_runs row", async () => {
+    const company = await seedCompany("running-skip", "Scheduler Running Skip Co");
+    try {
+      const src = await seedDueSource(company.id, testSlug("running-skip-src"));
+      await resolveSourceRun(client, src.id, crypto.randomUUID(), new Date().toISOString());
+
+      const db = createLiveD1Database();
+      const { env, sent } = makeEnv(db);
+      await handleScheduled({} as ScheduledEvent, env);
+
+      expect(sent.some((s) => s.message.sourceId === src.id)).toBe(false);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("enqueues a due source whose only running row is older than the staleness window", async () => {
+    const company = await seedCompany("running-stale", "Scheduler Running Stale Co");
+    try {
+      const src = await seedDueSource(company.id, testSlug("running-stale-src"));
+      const staleStartedAt = new Date(Date.now() - 60 * 60 * 1000); // 60 min ago
+      await resolveSourceRun(client, src.id, crypto.randomUUID(), staleStartedAt.toISOString());
+
+      const db = createLiveD1Database();
+      const { env, sent } = makeEnv(db);
+      await handleScheduled({} as ScheduledEvent, env);
+
+      // Stale (>45 min old) running row must not block a fresh enqueue --
+      // an abandoned run should not hold a source hostage forever.
+      expect(sent.some((s) => s.message.sourceId === src.id)).toBe(true);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("enqueues a due source whose prior run already completed", async () => {
+    const company = await seedCompany("running-done", "Scheduler Running Done Co");
+    try {
+      const src = await seedDueSource(company.id, testSlug("running-done-src"));
+      const runId = crypto.randomUUID();
+      await resolveSourceRun(client, src.id, runId, new Date().toISOString());
+      await client.run(`UPDATE source_runs SET status = 'success' WHERE id = ?`, [runId]);
+
+      const db = createLiveD1Database();
+      const { env, sent } = makeEnv(db);
+      await handleScheduled({} as ScheduledEvent, env);
+
+      expect(sent.some((s) => s.message.sourceId === src.id)).toBe(true);
     } finally {
       await cleanupCompany(company.id);
     }

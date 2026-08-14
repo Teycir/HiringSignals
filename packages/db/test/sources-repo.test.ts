@@ -7,6 +7,8 @@ import {
   updateSource,
   markSourceSuccess,
   markSourceFailure,
+  hasRecentRunningRun,
+  resolveSourceRun,
   DuplicateSourceError,
 } from "../src/sources-repo";
 
@@ -288,6 +290,91 @@ describe("markSourceFailure", () => {
         [source.id],
       );
       expect(persisted?.consecutive_failures).toBe(1);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+});
+
+describe("hasRecentRunningRun", () => {
+  it("returns false when the source has no source_runs rows at all", async () => {
+    const company = await seedCompany("hrr-none", "Has Running None Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const result = await hasRecentRunningRun(client, source.id, new Date().toISOString(), 45);
+      expect(result).toBe(false);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("returns true when a running row started within the staleness window", async () => {
+    const company = await seedCompany("hrr-running", "Has Running True Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const now = new Date();
+      await resolveSourceRun(client, source.id, crypto.randomUUID(), now.toISOString());
+
+      const result = await hasRecentRunningRun(client, source.id, now.toISOString(), 45);
+      expect(result).toBe(true);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("returns false when the only running row started before the staleness cutoff", async () => {
+    const company = await seedCompany("hrr-stale", "Has Running Stale Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const startedAt = new Date(Date.now() - 60 * 60 * 1000); // 60 min ago
+      await resolveSourceRun(client, source.id, crypto.randomUUID(), startedAt.toISOString());
+
+      // 45-minute staleness window -- a run started 60 minutes ago is
+      // outside it, so this must NOT be treated as in-flight (the
+      // whole point of the cutoff: a genuinely abandoned run must not
+      // block a source forever).
+      const result = await hasRecentRunningRun(client, source.id, new Date().toISOString(), 45);
+      expect(result).toBe(false);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("returns false when the run is recent but no longer status='running'", async () => {
+    const company = await seedCompany("hrr-completed", "Has Running Completed Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const now = new Date();
+      const runId = crypto.randomUUID();
+      await resolveSourceRun(client, source.id, runId, now.toISOString());
+      // Flip the row to a completed state directly (this file's own
+      // recordSourceRunComplete import would work equally well, but a
+      // direct UPDATE keeps this test focused on the status filter
+      // itself rather than that function's own behavior).
+      await client.run(`UPDATE source_runs SET status = 'success' WHERE id = ?`, [runId]);
+
+      const result = await hasRecentRunningRun(client, source.id, now.toISOString(), 45);
+      expect(result).toBe(false);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("does not match another source's running row", async () => {
+    const company = await seedCompany("hrr-other", "Has Running Other Co");
+    try {
+      const sourceA = await seedSource(company.id, `${company.slug}-a`);
+      const sourceB = await createSource(client, {
+        companyId: company.id,
+        provider: "greenhouse",
+        boardToken: `${company.slug}-b`,
+        publicUrl: `https://example.invalid/${company.slug}-b`,
+      });
+      const now = new Date();
+      await resolveSourceRun(client, sourceA.id, crypto.randomUUID(), now.toISOString());
+
+      const result = await hasRecentRunningRun(client, sourceB.id, now.toISOString(), 45);
+      expect(result).toBe(false);
     } finally {
       await cleanupCompany(company.id);
     }
