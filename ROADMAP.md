@@ -10,11 +10,12 @@ Source of truth for *behavior* is always `hiring-signals-spec.md` —
 every task below cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
-**Milestone status summary (last updated 2026-08-14):** Every milestone
-currently described in this file is complete and verified against
-on-disk code, with one open exception: G.3's `openai`-ingestion
-follow-up (2026-08-13/14 entry) has an un-root-caused per-chunk kill
-still outstanding — everything else below is closed.
+**Milestone status summary (last updated 2026-08-15):** All originally
+scoped milestones (Phase 0 → Q/R, G.1–G.5) are shipped. One genuine
+open follow-up remains inside Milestone G.3's section (the 2026-08-13
+openai stuck-run incident follow-up) and one explicit guardrail is
+retained in G.4; everything else below is verified-complete with
+dates and evidence inline.
 
 - **Shipped & removed from this file to keep scope focused** (git
   history + `CHANGELOG.md` carry the full detail): Phase 0
@@ -30,20 +31,36 @@ still outstanding — everything else below is closed.
 - **Shipped & retained below for reference** (each carries its
   completion date, acceptance criteria, and verification notes —
   useful context for future work that builds on them): F.1 (CLI
-  primary interface, landed 2026-08-07), G.3–G.5 (performance
-  verification, CI/CD hardening, acceptance criteria sign-off — all
-  walked and PASS end-to-end 2026-08-11; G.4 retains one intentionally
-  open guardrail item for future deploy automation), N (saved filter
+  primary interface, landed 2026-08-07; `--format table` flat-list
+  renderer added 2026-08-10 post-G.5), G.3 (performance verification,
+  acceptance-walked PASS 2026-08-11; gained a new incident follow-up
+  2026-08-13/14 that's the only genuinely-open code item in the file),
+  G.4 (CI/CD hardening; environment-scope decision + lint-zero
+  PASS 2026-08-06; Rollback Readiness redeployed during incident
+  response 2026-08-13/14; one guardrail checkbox retained), G.5
+  (acceptance criteria, sign-off PASS 2026-08-11), N (saved filter
   profiles, landed 2026-08-07), O (company hiring timeline API + CLI,
   landed 2026-08-08), P (cross-company hiring trend API + CLI, landed
   2026-08-09), Q (company-level hiring velocity score, landed
   2026-08-09), R (RSS feed route + `hs feed-url`, landed 2026-08-07).
 
-Only one item remains unchecked in the entire file: G.4's conditional
-deploy-automation guardrail ("never point preview/staging at
-production secrets"), which is an explicit future constraint, not a
-task to build today — the G.4 section's own note records why it's
-kept open rather than checked off or deleted.
+- **Post-2026-08-13 incident-response work (5 new commits, 4 deployed
+  to production)** recorded inline in G.3's follow-up checkbox
+  (details there): ENVIRONMENT var hygiene, `JOBS_PER_CHUNK` board
+  chunking with re-enqueue continuation, temporary
+  `recordSourceRunProgress` diagnostic checkpoint,
+  `hasRecentRunningRun` scheduler stacking guard + 577 abandoned-run
+  cleanup + one leaked test-fixture company/source removed from
+  production. Production Worker now at `6f82cd4a` (2026-08-14), not
+  the stale 2026-07-30 `82df9ce2` G.4 originally described.
+
+Open-item count in the entire file: 2, and only one of them is code
+work: the G.3/J.4 incident follow-up (per-chunk-kill still un-root-
+caused, needs live `wrangler tail` during an openai tick + removing
+the temporary checkpoint once diagnosed); the other is G.4's "if a
+preview/staging tier ever exists, don't point it at production
+secrets" guardrail — an explicit future constraint, deliberately kept
+unchecked, never a task to build today.
 
 ---
 
@@ -619,20 +636,27 @@ Production) and a 7-step deployment sequence. Current CI
       separate preview/staging tier, but leaving this as an explicit
       guardrail rather than deleting it: if that decision is ever
       revisited, this constraint still applies.
-- [x] **Rollback readiness (spec §15.3) — audited 2026-08-06, corrected
-      same day after token scope was widened.** The Worker has been
-      deployed 8 times, all on 2026-07-30, currently serving version
-      `82df9ce2` at 100% traffic, confirmed live and responding
-      correctly at `https://hiring-signals-api.teycircoder14.workers.dev`.
-      That live version predates every commit from 2026-08-06
-      (I.5c/I.5d, test-support fixes, lint enforcement), so production
-      is currently running stale code — a real redeploy is needed,
-      intentionally deferred until local ingestion is validated against
-      real data sources first. Versioned-deployment history now
-      confirmed to genuinely exist (8 real entries), so a rollback
-      (`wrangler rollback` or `wrangler deploy` to a prior version) is
-      mechanically available and testable once we're deploying again —
-      not yet exercised.
+- [x] **Rollback readiness (spec §15.3) — audited 2026-08-06,
+      redeployed 2026-08-13/14 during incident response, still not
+      explicitly rollback-tested.** Originally audited against the
+      2026-07-30-only deploy history (8 versions, all on one day,
+      `82df9ce2` at 100% traffic), with a note that production was
+      running stale code and a redeploy was intentionally deferred
+      until local ingestion validated against real sources. That
+      deferral ended on 2026-08-13/14 when the openai stuck-run
+      incident (see follow-up item above) required 4 sequential
+      hotfix deploys to production to diagnose and ship the chunking
+      and scheduler-stacking fixes; current live version is
+      `6f82cd4a` (deployed 2026-08-14, version that shipped the
+      `hasRecentRunningRun` scheduler guard, deployed and verified
+      live per that item). Versioned-deploy history now spans two
+      weeks and includes real multi-version progression, so a
+      rollback (`wrangler rollback` or `wrangler deploy` to a prior
+      version) remains mechanically available as originally noted.
+      Still never explicitly exercised end-to-end as a drill — no
+      rollback has been performed. Low priority until a bad deploy
+      actually happens, since there's now real multi-version history
+      to fall back to.
 - [x] **Feature-flag pattern for scoring formula changes (spec §15.3) —
       audited, partial gap found, 2026-08-06.** **Correction, 2026-08-09:**
       this note originally read "`packages/db`'s schema has no
