@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createLiveD1Database } from "@hiring-signals/test-support";
 import {
   createD1Client,
@@ -32,9 +32,24 @@ import { handleReconciliation } from "../../src/jobs/reconciliation";
  * from `signals`/`signal_evidence`.
  *
  * Every test uses a `test-recon`-prefixed slug and cleans up in a
- * `finally` (FK-safe: signal_evidence -> signals -> companies), with an
- * `afterEach` sweep as a second pass -- same discipline as
+ * `finally` (FK-safe: signal_evidence -> signals -> companies), with a
+ * belt-and-suspenders sweep as a second pass -- same discipline as
  * signals-write-repo.test.ts.
+ *
+ * Sweep moved from `afterEach` to `afterAll` (2026-08-15, ROADMAP.md
+ * J.4, mirroring ingest-consumer.test.ts's 2026-08-04 fix): this file's
+ * tests run sequentially, not under `it.concurrent`, so the FK-race that
+ * motivated ingest-consumer.test.ts's move doesn't apply here -- this
+ * change is purely about round-trip count. Each test's own
+ * `finally { cleanupCompany(...) }` already deletes that test's rows;
+ * the sweep only exists to catch what a thrown assertion before that
+ * `finally` block would leave behind. Running it after every one of the
+ * 6 tests added a 6-statement `client.batch()` round trip per test for a
+ * catch-all that, in the common case, has nothing to clean up -- pure
+ * overhead, compounding directly into the 580s/6-test runtime documented
+ * below. `afterAll` keeps the exact same batch and the exact same
+ * `test-recon-%` prefix match, just once at the end of the file instead
+ * of after each test.
  *
  * `operationTimeoutMs: 30_000` fix (2026-08-08): this file's module-
  * level `client` originally had no override, and every
@@ -96,8 +111,13 @@ async function cleanupCompany(companyId: string): Promise<void> {
   ]);
 }
 
-/** Same batch() atomicity reasoning as cleanupCompany above. */
-afterEach(async () => {
+/**
+ * Belt-and-suspenders sweep for anything left behind by a run that
+ * didn't reach its own `finally` -- matches on the shared TEST_PREFIX.
+ * Runs in `afterAll`, not `afterEach` -- see this file's header comment
+ * for why. Same batch() atomicity reasoning as cleanupCompany above.
+ */
+afterAll(async () => {
   await client.batch([
     {
       sql: `DELETE FROM signal_evidence WHERE signal_id IN (
