@@ -1,180 +1,243 @@
 {
   "name": "Hiring Signals Intelligence",
-  "description": "CLI-first tool, built for AI agents, that surfaces genuine, matching IT job postings as soon as they appear publicly across multiple ATS providers",
-  "version": "0.0.0",
+  "description": "CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, scored, filterable IT hiring signals from 8 ATS providers via official documented APIs (no scraping). Signals detect: new roles, reopened roles, hiring bursts, role acceleration, multi-location expansion, persistent demand.",
+  "version": "0.1.0",
   "author": "Teycir Ben Soltane",
   "license": "MIT",
   "type": "monorepo",
   "packageManager": "pnpm@11.17.0",
   "nodeVersion": ">=24.18.0",
   "primaryLanguage": "TypeScript",
-  "framework": "none (CLI-first, apps/web deleted 2026-08-07)",
-  "backendFramework": "Hono",
-  "database": "Cloudflare D1 (SQLite)",
-  "search": "Workers AI (@cf/baai/bge-base-en-v1.5) + Vectorize -- write path (embed-at-ingest) and query-side hybrid search both live on GET /api/v1/signals",
+  "framework": "none (CLI-first, apps/web deleted 2026-08-07, replaced by apps/cli)",
+  "backendFramework": "Hono on Cloudflare Workers",
+  "database": "Cloudflare D1 (SQLite), 9 migrations applied 0001-0009",
+  "search": "Workers AI (@cf/baai/bge-base-en-v1.5) + Vectorize 768-dim cosine index — write path (embed-at-ingest, gated on new-or-content-changed, non-blocking) AND query-side hybrid search (keyword + semantic merge on page 1) both live on GET /api/v1/signals (Milestone I.3 complete). Falls back to keyword-only gracefully on subsequent pages or if semantic path degrades.",
   "deployment": {
-    "backend": "Cloudflare Workers"
+    "backend": "Cloudflare Workers (production version: 6f82cd4a, deployed 2026-08-14)",
+    "ui": "none — apps/web deleted 2026-08-07, primary interface is apps/cli thin client over HTTP API"
   },
   "architecture": {
-    "apps/cli": "CLI, primary interface -> planned, not started (decided with the user 2026-08-07); JSON-by-default, no interactive prompts, thin client over apps/api",
-    "apps/api": "Cloudflare Worker API: routes, cron scheduler, queue consumer, daily reconciliation job, semantic-search service, CSV export route (Hono)",
-    "packages/domain": "Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge",
-    "packages/adapters": "AtsAdapter interface; 8 active ATS adapters (greenhouse, lever, ashby, recruitee, breezy, personio, smartrecruiters, workable)",
-    "packages/db": "D1 client + read/write/export repository functions",
-    "packages/test-support": "Live Cloudflare bindings & transport layer for zero-mocks testing",
-    "infrastructure": "D1 migrations (0001-0004) + ops scripts (add-source, update-source, add-company, source-health, backfill-embeddings, import-sources)"
+    "apps/cli": "CLI, primary interface -> complete, landed 2026-08-07 (ROADMAP.md Milestone F.1). JSON-by-default stdout, single-JSON-object stderr errors, never interactive prompts (admin commands require explicit --yes). --format table flat-list renderer added 2026-08-10 (G.5 section 16.2), nested shapes decline and fall back to JSON with a stderr note. Saved filter profiles (--save / --clear-saved / auto-apply) at ~/.hiring-signals/config.json. Commands: hs signals list/get, companies list/get/timeline, facets, sources list, export signals, feed-url, trends hiring, admin source run/scheduler flush/reconcile. 59 tests across 5 suites.",
+    "apps/api": "Cloudflare Worker API: routes, 15-min cron scheduler (deterministic per-source jitter) -> INGEST_QUEUE consumer (multi-chunk continuation for 700+ job boards, JOBS_PER_CHUNK=40 to stay under 1000-subrequest free-plan cap, in-flight stacking guard via hasRecentRunningRun(45min window)), daily reconciliation cron at 06:00 UTC (stale score recompute + company hiring velocity recompute for touched companies), semantic-search service, RSS 2.0 feed route, company hiring timeline route, cross-company hiring trends route, CSV export route, 3 bearer-secret-gated POST /admin/* pipeline triggers. Middleware chain: request-id, trusted-first CF-Connecting-IP extraction (spoofing protection), security headers, circuit-breaker-wrapped D1 client (\"db\" resource), anti-abuse rate-limiting (SHA-256 base64url-hashed identifiers), free-read-tier enforcement, per-request Analytics Engine API_METRICS data points for error-rate/latency monitoring (UUID/slug path segments normalized to :id/:param for bounded cardinality).",
+    "packages/domain": "Zod schemas, 10 IT role categories taxonomy, job classification (description-channel noise guard), lifecycle (3-day absence threshold before reopened_role flag), signal scoring v2 (0.35*freshness + 0.25*volume + 0.20*acceleration + 0.10*breadth + 0.10*classification_confidence), company hiring velocity scoring (0-100 investor-grade, V = 0.40*acceleration + 0.25*breadth + 0.20*volume_norm + 0.15*persistence, null = not-yet-computed, never fabricated as 0), embedding-text builder, hybrid keyword-semantic search-merge logic, shared signal-id-param / company-slug-param schemas for route path-param validation, shared HIRING_VELOCITY_DISCLAIMER constant (spec section 11.3).",
+    "packages/adapters": "AtsAdapter interface; 8 active ATS adapters (coverage closed at 8, decided with user 2026-08-04): Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy. Breezy and Personio custom-host validation fixed 2026-08-10: port-injection bug (isValidCustomHost() used url.host instead of url.hostname + url.port check). 5 targeted unit tests per adapter including the port-injection case.",
+    "packages/db": "D1 parameterized client wrapper (all SQL via .bind(), never string interpolation; all calls routed through circuit-breaker bulkhead on the \"db\" resource); repository functions covering all read/write paths — signals list/detail/for-export/for-feed, companies list/detail/timeline/velocity-update, facets aggregate counts, cross-company hiring trends, company-role activity stats (per-role and all-role aggregates), jobs upsert with batch() combine + lifecycle statements, sources with due-scheduler selection + in-flight run detection + progress checkpoint + run observation/complete recording, signal write path with active-signal dedup (28-day lookback, UNIQUE one-active-per-triple index), signals export, raw payload archival interface. All repos used via zero-mocks live-D1 test harness.",
+    "packages/test-support": "Live Cloudflare transport bindings for zero-mocks integration testing per AGENTS.md policy. Real D1 via wrangler d1 execute --remote --json subprocess (3 total retries only for transient auth failures), real Workers AI/Vectorize via direct Cloudflare REST API (the same shape backfill-embeddings.mjs establishes), real KV via wrangler kv CLI. Thin wrappers preserve D1Client / D1Database / Ai / VectorizeIndex / KVNamespace type surfaces so app code runs completely unmodified in tests. Environment seams: D1_DATABASE_NAME/D1_WRANGLER_ENV for CI-database targeting. No in-memory stand-ins ever.",
+    "lib": "Cross-workspace generic utilities, nothing here imports @hiring-signals/* domain symbols: d1/client (parameterized wrapper, circuit-breaker integrated), d1/like-pattern (LIKE wildcard escape), d1/unique-constraint (cross-driver UNIQUE-violation detection: wrangler CLI error_code + Worker D1Error.code surfaces), kv/ttl-store (generic prefix-based TTL blob store), http/circuit-breaker (per-resource bulkhead + concurrency cap), http/rate-limit (KV sliding window, free/protected presets, safeRateLimitIdentifier SHA-256 base64url hashes before key construction to scrub IP PII and block IPv6 colon separator injection), http/security-headers (Hono middleware, explicit CORS allowlist), observability/audit-abuse (fire-and-forget KV abuse logging), pagination/cursor (opaque keyset codec with sort-mode tagging so sort changes between pages throw instead of corrupting), text/base64url (UTF-8-safe + JSON helpers), text/content-hash (SHA-256 stable-key-order object hash for observation diff detection), text/csv (RFC-4180 row serializer with proper quoting/escaping), text/location-mode (remote/hybrid/onsite inference from free text), text/rss (dependency-free RSS 2.0 serializer with XML escaping, RFC 822 dates, <link> omission when null).",
+    "infrastructure": "D1 migrations 0001-0009 (initial_schema, signal_evidence_indexes, rename_raw_payload_key, job_observations_idempotency UNIQUE, signals_dedup_index, signals_one_active_unique, trends_role_first_seen_index, company_velocity_score NULL columns, jobs_requisition_id NULL column). Ops scripts: add-source.mjs, update-source.mjs (--run-now clears next_poll_at for manual ingestion trigger), add-company.mjs, update-company.mjs (--industry --employee-band --remote tags, blank values are rejected not silently cleared), source-health.mjs (stale/stuck/degraded/disabled derivation with STALE_RUNNING_MINUTES=90 threshold), backfill-embeddings.mjs (Vectorize backfill for semantic search), build-category-centroids.mjs (Worker AI category centroids for role-auto-classify gap), import-sources.mjs (bulk CSV onboarding with pre-validation and duplicate skipping), ingestion-metrics.mjs (success rate + duplicate rate with/without requisitionId tiering, GROUP BY split on requisition_id IS NULL), seed-local-d1.sql (local D1 seed fixtures)."
   },
   "status": {
-    "phase": "Milestones A-F, H, L, M, and I.1-I.4 complete",
-    "phaseDescription": "CLI-first: apps/web deleted 2026-08-07 (decided with the user), primary interface is now apps/cli (planned, not started -- see ROADMAP.md Milestone F.1). 8 active ATS adapters live. CSV export and bulk onboarding complete. Ingestion, scoring, reconciliation running end-to-end. Full task-by-task detail in ROADMAP.md.",
-    "asOf": "2026-08-07",
+    "phase": "All originally scoped milestones shipped: Phases 0-1 complete. Milestones A through R and G.1-G.5 acceptance criteria all complete and signed off. Production Worker at version 6f82cd4a (2026-08-14).",
+    "phaseDescription": "CLI-first: apps/web (dashboard UI, Milestone F shell + FilterRail/SignalCard/SignalDetail routes + Milestone I.4 search UI) was deleted 2026-08-07 (decided with user); primary interface is apps/cli (shipped same day, 2026-08-07; --format table renderer added 2026-08-10 for G.5 section 16.2). 8 active ATS adapters live. 9 D1 migrations applied (0001-0009). CSV export, bulk source onboarding, saved filter profiles, company hiring timeline, cross-company hiring trends, company hiring velocity score, RSS feed, semantic search write+query paths, zero-mocks live Cloudflare test infrastructure, multi-chunk ingestion continuation with scheduler in-flight guard, and full G.5 acceptance-criteria walkthrough (16.1-16.3.6 PASS with live verification and gap closure notes) all complete. One genuine follow-up code item remains open (G.3 per-chunk kill root cause unconfirmed, still needs wrangler tail during a live openai cron tick + temporary checkpoint removal). Full task-by-task detail in ROADMAP.md.",
+    "asOf": "2026-08-15",
     "completed": [
-      "pnpm workspace setup, strict TypeScript base config, Prettier, shared ESLint base",
-      "Next.js 16 Minimal Brutalist dashboard UI (apps/web): /signals feed with FilterRail, SignalCard list, cursor pagination, loading/error/empty states, URL searchParams sync -- shipped, then apps/web was deleted 2026-08-07 (CLI-first decision); this entry records completed work, the code no longer exists",
-      "Signal Detail view (/signals/[signalId]): shipped inside apps/web, removed with it 2026-08-07 -- see prior entry",
-      "Hono Worker with full middleware chain, real cron scheduler, real queue consumer, daily reconciliation cron",
-      "role taxonomy, ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas",
-      "full D1 schema with indexes, migrations 0001-0004",
-      "parameterized D1 client wrapper; read repos (signals/companies/facets/export) and write repos (sources/jobs/signals/companies)",
-      "API routes querying D1 for real: GET /api/v1/signals, /signals/:id, /companies, /companies/:slug, /facets, /sources, /export/signals.csv",
-      "CSV Export endpoint (GET /api/v1/export/signals.csv) with RFC-4180 streaming serializer, 2,000-row safety limit, and truncation header",
-      "8 active P0 ATS adapters: Greenhouse, Lever, Ashby, Recruitee, Breezy, Personio, SmartRecruiters, Workable",
-      "full ingestion pipeline: fetch -> validate -> normalize -> upsert -> observe -> lifecycle -> classify -> score -> signal, idempotent per (sourceId, runId)",
-      "real Volume/Acceleration/Breadth signal scoring (score_version v2) and all four company-level signal types (hiring_burst, role_acceleration, multi_location, persistent_demand)",
-      "daily reconciliation job recomputing stale active signals' scores without altering last_detected_at",
-      "description-channel classification-noise fix (Milestone H.1)",
-      "reopened role lifecycle refinement with 3-day absence threshold (daysSinceLastSeen >= 3)",
-      "security hardening: safeRateLimitIdentifier() SHA-256 base64url hashing (rate-limit.ts) and trusted-first IP extraction (client-ip.ts)",
-      "Vectorize index (hiring-signals-jobs, 768-dim, cosine) + Workers AI binding provisioned; jobs embedded and upserted at ingest time, best-effort/non-blocking",
-      "query-side semantic-search service and merge logic implemented and wired live into GET /api/v1/signals (apps/api/src/services/semantic-search.ts, packages/domain/src/signal-search-merge.ts)",
-      "search UI (search bar, recent-searches, more-like-this): shipped inside apps/web (Milestone I.4), removed with it 2026-08-07",
-      "bulk source onboarding ops script (infrastructure/scripts/import-sources.mjs)",
-      "zero-mocks live test infrastructure (packages/test-support) running against real Cloudflare D1/KV resources",
-      "all workspace tests passing workspace-wide (pnpm -r test); pnpm -r typecheck and pnpm -r lint clean across all workspaces"
+      "pnpm workspace setup, strict TypeScript base config with noUncheckedIndexedAccess on, Prettier, shared ESLint 10 flat base with --max-warnings 0",
+      "Next.js 16 dashboard UI (apps/web): /signals feed with FilterRail, SignalCard list, cursor pagination, URL searchParams sync, SignalDetail view, Milestone I.4 search UI (hybrid search bar, recent searches, MoreLikeThis) — all shipped, then apps/web was deleted 2026-08-07 (CLI-first decision with user); this entry records completed work, the code no longer exists; the API routes it called remain live",
+      "Hono Worker with full middleware chain, real 15-min cron scheduler, real INGEST_QUEUE consumer (multi-chunk continuation, JOBS_PER_CHUNK=40, hasRecentRunningRun 45-min in-flight guard), daily 06:00 UTC reconciliation cron (stale signal score recompute + company hiring velocity recompute)",
+      "Role taxonomy (10 IT categories), ATS provider enum, NormalizedJob/Signal/IngestMessage Zod schemas, shared signal-id-param UUID regex + company-slug-param lowercase-alphanumeric-hyphen-100-char schemas",
+      "Full D1 schema with indexes: migrations 0001-0009, 6 total UNIQUE constraints (jobs source_id+external_job_id, job_observations job_id+source_run_id, signals dedup by content hash, signals one active per company+role+type triple, jobs requisition_id column for duplicate detection tiering)",
+      "Parameterized D1 client wrapper; repos: signals read/write/export/feed, companies list/detail/timeline/velocity-update, facets, jobs upsert with lifecycle batch, sources with due-selection/in-flight/progress-checkpoint, trends, company-role stats (per-role H + all-role Q aggregations). All statements .bind() parameterized, all calls through circuit-breaker db bulkhead.",
+      "API routes querying real D1: GET /api/v1/signals (hybrid search, cursor pagination, all filters applied, 50 default 100 hard cap), /signals/:id (UUID path-param schema validation -> 400 not 404), /companies, /companies/:slug (slug path-param schema validation), /companies/:slug/timeline (7/14/30d buckets, 90d window cap, role/location/signal-type breakdowns), /trends/hiring (acceleration_desc/volume_desc/newest_signal/velocity_desc sorts, 5-min KV cache, industry/country/role/recency filters), /facets (60s KV cache), /sources, /export/signals.csv (RFC-4180, 2000-row cap, X-Export-Truncated header), /feed.rss (RSS 2.0, 50-item cap, ETag/Last-Modified/304 conditional-request support, filterable). Three POST /admin/* bearer-secret-gated pipeline triggers.",
+      "CSV Export endpoint with RFC-4180 streaming serializer (lib/text/csv.ts), 2,000-row safety limit, X-Export-Truncated header, also exposed as hs export signals in CLI",
+      "8 active P0 ATS adapters with fixture-driven tests and location-mode inference: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy. Breezy/Personio custom-career-site host port-injection bug fixed 2026-08-10 (5 new tests per adapter including the port-injection case that caught the bug).",
+      "Full ingestion pipeline end-to-end: fetch -> adapter validate -> normalize -> prepareJobUpsert SELECT -> buildLifecycleStatement pure statement builder -> client.batch([upsert, lifecycle]) write pair -> insertObservationIdempotent (kept separate for UNIQUE rollback semantics) -> classification update -> conditional embed + Vectorize upsert -> activity stats read -> active signal read -> signal create / evidence append / generateCompanySignals triggers. Idempotent per (sourceId, runId). Provider/schema permanent errors skip retry with correct status/error_code; only 429/5xx network failures trigger capped 5-attempt exponential backoff with real attempt increment (replaced broken native message.retry()).",
+      "Signal scoring v2: real Volume/Acceleration/Breadth via getCompanyRoleActivityStats repo query, 28-day ACTIVE_SIGNAL_LOOKBACK_DAYS so multi-month lulls don't fold into old burst rows, daysSinceObservation anchored on postedAt first, then existing first_seen_at, then observedAt as last resort",
+      "All 4 company-level signal types actually generated: hiring_burst, role_acceleration, multi_location, persistent_demand (previously typed-only, Milestone H gap closure)",
+      "Daily reconciliation job recomputes stale active signals' scores without touching last_detected_at, then recomputes touched companies' hiring velocity scores",
+      "Description-channel classification-noise guard: incidental phrase in job description can no longer override a clean title+department match",
+      "Reopened role lifecycle refinement: 3-day absence threshold (daysSinceLastSeen >= 3) before flagging, prevents single-run scrape glitches / transient ATS 4xx from spamming signals",
+      "Signal Detail status guard: getSignalDetail restricted to s.status = 'active', deleted/dormant signals not returned as detail views",
+      "Active signal query optimization: client-computed ISO dates replaced with SQLite native datetime('now', '-28 days') in findActiveSignal + findActiveSignalsBatch",
+      "Security hardening: safeRateLimitIdentifier() SHA-256 base64url hashing before KV key construction (rate-limit.ts — blocks IPv6 colon separator injection and scrubs plaintext IP PII from KV keys); trusted-first client-ip extraction (client-ip.ts — CF-Connecting-IP > last hop of X-Forwarded-For, never the untrusted first hop, prevents spoofing around rate limits)",
+      "Route path-param schema validation (spec 16.3.3 gap): /signals/:signalId (UUID regex via signal-id-param, 400 on malformed), /companies/:slug and /companies/:slug/timeline (lowercase-alphanumeric-hyphen 100-char via company-slug-param, 400 on malformed). Well-formed but nonexistent IDs still return correct 404s.",
+      "Security Headers middleware response wrapper fixed to pass through base middleware Response, not drop it",
+      "Classification threshold unreachable-logic bug fixed: multi-location condition evaluation corrected",
+      "job_observations idempotency gap closed: migration 0004 added CREATE UNIQUE INDEX idx_job_observations_idempotency on (job_id, source_run_id) — previously a retried queue message could insert duplicate observation rows",
+      "Circuit breaker actually wired: every D1 call now routed through the db resource bulkhead, not unused Proxy",
+      "Stray scratch file packages/db/src/__sqlite_probe.ts removed — broke local typecheck",
+      "Vectorize index (hiring-signals-jobs, 768-dim, cosine, metadata indexes on companyId/roleCategory/locationMode/status/postedAt) + Workers AI binding provisioned; jobs embedded via buildJobEmbeddingText at ingest time, gated on new-or-content-changed, best-effort non-blocking try/catch so embed failure never fails enclosing ingest message",
+      "Semantic search query side: apps/api/src/services/semantic-search.ts hybrid lookup + packages/domain/src/signal-search-merge.ts weighted score merge; wired live into GET /api/v1/signals page 1, degrades gracefully to keyword-only on subsequent pages or if semantic leg degrades (I.3 complete)",
+      "Worker AI category centroids + build-category-centroids.mjs for role-auto-classify assist (spec section 6.4, future I.5's prerequisite infrastructure)",
+      "Search UI (apps/web): search bar, recent-searches localStorage, MoreLikeThis button — shipped inside apps/web, removed with it 2026-08-07 (same deletion note as other apps/web work)",
+      "Bulk source onboarding: infrastructure/scripts/import-sources.mjs with pre-validation, duplicate skipping, interactive confirmation",
+      "Zero-mocks live Cloudflare test infrastructure (packages/test-support): live-d1-client, live-d1-database (raw D1Database shape so createD1Client(env.DB) works unchanged in tests), live-cf-bindings (Ai.run / VectorizeIndex.query upsert deleteByIds / KVNamespace.get put delete). All 7 test files migrated from synthetic stand-ins. Two documented permanent exceptions per AGENTS.md: ATS adapter vi.mock in ingest-consumer tests (to script 429/503/404 for orchestration assertions — real board assertions already covered by adapters test fixtures), and INGEST_QUEUE send() capture into in-memory sent:[] array (no wrangler command to send without delivering, would actually dequeue into production consumer).",
+      "pnpm -r typecheck clean across 6/6 workspace packages; pnpm -r lint clean (--max-warnings 0) across all 6",
+      "CLI primary interface (Milestone F.1, apps/cli): citty scaffold with runCommand over runMain (so this file owns stderr error formatting), typed API client reusing apiErrorSchema from @hiring-signals/domain (not a third copy), JSON-by-default stdout + single-JSON-object stderr, HS_ADMIN_SECRET / HS_API_BASE_URL env vars, all commands: signals list/get, companies list/get, facets, sources list, export signals, admin source run/scheduler flush/reconcile + later additions: companies timeline (O.2), feed-url (R.3), trends hiring (P.3) + --save/--clear-saved saved filter profiles (N.1). 59 tests across 5 suites (api-client 14 mocked-fetch, cli-process 5 real subprocess, config-store 15 pure temp-dir, signals-list-saved-filters 7 real subprocess + unreachable-host, feed-url 6 pure).",
+      "--format json|table CLI-wide flat-list renderer (G.5 section 16.2): extracted out of raw argv in main.ts before citty sees it, one --format-table-or-equals chokepoint so no per-command flag drift. JSON default stays byte-identical (no pretty-print). printResult(result, tableRenderer?) per call site, flat-list commands render aligned no-ANSI no-box-draw tables, genuinely nested shapes (signal detail evidence[], company detail recentSignals[], timeline buckets, feed-url single-value) decline and fall back to JSON with a one-line stderr note. Tests: 2 new --format stripping cases in cli-process.test.ts.",
+      "Saved filter profiles (Milestone N): apps/cli/src/config-store.ts, stores raw pre-parse flag strings (not signalsQuerySchema parsed/defaulted output so sort/limit/minScore defaults never silently baked in), ~/.hiring-signals/config.json primary or $XDG_CONFIG_HOME/hiring-signals/config.json fallback. hs signals list --role X --location-mode Y --save writes it; no-flag run auto-applies with a one-line stderr note on stdout-purity; --clear-saved removes with JSON confirmation; corrupt/invalid saved JSON silently discarded via signalsQuerySchema.safeParse.",
+      "Company hiring timeline API + CLI (Milestone O): getCompanyHiringTimeline repo function (two round trips: jobs bucketed + signals bucketed, UNION considered then rejected — see header comment for reasoning) with 7/14/30 caller-selectable bucketDays, companyTimelineQuerySchema with resolveTimelineWindow pure unit-tested helper (90-day MAX_TIMELINE_WINDOW_DAYS cap with explicit 400, not silent truncation), route returns { company, buckets } envelope, CLI command hs companies timeline <slug> with same params.",
+      "Hiring trend API + CLI (Milestone P): P.1 update-company.mjs --industry --employee-band --remote tags added; P.2 migration 0007_trends_role_first_seen_index.sql (idx_jobs_trends on jobs(role_primary, first_seen_at, country_code) — existing idx_jobs_filters led with company_id which is backwards for cross-company unfiltered ranking), getHiringTrends repo (3 queries: ranked aggregation, top-locations per company, latest-signal lookup), trendsQuerySchema with acceleration_desc/volume_desc/newest_signal/velocity_desc sorts, buildTrendsCacheKey + resolveTrendsSince pure helpers unit-tested in routes/trends.test.ts, 5-min KV cache per actual-affecting-params only. P.3 hs trends hiring --role <comma-list> --industry --country --since --sort --limit; velocity_desc sort + null-sorts-last logic added in Q.3.",
+      "Hiring velocity per company (Milestone Q): computeHiringVelocity pure function in packages/domain/src/hiring-velocity.ts (V = clamp(0.40*acceleration + 0.25*breadth + 0.20*volume_norm + 0.15*persistence, 0, 1) * 100), 12 hand-computed unit tests in hiring-velocity.test.ts covering cold=0 / multi-loc-accel-high / stale-decay edge cases. 3 new nullable companies columns via migration 0008_company_velocity_score.sql: hiring_velocity_score, velocity_score_version, velocity_computed_at (NULL = not-yet-computed, never 0 fabricated). handleVelocityRecompute in reconciliation runs after per-signal passes, once per company tracked via touchedCompanyIds Set built during scoring loop, uses new getCompanyActivityStats (all-rolls aggregate — sibling to H.2's per-role getCompanyRoleActivityStats) then updateCompanyVelocityScore. Q.3 surfaced on companies list/detail and trends hiring with sort=velocity_desc option (nulls sort last), plus shared HIRING_VELOCITY_DISCLAIMER constant in meta on all three endpoints. 1 live-D1 velocity_desc sort test in trends-repo.test.ts (high/low/uncomputed, verifies null sorts last); api-client.test.ts extended for disclaimer field round-trip.",
+      "Jobs requisitionId column persisted (spec section 7 duplicate-detection gap): migration 0009_jobs_requisition_id.sql adds nullable jobs.requisition_id column, upsertJob persists it on INSERT and UPDATE branches, ingest-consumer passes job.requisitionId through, 2 live-D1 tests in jobs-repo.test.ts (INSERT persistence + later UPDATE, and NULL when adapter omits). ingestion-metrics.mjs updated to run two separate GROUP BY queries split on requisition_id IS NULL rather than bucketing all NULL-requisition rows together at company/title/location level.",
+      "RSS feed endpoint (Milestone R): buildRssFeed pure serializer in lib/text/rss.ts (7 tests: shell validity, empty feed, RFC 822 dates, XML escaping, guid uniqueness, <link> omission on null canonical_url, description content formatting). GET /api/v1/feed.rss route with feedQuerySchema (same param names as signals route, not role/workMode/since original sketch), FEED_ROW_CAP=50 + own listSignalsForFeed query (next to listSignalsForExport + EXPORT_ROW_CAP), Last-Modified + ETag (via computeContentHash over rendered XML) + 304 Not Modified on matching If-None-Match, no KV caching. hs feed-url CLI command builds byte-identical shape URL via same queryFromRecord serializer, 6 tests in feed-url.test.ts.",
+      "API error-rate monitoring (G.5 section 16.3.6 gap closed): [[analytics_engine_datasets]] binding API_METRICS (dataset hiring_signals_api_metrics) added to wrangler.toml, middleware apps/api/src/middleware/api-metrics.ts registered via app.use(\"*\", ...) immediately after request-id. Writes one data point per completed request: blobs = [method, normalizeRoutePath(path)], doubles = [status, durationMs], indexes = [routeShape]. normalizeRoutePath collapses UUIDs into :id via UUID regex, company slugs and other non-static-route words into :param via a not-in-static-route-word-set fallback, cross-checked against every actual route file (sources has no :sourceId detail route; export is literal signals.csv; feed is literal feed.rss). writeDataPoint wrapped in its own try/catch so dropped metric never propagates to fail a request. 12 pure-function tests in api-metrics.test.ts for normalizeRoutePath.",
+      "Source-health.mjs stuck-run detection gap (G.3, 2026-08-11): derivedStatus() only branched on enabled/consecutive_failures/'failed_final' so 277 openai rows stuck permanently at 'running' showed as 'healthy, 0 failures'. Added running_minutes via correlated scalar subquery on the same latest-run lookup (julianday delta * 24*60), STALE_RUNNING_MINUTES=90, new 'stuck' status branch checked BEFORE degraded/failed so low consecutive_failures can't mask it. Verified live: post-2026-08-11 subrequest-batching fix no source currently stuck, correctly reports healthy; 90-minute bound is generous over shortest 360-min poll interval to catch 'never resolved' not 'slow but real'.",
+      "Ingest consumer per-job D1 subrequest over-cap fix (J.4, same-day root cause from ingestion-metrics 9.1%): processNormalizedJob was 3 D1 calls/job (upsert + observation + lifecycle) deterministically exceeding the 1000-service-subrequest cap at ~340+ jobs. Split upsertJob into prepareJobUpsert (prerequisite SELECT, returns {sql, params} not executed) + thin wrapper preserving signature; same for applyLifecycleTransition -> buildLifecycleStatement pure builder + thin wrapper. Now processNormalizedJob does SELECT -> compute lifecycle in JS -> single client.batch([upsertStmt, lifecycleStmt]) for the pair: cuts that pair from 2 D1 calls to 1. insertObservationIdempotent deliberately kept unbatched: its idempotency contract depends on catching its own UNIQUE violation in isolation, batching it would let a legitimate retry's no-op roll back the other writes (documented in file header). processMissingJobs left unbatched.",
+      "Ingest consumer retry logic: provider validation errors and schema mismatches (config/programmer errors) now skip retry and set correct source_run.status and error_code. Only network failures (429, 5xx) trigger exponential backoff retry, MAX_RETRY_ATTEMPTS=5. Retry increment bug fixed: replaced broken native message.retry() with explicit INGEST_QUEUE.send() carrying attempt + 1, so attempts actually increment. Retry-After header honored for 429s.",
+      "Scheduler stacked-run growth fix (2026-08-14, 577 concurrent running rows root cause): getDueSources selects any source where next_poll_at IS NULL OR next_poll_at <= now(). next_poll_at only advances via markSourceSuccess on fully-successful final-chunk completion, so boards that never completed (openai, whatever the per-chunk kill itself is — still unconfirmed) had next_poll_at NULL forever, so EVERY 15-min cron tick stacked a brand-new runId from chunkOffset 0, regardless of whether a prior run's own continuation chain was still active. Fix: new hasRecentRunningRun(client, sourceId, now, staleAfterMinutes=45) in packages/db/src/sources-repo.ts — true if a source_runs row exists still status='running' with started_at within 45 minutes. handleScheduled now calls it before enqueueing and skips any due source still in flight. 45 min is well over one 15-min cron interval so legitimate multi-chunk continuation is never misflagged. 5 new live-D1 tests in sources-repo.test.ts; 3 new in scheduler.test.ts (which also fixed cleanup order to delete source_runs before sources for FK safety; 6f82cd4a deployed 2026-08-14, verified live post-deploy: openai concurrent running count held flat across 2 full cron ticks, single active run's jobs_normalized advanced 320->480 with scheduler_skip_already_running logged correctly)",
+      "ENVIRONMENT var mislabel fix (apps/api wrangler.toml hygiene): top-level [vars] ENVIRONMENT was still 'development' from scaffolding despite top-level config being actual production deploy (no [env.production] block exists; only [env.ci]). Confirmed actually unused at runtime — only reference is Bindings type declaration, no route/middleware/job reads it — but corrected to 'production' for hygiene so any future code that branches on env finds the right label immediately.",
+      "JOBS_PER_CHUNK re-tune from 150 to 40 after full end-to-end processNormalizedJob cost accounting: J.4 only optimized the upsert+lifecycle pair from 3->2 calls, but observation insert + conditional embed + Vectorize upsert + classification update + activity stats read + active signal read + signal create + evidence append + generateCompanySignals triggers all add up to roughly 14 worst-case subrequests per new job (not ~2). 150*14 ~ 2100 was well over the 1000 free-plan cap. 40*14 ~ 560 leaves comfortable headroom. JOBS_PER_CHUNK_OVERRIDE env seam also added for tests to use tiny chunk sizes without touching the production constant.",
+      "Ingest consumer multi-chunk continuation (2026-08-13, 700+ Ashby boards never completing): processes at most JOBS_PER_CHUNK jobs per invocation starting at chunkOffset, then re-enqueues a continuation IngestMessage for the remainder instead of processing the full board. Continuation forwards sourceId + boardFetchMeta + runId from the original so dedupe/observations stay coherent across chunks. JOBS_PER_CHUNK_OVERRIDE test seam for small-chunk tests. Combined with JOBS_PER_CHUNK=40, this keeps any single invocation's subrequest budget inside the 1000-subrequest cap.",
+      "Temporary diagnostic checkpoint recordSourceRunProgress(sourceRunId, jobsNormalized): writes only the jobs_normalized counter column every 10 jobs inside the chunk loop — never touches status/completed_at so it never interferes with recordSourceRunComplete. Added because multiple openai runs died partway through a chunk with zero JS-catchable error and no error_code populated — a platform-level kill bypasses the entire function's try/catch leaving jobs_normalized permanently NULL. Explicitly documented as temporary in both function header and ROADMAP.md G.3's follow-up checkbox, to be removed once the actual per-chunk kill is root-caused via wrangler tail.",
+      "Post-fix abandoned-run + test-fixture cleanup in production D1 (2026-08-14): all 577 pre-fix orphaned status='running' rows with started_at before deploy cutoff 2026-08-14T00:00:00Z closed out via direct D1 write: status='failed', error_code='abandoned_run_cleanup', descriptive error_message_safe, computed duration_ms. Verified 0 rows before cutoff remain; 2 genuinely still-active post-cutoff runs left untouched. Separately found and removed one leaked test-fixture company/source sitting live in production D1 (board_token: test-ic-happy-src-2-*, public_url: https://example.invalid/*, slug test-ic-happy-1-* — owner of 1 of the 577 rows). Full dependency cascade deleted in FK-safe order: signal_evidence -> signals -> job_observations -> jobs -> source_runs -> sources -> companies, verified 0 residue."
     ],
     "pending": [
-      "apps/cli (Milestone F.1), the new primary interface -- planned, no code yet",
-      "classification assist from embeddings (I.5, explicitly deferred until I.1-I.4 have run in production)",
-      "production deployment (Cloudflare Workers API; no UI to deploy)"
+      "G.3 follow-up: root cause of per-chunk silent-kill in ingestion chunk-continuation runs (openai board climbs to ~jobs_normalized=480 then stalls with 0 JS-catchable errors). Needs wrangler tail output during a live openai cron tick. Once confirmed, tune JOBS_PER_CHUNK definitively, remove the temporary recordSourceRunProgress diagnostic checkpoint."
+    ],
+    "explicitlyDeferred": [
+      "Classification assist via Workers AI (Milestone I.5): deliberately deferred until I.1-I.4's existing hybrid-search pipeline has real production traffic to measure. No open code work currently scoped; revisit once signal volume and search patterns justify the extra latency/cost."
     ],
     "explicitlyNotPlanned": [
-      "authentication of any kind -- the app is public/free permanently by deliberate design decision (spec sections 3, 10.5, 11.1), not a gap awaiting Cloudflare Access or similar"
+      "Authentication / user accounts / login flows on the read surface — app is public/free permanently by deliberate design decision (spec sections 3, 10.5, 11.1), not a gap awaiting Cloudflare Access or similar. Admin trigger endpoints already use bearer-secret gating which is the extent of auth ever planned.",
+      "Preview / staging tiers with separate deploy targets — G.4 environment-scope decision (2026-08-06, repo owner): stays simplified as Local (wrangler dev + local D1) + Production (hiring-signals) + isolated CI database (hiring-signals-ci) for live-D1 test runs only. No separate Preview/Staging registries planned. If this decision is ever revisited, the retained G.4 guardrail applies: preview/staging must NEVER point at production secrets or write bindings (spec section 15.1)."
     ]
   },
   "features": {
     "signals": {
-      "roleLevel": ["new matching roles", "reopened roles", "still active roles"],
-      "companyLevel": ["hiring bursts", "role acceleration", "multi-location expansion", "persistent demand"]
+      "roleLevel": ["new matching roles", "reopened roles (3-day absence threshold before flagging)", "still active roles (daily reconciliation appends still_active evidence to prevent score decay)"],
+      "companyLevel": ["hiring bursts (3+ same-role postings in 14d)", "role acceleration (pace vs 56-day baseline via computeAcceleration)", "multi-location expansion (3+ distinct locations same role)", "persistent demand (30+ days continuously active)"]
     },
     "evidence": {
       "fields": [
         "source platform",
         "canonical public URL",
         "source job identifier",
-        "timestamps",
+        "timestamps (first_seen_at, last_seen_at, first_detected_at, last_detected_at)",
         "title",
         "location",
-        "department"
+        "department",
+        "requisition_id (when adapter exposes it, for duplicate detection tiering)"
       ]
     },
-    "filtering": ["by role", "by location mode", "by country", "by source", "by signal type", "by score", "by company", "keyword search on company/headline/summary"],
-    "export": "CSV export of filtered signal list (GET /api/v1/export/signals.csv, spec section 10.6, live)",
-    "ingestion": "Cloudflare Worker cron triggers (15-min source scheduler, daily reconciliation) with adaptive cadence per provider"
+    "filtering": ["by role (10 IT categories, comma-delimited list singular --role flag)", "by location mode (remote/hybrid/onsite)", "by country (ISO 3166-1 alpha-2 uppercase)", "by source ATS provider", "by signal type", "by minimum score (0-100)", "by company (free-text company search, LIKE wildcards properly escaped)", "by recency observedSince ISO-8601 window", "keyword search on company name / signal headline / signal summary", "hybrid keyword+semantic search via Workers AI embeddings + Vectorize cosine on page 1 of results"],
+    "savedFilterProfiles": "CLI-local only: hs signals list --save stores raw pre-parse filter flags (not schema-parsed defaults, so sort/limit/minScore are NEVER silently baked into saved profile) at ~/.hiring-signals/config.json or $XDG_CONFIG_HOME/hiring-signals/config.json. No-flag invocation auto-applies with a one-line stderr note so stdout stays pure JSON. --clear-saved removes with JSON confirmation. Corrupt JSON silently discarded via safeParse.",
+    "companyHiringTimeline": "GET /companies/:slug/timeline + hs companies timeline. Time-bucketed 7/14/30-day caller-selectable windows (90-day hard cap with explicit 400 on exceed). newJobsCount/closedJobsCount (approximate — exact close date not observable, documented as such)/activeJobsCount per bucket + roleBreakdown/locationBreakdown top-5 each + distinct signalTypes per bucket.",
+    "crossCompanyHiringTrends": "GET /trends/hiring + hs trends hiring. Cross-company ranked analytics with acceleration_desc/volume_desc/newest_signal/velocity_desc sorts, industry free-text / country / role comma-list / recency-since filters, per-company top-5-location breakdown, KV-cached 5 minutes per actual-affecting-params cache key (resolveTrendsSince + buildTrendsCacheKey pure helpers unit-tested).",
+    "hiringVelocityPerCompany": "Investor-grade 0-100 company score: V = clamp(0.40*acceleration + 0.25*breadth + 0.20*volume_norm + 0.15*persistence, 0, 1) * 100. Reuses computeAcceleration/computeBreadth from signal-score.ts but feeds company-wide counts. Persisted as 3 nullable companies columns (hiring_velocity_score, velocity_score_version, velocity_computed_at) — NULL = not-yet-computed, never fabricated as 0. Recomputed daily only for companies that had >=1 signal genuinely reconciled in that run (touchedCompanyIds Set tracking, not scanned wholesale). Surfaced on companies list/detail + trends hiring, velocity_desc sort option (nulls sort last). Shared HIRING_VELOCITY_DISCLAIMER: 'Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget.' (spec section 11.3) carried in meta on all three endpoints.",
+    "rssFeed": "GET /feed.rss + hs feed-url. RSS 2.0 at 50-item cap, ETag/Last-Modified/304 Not Modified conditional-request support, XML-escaped content, RFC 822 dates. <link> omitted entirely for aggregate signals with no job-linked evidence (canonical_url is null). Filterable by the same signal filters as the REST route; same-param names, byte-identical query shape via shared queryFromRecord serializer in CLI. No KV caching; conditional requests are the whole optimization.",
+    "export": "CSV export of filtered signal list (GET /api/v1/export/signals.csv, spec section 10.6, live) — RFC-4180 via lib/text/csv.ts, 2000-row safety cap with X-Export-Truncated header. Also exposed as hs export signals [--filters] [--out path] in CLI (omitting --out streams raw CSV to stdout as the only command whose stdout isn't JSON; with --out writes file + prints write confirmation JSON).",
+    "ingestion": "15-min cron scheduler with deterministic per-source jitter across a 10-minute window on every tick -> INGEST_QUEUE with max_batch_size=10 sequential consumer. Multi-chunk continuation (40 jobs/invocation max, re-enqueue rest) to stay under 1000-service-subrequest cap. hasRecentRunningRun(45-min) stacking guard prevents scheduler-run piling for boards that never complete. Daily reconciliation at 06:00 UTC: per-signal stale score recompute (no last_detected_at touch) + per-touched-company hiring velocity recompute. Ingest idempotent per (sourceId, runId).",
+    "monitoringAndObservability": [
+      "source-health.mjs: per-source derived status derivation — stale (next_poll_at over 2x poll_interval in past) / stuck (running_minutes > 90 via correlated subquery, catches the 277-row openai failure mode) / degraded (consecutive_failures >=1 and not stuck/stale) / failed_final (consecutive_failures >= 3 and latest run failed_final) / disabled",
+      "ingestion-metrics.mjs: 30-day success rate (succeeded / total runs) + duplicate detection rate with/without requisitionId tiering (two GROUP BY queries, split on requisition_id IS NULL because only 3/8 adapters expose requisitionId and a single global bucket would silently collapse all NULL rows to same company/title/location)",
+      "Analytics Engine API_METRICS middleware: one data point per completed request — normalizeRoutePath collapses UUID/slug segments to keep cardinality bounded, doubles=[status, durationMs], writeDataPoint try/catch swallowed so dropped metric never propagates"
+    ]
   },
   "nonGoals": [
     "no collection of private profiles or personal data",
     "no bypassing logins, CAPTCHAs, rate limits, robots directives",
-    "no general-purpose HTML scraping (official ATS APIs only)",
-    "no push notifications, email digests, or webhook alerting",
+    "no general-purpose HTML scraping (official documented ATS APIs only)",
+    "no email digests, webhook alerting, or browser push notifications (RSS feed route via external feed reader handles 'notify me later' gap — feed is still pull-from-the-reader's-perspective, not a direct outbound push from this app storing destination addresses)",
     "no automated sending of cold email or LinkedIn messages",
-    "no claims about confirmed projects, budgets, or purchasing decisions"
+    "no claims about confirmed projects, budgets, or purchasing decisions; company-level hiring claims always carry the shared HIRING_VELOCITY_DISCLAIMER"
   ],
   "commands": {
     "install": "pnpm install",
     "dev": {
-      "api": "pnpm --filter @hiring-signals/api dev"
+      "api": "pnpm --filter @hiring-signals/api dev",
+      "cli": "apps/cli has no server: run `pnpm --filter @hiring-signals/api dev` in one terminal, then `HS_API_BASE_URL=http://localhost:8787 node apps/cli/bin/hs.mjs <command>` in another"
     },
-    "lint": "pnpm lint",
-    "typecheck": "pnpm typecheck",
-    "build": "pnpm build",
-    "format": "pnpm format"
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "format": "pnpm -r format",
+    "opsScripts": {
+      "note": "All ops scripts live at infrastructure/scripts/*.mjs, run from repo root, require Node >=22 for wrangler compatibility (nvm use 24.18.0).",
+      "addCompany": "node infrastructure/scripts/add-company.mjs --help",
+      "addSource": "node infrastructure/scripts/add-source.mjs --help",
+      "updateSource": "node infrastructure/scripts/update-source.mjs --help (--run-now clears next_poll_at for immediate manual ingestion)",
+      "updateCompany": "node infrastructure/scripts/update-company.mjs --help (--industry --employee-band --remote tags; blank values REJECTED not silently cleared)",
+      "importSources": "node infrastructure/scripts/import-sources.mjs path/to/sources.csv (bulk CSV onboarding)",
+      "sourceHealth": "node infrastructure/scripts/source-health.mjs (stuck/stale/degraded/disabled derivation)",
+      "ingestionMetrics": "node infrastructure/scripts/ingestion-metrics.mjs (success rate + duplicate rate with requisitionId tiering)",
+      "backfillEmbeddings": "node infrastructure/scripts/backfill-embeddings.mjs (Vectorize backfill for semantic search)"
+    },
+    "testing": {
+      "fastPureLogic": "pnpm --filter @hiring-signals/domain test (~93 tests, ~1s, pure functions + Zod)",
+      "fastAdapterFixtures": "pnpm --filter @hiring-signals/adapters test (~114 tests, ~3s, static JSON/XML board-response fixtures, no network)",
+      "liveCloudflare": "Requires CF_TOKEN/CLOUDFLARE_API_TOKEN env + real network (AGENTS.md zero-mocks policy). ALWAYS scope to the specific file you touched — full suite is 10+ minutes due to ~3.7s per D1 subprocess cold start. Pattern: cd packages/db && npx vitest run test/signals-export-repo.test.ts (or test/*-repo.test.ts / apps/api/test/**/*.test.ts). apps/api vitest has 90s per-test default timeout; reconciliation/ingest-consumer suites can genuinely exceed even in isolation (full pipeline is ~65s min for the happy-path end-to-end).",
+      "ciCoverage": ".github/workflows/ci.yml on every push/PR: typecheck + lint + domain/adapters pure-logic tests only (~45s total). Live-D1/db/api suites are manual-only, require live credential."
+    }
   },
   "specification": "hiring-signals-spec.md",
+  "roadmap": "ROADMAP.md (task-by-task checked-off status, verification commands inline — single source of truth for what's done vs. pending)",
+  "agentInstructions": "AGENTS.md (repo-wide policy: fix-and-verify before advancing, zero-mocks live Cloudflare testing with two documented permanent exceptions, record session memory via Butler MCP before ending, scope test runs to one file at a time not full suites for live D1/AI/Vectorize)",
+  "changelog": "CHANGELOG.md (Keep a Changelog 1.0 format, Semantic Versioning)",
   "relatedProjects": {
     "aiAgentCoordination": [
       {
         "name": "Butler",
-        "description": "Persistent coordination and memory layer for AI coding agents"
+        "description": "Persistent coordination and memory layer for AI coding agents — cross-tool session continuity, TODO tracking, shared project state."
       },
       {
         "name": "SkillsGuard",
-        "description": "Security audit tool for AI agent skill packages"
+        "description": "Security audit tool for AI agent skill packages — detects prompt injection, data exfiltration, and supply-chain attacks."
       }
     ],
     "securityTools": [
       {
         "name": "BurpAPISecuritySuite",
-        "description": "Burp Suite extension for API security testing"
+        "description": "Burp Suite extension for API security testing — 15 attack types, 108+ payloads, BOLA/IDOR detection."
       },
       {
         "name": "Mcpwn",
-        "description": "Automated security scanner for Model Context Protocol servers"
+        "description": "Automated security scanner for Model Context Protocol servers — detects RCE, path traversal, prompt injection."
       },
       {
         "name": "DiffCatcher",
-        "description": "Git repo discovery, diff capture, code element extraction"
+        "description": "Git repo discovery, diff capture, code element extraction for change-set monitoring."
       },
       {
         "name": "HoneypotScan",
-        "description": "Honeypot detection service for security research"
+        "description": "Honeypot detection service for security research on IP/domain reputation."
       },
       {
         "name": "CheckAPI",
-        "description": "LLM API key validator for multiple providers"
+        "description": "LLM API key validator for multiple providers — privacy-first, client-side validation, no server round-trip."
       },
       {
         "name": "SeekYou",
-        "description": "Host intelligence aggregator — unified OSINT"
+        "description": "Host intelligence aggregator — unified OSINT across 15 sources for IPs, domains, and ASNs."
       }
     ],
     "mcpSecurityServers": [
       {
         "name": "burp-mcp-server",
-        "description": "MCP server for Burp Suite Professional"
+        "description": "MCP server for Burp Suite Professional — automated vulnerability scanning via AI assistants."
       },
       {
         "name": "nuclei-mcp",
-        "description": "MCP server for Nuclei"
+        "description": "MCP server for Nuclei — multi-target template-based scanning with severity filtering."
       },
       {
         "name": "nmap-mcp",
-        "description": "MCP server for Nmap"
+        "description": "MCP server for Nmap — stealth recon, vulnerability/NSE script scanning, host discovery."
       },
       {
         "name": "frida-mcp",
-        "description": "MCP server for Frida"
+        "description": "MCP server for Frida — dynamic instrumentation on Android/iOS/macOS/Linux/Windows, SSL pinning bypass."
       }
     ],
     "privacyAndEncryption": [
       {
         "name": "Timeseal",
-        "description": "Time-locked encryption vault with Dead Man's Switch"
+        "description": "Time-locked encryption vault with Dead Man's Switch — AES-256 split-key crypto, ephemeral seals."
       },
       {
         "name": "Sanctum",
-        "description": "Zero-trust encrypted vault with cryptographic plausible deniability"
+        "description": "Zero-trust encrypted vault with cryptographic plausible deniability — XChaCha20-Poly1305, Argon2id KDF."
       },
       {
         "name": "GhostChat",
-        "description": "True P2P encrypted chat via WebRTC"
+        "description": "True P2P encrypted chat via WebRTC — zero servers, zero storage, self-destructing timed messages."
       },
       {
         "name": "xmrproof",
-        "description": "Monero payment verification, 100% client-side"
+        "description": "Monero payment verification, 100% client-side with no blockchain-indexer dependency."
       },
       {
         "name": "GhostReceipt",
-        "description": "Anonymous receipt generation with zero-knowledge proofs"
+        "description": "Anonymous receipt generation with zero-knowledge proofs for transaction verification without disclosure."
       }
     ]
   },
@@ -184,28 +247,41 @@
     "ats",
     "job-seeker",
     "cloudflare-workers",
+    "cloudflare-d1",
+    "vectorize",
+    "workers-ai",
+    "semantic-search",
     "typescript",
     "cli",
+    "hiring-velocity",
     "job-monitoring",
+    "agent-first",
+    "rss-feed",
+    "market-intelligence",
     "recruitment"
   ],
   "aiAgentDiscovery": {
-    "primaryUseCase": "Job discovery and hiring intelligence platform",
-    "targetAudience": "Job seekers, IT specialists, recruitment researchers -- specifically AI agents querying on a person's behalf, per apps/cli's design",
+    "primaryUseCase": "Job discovery and hiring intelligence platform — CLI-first design explicitly optimized for AI agents querying on a person's behalf",
+    "targetAudience": "IT job seekers (active and passive), analysts/investors tracking hiring velocity, recruitment researchers — specifically AI agents acting on a person's instructions via CLI (JSON-by-default stdout, single-JSON-object stderr errors, exit codes by convention, never interactive prompts)",
     "keyDifferentiators": [
-      "Direct ATS API integration",
-      "Real-time signal detection",
-      "Evidence-based job verification",
-      "CLI-first, JSON-by-default, built for agent callers",
-      "Pull-only delivery model"
+      "Direct official ATS API integration, never HTML scraping",
+      "Real-time signal detection beyond raw listings: hiring bursts, role acceleration, multi-location expansion, persistent demand",
+      "Investor-grade company-level hiring velocity score with documented formula and null-for-uncomputed semantics",
+      "Evidence-based job verification: every signal carries canonical URL, source job ID, timestamps, not AI hallucinated listings",
+      "CLI-first, JSON-by-default, built for agent callers: exit codes, never interactive prompts, stdout/stderr strict separation, saved filter profiles for automation",
+      "Hybrid keyword + semantic search (Workers AI embeddings + Vectorize cosine) degrades gracefully to keyword-only",
+      "RSS feed route with conditional-request support: 'notify me later' is external feed-reader poll, no email/webhook push, no account/personal-data storage requirement",
+      "Pull-only delivery model: this app never stores a destination address to initiate outbound contact with a user"
     ],
     "implementationPatterns": [
-      "Monorepo with pnpm workspaces",
-      "TypeScript strict mode",
-      "Zod schema validation",
-      "Cloudflare edge computing",
-      "Scheduled cron-based ingestion",
-      "Per-provider health isolation"
+      "Monorepo with pnpm workspaces, 6 workspace packages, strict tsconfig with noUncheckedIndexedAccess on",
+      "Zod schema validation shared across API routes and CLI via packages/domain exports (signalsQuerySchema, trendsQuerySchema, companyTimelineQuerySchema) — single source of truth",
+      "Cloudflare edge computing: Cloudflare Workers + D1 + KV + Queues + Vectorize + Workers AI + Analytics Engine bindings, no Node.js backend server process",
+      "Scheduled cron-based ingestion pipeline with queue fan-out, per-provider health isolation, multi-chunk continuation for large boards, in-flight stacking guard",
+      "Parse-don't-validate everywhere: Zod .parse() with central errorHandler mapping thrown ZodError to 400 INVALID_FILTER, parameterized D1 statements never string concatenation",
+      "Per-D1-call circuit-breaker bulkhead (lib/http/circuit-breaker.ts on the 'db' resource)",
+      "SHA-256 base64url hashing of rate-limit identifiers before KV key construction for IPv6 injection prevention + IP PII scrubbing",
+      "Cross-driver UNIQUE-constraint error detection for consistent idempotency behavior across wrangler-CLI subprocess transport and in-Worker D1 binding"
     ]
   }
 }
