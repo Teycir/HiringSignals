@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Masthead } from "@/components/masthead";
 import { ScrollProgress } from "@/components/scroll-progress";
+import { Footer } from "@/components/footer";
 
 // spec 10.2: top-level layout -- masthead + filter rail (fixed
 // 280-320px desktop) + fluid content column. Mobile: filter rail
@@ -45,6 +46,10 @@ export function AppShell({ children, filters }: AppShellProps) {
         ) : null}
         <main className="flex-1 min-w-0">{children}</main>
       </div>
+      {/* Footer rendered here (not in root layout.tsx) so it appears on
+          every route without each page asking for it -- AppShell is the
+          one wrapper every route shares. Ported from ArxivExplorer. */}
+      <Footer />
     </div>
   );
 }
