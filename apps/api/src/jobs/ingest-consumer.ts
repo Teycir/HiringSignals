@@ -175,19 +175,114 @@ const MAX_BACKOFF_SECONDS = 15 * 60;
 export const JOBS_PER_CHUNK = 40;
 
 /**
- * Resolves the effective per-chunk job limit for one invocation: the real
- * JOBS_PER_CHUNK=40 in every real deployment, or env.JOBS_PER_CHUNK_OVERRIDE
- * when it's set to a positive integer (test-only seam -- see that binding's
- * own comment in bindings.ts for why it exists). Any unset/non-numeric/
- * non-positive override value falls back to JOBS_PER_CHUNK rather than
- * silently producing a 0- or negative-length chunk, since a malformed test
- * env var should degrade to production behavior, not to a broken loop.
+ * Resolves the effective per-chunk job-count CEILING for one invocation:
+ * the real JOBS_PER_CHUNK=40 in every real deployment, or
+ * env.JOBS_PER_CHUNK_OVERRIDE when it's set to a positive integer
+ * (test-only seam -- see that binding's own comment in bindings.ts for
+ * why it exists). Any unset/non-numeric/non-positive override value
+ * falls back to JOBS_PER_CHUNK rather than silently producing a 0- or
+ * negative-length chunk, since a malformed test env var should degrade
+ * to production behavior, not to a broken loop.
+ *
+ * ROADMAP.md G.3 follow-up (2026-08-15, root cause found): this value
+ * alone can no longer decide chunk boundaries -- it's now a hard safety
+ * ceiling, superseded in practice by SubrequestBudget below. Kept
+ * because a ceiling on the job COUNT is still a useful backstop
+ * (bounds worst-case D1/KV/loop overhead even independent of the
+ * Cloudflare-service-subrequest count SubrequestBudget tracks), and
+ * because JOBS_PER_CHUNK_OVERRIDE is an existing, tested seam other
+ * tests already depend on.
  */
 function resolveJobsPerChunk(env: Pick<Bindings, "JOBS_PER_CHUNK_OVERRIDE">): number {
   const raw = env.JOBS_PER_CHUNK_OVERRIDE;
   if (raw === undefined) return JOBS_PER_CHUNK;
   const parsed = Number.parseInt(raw, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : JOBS_PER_CHUNK;
+}
+
+/**
+ * Root cause, confirmed 2026-08-15 (ROADMAP.md G.3 follow-up): the prior
+ * fix (JOBS_PER_CHUNK=40, a fixed JOB-COUNT cap sized against a single
+ * "~14 subrequests/job worst case" manual estimate) assumed every job in
+ * a chunk costs roughly the same. It doesn't -- an unchanged existing
+ * job returns early after ~2 D1 calls (upsert/lifecycle batch +
+ * observation insert), while a brand-new or content-changed job pays
+ * the full ~14-call path (embed + Vectorize upsert, classification,
+ * activity-stats + active-signal reads, signal create/refresh, evidence
+ * append, plus up to 4 company-level signal types each costing a
+ * read+write+evidence-append of their own). A 40-job chunk landing
+ * disproportionately on new/changed jobs (exactly what a large,
+ * previously-unpolled board like openai's produces on its first
+ * successful run) can still exceed the real 1,000-subrequest-per-
+ * invocation platform cap mid-chunk -- a kill that happens below the
+ * JS layer entirely (no thrown error, nothing the outer try/catch in
+ * handleIngestMessage can observe), which is exactly the silent-death
+ * symptom this file's own history describes.
+ *
+ * Fix: stop estimating and start counting. SubrequestBudget tracks the
+ * REAL number of Cloudflare-service calls (D1 batch/run, AI.run,
+ * Vectorize upsert/query) issued so far this invocation, threaded
+ * through processNormalizedJob and its callees. The chunk loop
+ * (handleIngestMessage) checks remaining budget before starting each
+ * job and breaks -- re-enqueuing the exact next unprocessed job as the
+ * next chunk's offset -- once the budget is exhausted, regardless of
+ * how many/few jobs that turned out to be. This makes the chunk
+ * boundary self-correcting against real per-job cost variance instead
+ * of a static guess, and removes the platform-kill failure mode this
+ * function exists to prevent, rather than just estimating around it
+ * more precisely.
+ *
+ * SUBREQUEST_SAFETY_MARGIN leaves headroom below Cloudflare's literal
+ * 1,000 cap for: (a) the fixed per-invocation overhead already spent
+ * before the loop starts (getSourceById, resolveSourceRun, the board
+ * fetch itself), (b) the two fixed calls after the loop on the final
+ * chunk (processMissingJobs's read, markSourceSuccess +
+ * recordSourceRunComplete), and (c) the fact that a single job's own
+ * call count is only known AFTER it's fully processed -- the loop can
+ * only check budget BEFORE starting a job, so the last job processed
+ * in a chunk can overshoot the checked threshold by up to one job's
+ * worst-case cost (~14). 700 (1,000 - 300) comfortably covers both:
+ * even the worst-case single-job overshoot (~14) plus the fixed
+ * per-invocation overhead (well under 20) stays inside the 1,000 cap.
+ */
+export const SUBREQUEST_SAFETY_MARGIN = 700;
+
+/**
+ * Live per-invocation counter for real Cloudflare-service subrequests
+ * (D1, AI, Vectorize -- NOT the upstream ATS fetch, which already
+ * happened once per invocation before this budget starts being
+ * consulted). One instance per handleIngestMessage call, passed by
+ * reference into processNormalizedJob and threaded down into its
+ * callees that themselves issue subrequests (embedAndUpsertJob,
+ * applyCentroidNudge, generateCompanySignals). A plain mutable object
+ * rather than a return-value accumulator: every one of those functions
+ * already returns a signals-created count for the caller's own
+ * bookkeeping, and threading a second return value (and remembering to
+ * add it) through every call site is more error-prone than a single
+ * shared counter mutated in place, the same tradeoff this file's
+ * `signalsCreated +=` accumulation pattern already accepts elsewhere.
+ *
+ * Exported (with chargeSubrequests/budgetExhausted below) purely for
+ * apps/api/test/jobs/ingest-consumer-budget.test.ts's pure-function unit
+ * tests -- this file's own live-D1/AI/Vectorize suite
+ * (ingest-consumer.test.ts) is manual-only and can't run in CI (see its
+ * header comment), so the budget-driven chunk-boundary MATH itself
+ * (independent of any live Cloudflare binding) gets a dedicated,
+ * always-runnable test file instead, same "pure function, no live-
+ * binding dependency" category as companies.test.ts's
+ * resolveTimelineWindow / trends.test.ts's resolveTrendsSince.
+ */
+export interface SubrequestBudget {
+  used: number;
+}
+
+export function chargeSubrequests(budget: SubrequestBudget, count: number): void {
+  budget.used += count;
+}
+
+/** True once continuing would risk exceeding the safety-margin threshold. */
+export function budgetExhausted(budget: SubrequestBudget): boolean {
+  return budget.used >= SUBREQUEST_SAFETY_MARGIN;
 }
 
 function backoffSeconds(attempt: number): number {
@@ -487,21 +582,28 @@ export async function handleIngestMessage(
     // processing loop is chunked.
     const seenExternalIds = normalizedJobs.map((j) => j.externalJobId);
 
-    // Chunking (ROADMAP.md G.3/J.4-followup, 2026-08-11): process at
-    // most JOBS_PER_CHUNK jobs starting at chunkOffset, then either
-    // continue to the next chunk (re-enqueue, ack, return -- source_runs
-    // stays status='running', which is correct since the run genuinely
-    // isn't done) or, on the final chunk, run the absence-detection pass
-    // and finalize as success. The board is re-fetched/re-normalized
-    // from scratch on every chunk (cheap -- one HTTP GET + JSON parse,
-    // see JOBS_PER_CHUNK's own comment) rather than persisted between
-    // invocations, so normalizedJobs here is always the complete,
-    // current board regardless of which chunk this is.
-    const chunkEnd = Math.min(chunkOffset + resolveJobsPerChunk(env), normalizedJobs.length);
-    const chunkJobs = normalizedJobs.slice(chunkOffset, chunkEnd);
-    const isFinalChunk = chunkEnd >= normalizedJobs.length;
+    // Chunking (ROADMAP.md G.3/J.4-followup, 2026-08-11; boundary logic
+    // replaced 2026-08-15, see SUBREQUEST_SAFETY_MARGIN's own comment
+    // for the full root-cause writeup): process jobs starting at
+    // chunkOffset, stopping either at JOBS_PER_CHUNK (hard backstop
+    // ceiling) or as soon as the live SubrequestBudget is exhausted --
+    // whichever comes first -- then either continue to the next chunk
+    // (re-enqueue at the exact next unprocessed index, ack, return --
+    // source_runs stays status='running', which is correct since the
+    // run genuinely isn't done) or, once every job has been processed,
+    // run the absence-detection pass and finalize as success. The board
+    // is re-fetched/re-normalized from scratch on every chunk (cheap --
+    // one HTTP GET + JSON parse, see JOBS_PER_CHUNK's own comment)
+    // rather than persisted between invocations, so normalizedJobs here
+    // is always the complete, current board regardless of which chunk
+    // this is.
+    const jobCountCeiling = Math.min(
+      chunkOffset + resolveJobsPerChunk(env),
+      normalizedJobs.length,
+    );
 
     let signalsCreated = 0;
+    const budget: SubrequestBudget = { used: 0 };
 
     // Temporary diagnostic checkpoint (ROADMAP.md G.3 follow-up,
     // 2026-08-13, see recordSourceRunProgress's own doc comment):
@@ -509,18 +611,34 @@ export async function handleIngestMessage(
     // a platform-level kill mid-chunk (Cloudflare's subrequest cap,
     // which bypasses this function's own try/catch entirely -- no
     // JS-catchable error, nothing reaches the outer catch below) still
-    // leaves a real number in source_runs instead of NULL. Only fires
-    // when JOBS_PER_CHUNK is large enough for more than one interval to
-    // land inside a single chunk; a chunk smaller than the interval
-    // just never checkpoints mid-chunk, which is fine -- the whole
-    // point is bisecting where in a chunk the kill happens, and a small
-    // enough chunk doesn't need bisecting. REMOVE once JOBS_PER_CHUNK
-    // is confirmed correctly sized against a real measured number
-    // instead of the current manual estimate.
+    // leaves a real number in source_runs instead of NULL. Kept as a
+    // belt-and-suspenders safety net alongside the budget-driven chunk
+    // boundary below (2026-08-15) rather than removed outright -- the
+    // budget's per-job subrequest cost accounting is itself a manual
+    // enumeration of this file's own call sites and could still be
+    // wrong in a way this checkpoint would catch. REMOVE once a few
+    // real production runs confirm the new boundary logic never
+    // triggers a stuck-running row again.
     const PROGRESS_CHECKPOINT_INTERVAL = 10;
     let jobsProcessedThisChunk = 0;
+    let nextOffset = chunkOffset;
 
-    for (const job of chunkJobs) {
+    while (nextOffset < jobCountCeiling) {
+      if (budgetExhausted(budget)) {
+        break;
+      }
+      const job = normalizedJobs[nextOffset];
+      if (!job) {
+        // Unreachable given the while condition (nextOffset < jobCountCeiling
+        // <= normalizedJobs.length), but TS can't prove array-index access
+        // is in-bounds -- narrow explicitly rather than a non-null
+        // assertion, and fail loudly (not silently skip) if this branch is
+        // ever somehow reached, since it would mean the offset bookkeeping
+        // above has a real bug.
+        throw new Error(
+          `ingest_consumer: normalizedJobs[${nextOffset}] was undefined (length=${normalizedJobs.length}, ceiling=${jobCountCeiling})`,
+        );
+      }
       signalsCreated += await processNormalizedJob(
         client,
         env,
@@ -528,26 +646,32 @@ export async function handleIngestMessage(
         sourceRunId,
         job,
         observedAt,
+        budget,
       );
+      nextOffset += 1;
       jobsProcessedThisChunk += 1;
       if (jobsProcessedThisChunk % PROGRESS_CHECKPOINT_INTERVAL === 0) {
-        await recordSourceRunProgress(client, sourceRunId, chunkOffset + jobsProcessedThisChunk);
+        await recordSourceRunProgress(client, sourceRunId, nextOffset);
       }
     }
+
+    const isFinalChunk = nextOffset >= normalizedJobs.length;
 
     if (!isFinalChunk) {
       // More jobs remain -- re-enqueue a continuation for the same
       // logical run (same runId, so resolveSourceRun reuses the same
-      // source_runs row) at the next offset. attempt resets to 1: this
-      // is forward progress within the same run, not a retry of a
-      // failure, so it shouldn't count against MAX_RETRY_ATTEMPTS.
+      // source_runs row) at the exact next unprocessed index (nextOffset,
+      // NOT the old fixed chunkEnd -- the budget can stop mid-range of
+      // what a fixed job-count chunk would have covered). attempt resets
+      // to 1: this is forward progress within the same run, not a retry
+      // of a failure, so it shouldn't count against MAX_RETRY_ATTEMPTS.
       const continuationMessage: IngestMessage = {
         version: 1,
         sourceId,
         runId,
         requestedAt: new Date().toISOString(),
         attempt: 1,
-        chunkOffset: chunkEnd,
+        chunkOffset: nextOffset,
       };
       await env.INGEST_QUEUE.send(continuationMessage);
 
@@ -556,8 +680,9 @@ export async function handleIngestMessage(
         provider: source.provider,
         runId,
         chunkOffset,
-        chunkEnd,
-        jobsInChunk: chunkJobs.length,
+        chunkEnd: nextOffset,
+        jobsInChunk: jobsProcessedThisChunk,
+        subrequestsUsed: budget.used,
         totalJobs: normalizedJobs.length,
         signalsCreated,
       });
@@ -754,6 +879,7 @@ async function generateCompanySignals(
   jobId: string,
   jobTitle: string,
   observedAt: string,
+  budget: SubrequestBudget,
 ): Promise<number> {
   const triggered: SignalType[] = [];
   if (activityStats.newInLast14Days >= HIRING_BURST_MIN_NEW_IN_14_DAYS) {
@@ -787,6 +913,7 @@ async function generateCompanySignals(
     roleCategory,
     signalTypes: triggered,
   });
+  chargeSubrequests(budget, 1);
 
   let signalsCreated = 0;
   for (const signalType of triggered) {
@@ -806,6 +933,7 @@ async function generateCompanySignals(
         scoreVersion: primaryScoreVersion,
         lastDetectedAt: observedAt,
       });
+      chargeSubrequests(budget, 1);
       if (refreshResult.changes === 0) {
         // Tenant mismatch (shouldn't happen -- source.company_id came
         // from the same row findActiveSignal used) or a race with the
@@ -845,6 +973,7 @@ async function generateCompanySignals(
           headline: buildHeadline(signalType, jobTitle),
           summary: buildSummary(signalType, jobTitle),
         });
+        chargeSubrequests(budget, 1);
         signalsCreated += 1;
       } catch (err) {
         if (!(err instanceof DuplicateActiveSignalError)) {
@@ -855,6 +984,7 @@ async function generateCompanySignals(
           roleCategory,
           signalType,
         });
+        chargeSubrequests(budget, 1);
         if (!staleActiveSignal) {
           // The index said a row exists but it's gone by the time we
           // re-queried (e.g. the expiration cron swept it in between) --
@@ -868,6 +998,7 @@ async function generateCompanySignals(
           scoreVersion: primaryScoreVersion,
           lastDetectedAt: observedAt,
         });
+        chargeSubrequests(budget, 1);
         if (refreshResult.changes === 0) {
           console.warn("company_signal_refresh_skipped", {
             signal_id: signalId,
@@ -894,6 +1025,7 @@ async function generateCompanySignals(
         daysActive,
       },
     });
+    chargeSubrequests(budget, 1);
   }
 
   return signalsCreated;
@@ -916,6 +1048,7 @@ async function processNormalizedJob(
   sourceRunId: string,
   job: NormalizedJob,
   observedAt: string,
+  budget: SubrequestBudget,
 ): Promise<number> {
   const contentHash = await computeContentHash({
     title: job.title,
@@ -969,6 +1102,7 @@ async function processNormalizedJob(
     contentHash,
     observedAt,
   });
+  chargeSubrequests(budget, 1); // prepareJobUpsert's own SELECT
   const jobId = preparedUpsert.result.id;
   const existing = preparedUpsert.result.existing;
 
@@ -991,6 +1125,7 @@ async function processNormalizedJob(
   // read-after-write dependency between them -- safe as a single
   // client.batch() call (1 subrequest instead of 2).
   await client.batch([preparedUpsert.statement, lifecycleStatement]);
+  chargeSubrequests(budget, 1); // one batch call = one subrequest
 
   await insertObservationIdempotent(client, {
     jobId,
@@ -999,6 +1134,7 @@ async function processNormalizedJob(
     contentHash,
     isPresent: true,
   });
+  chargeSubrequests(budget, 1);
 
   // I.2: embed-and-upsert into Vectorize, gated on "this job is new or
   // its content actually changed" -- an unchanged job on a re-scrape
@@ -1016,23 +1152,27 @@ async function processNormalizedJob(
   // this run -- no read-after-write race).
   let freshEmbedding: number[] | undefined;
   if (!existing || preparedUpsert.result.contentChanged) {
-    freshEmbedding = await embedAndUpsertJob(ai, {
-      jobId,
-      companyId: source.company_id,
-      status: lifecycle.nextState,
-      postedAt: job.postedAt ?? existing?.first_seen_at ?? observedAt,
-      // existing?.role_primary: the job's prior classification, if any --
-      // a brand-new job hasn't been classified yet at this point in the
-      // function (classification happens further down, only on the
-      // new/reopened path), so its first embedding simply omits
-      // roleCategory rather than blocking on classification.
-      roleCategory: existing?.role_primary as RoleCategory | null | undefined,
-      locationMode: job.locationMode,
-      titleRaw: job.title,
-      departmentRaw: job.department,
-      locationRaw: job.locationRaw,
-      descriptionText: job.descriptionText,
-    });
+    freshEmbedding = await embedAndUpsertJob(
+      ai,
+      {
+        jobId,
+        companyId: source.company_id,
+        status: lifecycle.nextState,
+        postedAt: job.postedAt ?? existing?.first_seen_at ?? observedAt,
+        // existing?.role_primary: the job's prior classification, if any --
+        // a brand-new job hasn't been classified yet at this point in the
+        // function (classification happens further down, only on the
+        // new/reopened path), so its first embedding simply omits
+        // roleCategory rather than blocking on classification.
+        roleCategory: existing?.role_primary as RoleCategory | null | undefined,
+        locationMode: job.locationMode,
+        titleRaw: job.title,
+        departmentRaw: job.department,
+        locationRaw: job.locationRaw,
+        descriptionText: job.descriptionText,
+      },
+      budget,
+    );
   }
 
   if (lifecycle.candidateSignal !== "new_job" && lifecycle.candidateSignal !== "reopened_job") {
@@ -1056,6 +1196,7 @@ async function processNormalizedJob(
         >[1]["roleCategory"],
         signalType: "new_job",
       });
+      chargeSubrequests(budget, 1);
       if (activeSignalForEdit) {
         await appendSignalEvidence(client, {
           signalId: activeSignalForEdit.id,
@@ -1064,6 +1205,7 @@ async function processNormalizedJob(
           observedAt,
           payload: { contentHash },
         });
+        chargeSubrequests(budget, 1);
       }
     }
     return 0;
@@ -1084,12 +1226,16 @@ async function processNormalizedJob(
     classification.rolePrimary &&
     classification.confidence < NUDGE_ELIGIBLE_BELOW_CONFIDENCE
   ) {
-    nudgedConfidence = await applyCentroidNudge(ai, {
-      jobId,
-      rolePrimary: classification.rolePrimary,
-      confidence: classification.confidence,
-      freshEmbedding,
-    });
+    nudgedConfidence = await applyCentroidNudge(
+      ai,
+      {
+        jobId,
+        rolePrimary: classification.rolePrimary,
+        confidence: classification.confidence,
+        freshEmbedding,
+      },
+      budget,
+    );
   }
 
   // Recomputed against nudgedConfidence, not classification.autoClassified
@@ -1109,6 +1255,7 @@ async function processNormalizedJob(
     classificationConfidence: nudgedConfidence,
     classificationVersion: classification.classificationVersion,
   });
+  chargeSubrequests(budget, 1);
 
   // Signal generation only for auto-classified jobs (spec §6.2 step 7:
   // below-threshold jobs are still stored but not surfaced as signals
@@ -1159,6 +1306,7 @@ async function processNormalizedJob(
       signalType: lifecycle.candidateSignal,
     }),
   ]);
+  chargeSubrequests(budget, 2); // two D1 round trips, run concurrently but each is its own subrequest
 
   const scoreResult = computeNewJobScore({
     daysSinceObservation,
@@ -1178,6 +1326,7 @@ async function processNormalizedJob(
       scoreVersion: scoreResult.formulaVersion,
       lastDetectedAt: observedAt,
     });
+    chargeSubrequests(budget, 1);
     if (refreshResult.changes === 0) {
       // Tenant mismatch (shouldn't happen -- source.company_id came from
       // the same source row findActiveSignal used) or a race with the
@@ -1221,6 +1370,7 @@ async function processNormalizedJob(
         headline: buildHeadline(lifecycle.candidateSignal, job.title),
         summary: buildSummary(lifecycle.candidateSignal, job.title),
       });
+      chargeSubrequests(budget, 1);
       createdNewSignal = 1;
     } catch (err) {
       if (!(err instanceof DuplicateActiveSignalError)) {
@@ -1231,6 +1381,7 @@ async function processNormalizedJob(
         roleCategory: classification.rolePrimary,
         signalType: lifecycle.candidateSignal,
       });
+      chargeSubrequests(budget, 1);
       if (!staleActiveSignal) {
         // The index said a row exists but it's gone by the time we
         // re-queried (e.g. the expiration cron swept it in between) --
@@ -1244,6 +1395,7 @@ async function processNormalizedJob(
         scoreVersion: scoreResult.formulaVersion,
         lastDetectedAt: observedAt,
       });
+      chargeSubrequests(budget, 1);
       if (refreshResult.changes === 0) {
         console.warn("primary_signal_refresh_skipped", {
           signal_id: signalId,
@@ -1262,6 +1414,7 @@ async function processNormalizedJob(
     observedAt,
     payload: scoreResult,
   });
+  chargeSubrequests(budget, 1);
 
   // H.4: company-level/secondary signals (hiring_burst, role_acceleration,
   // multi_location, persistent_demand). Reuses activityStats (H.2) and
@@ -1285,6 +1438,7 @@ async function processNormalizedJob(
     jobId,
     job.title,
     observedAt,
+    budget,
   );
 
   return createdNewSignal + companySignalsCreated;
@@ -1340,6 +1494,7 @@ const aiBreaker = createCircuitBreaker({ resources: ["ai"], operationTimeoutMs: 
 async function embedAndUpsertJob(
   ai: Pick<Bindings, "AI" | "VECTORIZE" | "EMBEDDING_MODEL">,
   params: EmbedJobParams,
+  budget: SubrequestBudget,
 ): Promise<number[] | undefined> {
   try {
     const text = buildJobEmbeddingText({
@@ -1359,6 +1514,7 @@ async function embedAndUpsertJob(
     const embeddingResult = await aiBreaker.withCircuit("ai", () =>
       ai.AI.run(ai.EMBEDDING_MODEL as "@cf/baai/bge-base-en-v1.5", { text: [text] }),
     );
+    chargeSubrequests(budget, 1);
 
     if (!("data" in embeddingResult) || !embeddingResult.data?.[0]) {
       // Async-batch response shape (request_id, no data yet) -- shouldn't
@@ -1419,6 +1575,7 @@ async function embedAndUpsertJob(
         },
       ]),
     );
+    chargeSubrequests(budget, 1);
 
     // Handed back so I.5c's classification-assist nudge (called moments
     // later in the same ingest run, when this branch fired) can reuse
@@ -1467,14 +1624,18 @@ async function applyCentroidNudge(
     confidence: number;
     freshEmbedding: number[] | undefined;
   },
+  budget: SubrequestBudget,
 ): Promise<number> {
   try {
+    let chargedGetByIds = false;
     const jobEmbedding =
       params.freshEmbedding ??
       (await aiBreaker.withCircuit("ai", async () => {
         const stored = await ai.VECTORIZE.getByIds([params.jobId]);
+        chargedGetByIds = true;
         return stored[0]?.values;
       }));
+    if (chargedGetByIds) chargeSubrequests(budget, 1);
 
     if (!jobEmbedding) {
       // No fresh embedding this run and nothing stored from a prior run
@@ -1489,6 +1650,7 @@ async function applyCentroidNudge(
         filter: { kind: "category_centroid", roleCategory: params.rolePrimary },
       }),
     );
+    chargeSubrequests(budget, 1);
 
     const centroidSimilarity = matches.matches[0]?.score;
     if (centroidSimilarity === undefined) {

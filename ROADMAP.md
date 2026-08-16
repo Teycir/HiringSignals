@@ -9,14 +9,17 @@ Source of truth for *behavior* is always `hiring-signals-spec.md` —
 every task cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
-**Status summary (last updated 2026-08-15):** All originally scoped
+**Status summary (last updated 2026-08-16):** All originally scoped
 milestones (Phase 0 → R, G.1–G.5) are shipped and verified. Full
 narrative/evidence for completed work lives in git history and
 `CHANGELOG.md` — this file keeps only short landed-summaries plus the
 two items still genuinely open below.
 
 **Open-item count: 2**, both inside Milestone G:
-1. G.3 — per-chunk-kill root cause still undiagnosed (code work, see below).
+1. G.3 — root cause found and fixed in code (`SubrequestBudget`,
+   2026-08-15); deployed 2026-08-16, awaiting live confirmation against
+   a real `openai` cron tick before the diagnostic checkpoint is
+   removed (see below).
 2. G.4 — "never point preview/staging at prod secrets" — a standing
    guardrail, deliberately kept unchecked, not a task to build today.
 
@@ -111,9 +114,12 @@ two items still genuinely open below.
 
 ## Open work
 
-### G.3 follow-up — per-chunk-kill root cause (still open)
+### G.3 follow-up — per-chunk-kill root cause (fix deployed, awaiting live confirmation)
 
-**Status as of 2026-08-14:** Not resolved by any fix shipped so far.
+**Status as of 2026-08-16:** Root cause found and fixed in code
+2026-08-15; committed and deployed 2026-08-16. Not yet closed — needs
+one real `openai` cron cycle observed post-deploy before the temporary
+diagnostic checkpoint comes out and this item is checked off.
 
 Context, briefly: `openai`'s board (700+ jobs, Ashby) kept dying
 mid-run even after two real bugs were found and fixed in this
@@ -122,25 +128,48 @@ write pair, fixed via `db.batch()`; (2) runs stacking indefinitely
 because `next_poll_at` never advanced on an incomplete run, fixed via
 `hasRecentRunningRun` scheduler guard (commit `35b6824`, deployed
 2026-08-14 as version `6f82cd4a`). That second fix stopped the
-stacking (verified live: concurrent-running count held flat across 2
-cron ticks post-deploy) and let a single `openai` run be observed in
-isolation for the first time — but it still stalls partway through
-with **zero JS-catchable error and no `source_runs.error_code` ever
-populated**. Watched live post-fix (run `26d1eb0a`): climbed to
-`jobs_normalized=480` then stopped advancing ~15+ minutes later, same
-symptom as before, now without multi-run contention as a possible
-excuse.
+stacking and let a single `openai` run be observed in isolation for
+the first time — but it still stalled partway through with **zero
+JS-catchable error and no `source_runs.error_code` ever populated**.
 
-- [ ] **Root-cause the silent per-chunk kill itself.** `wrangler tail`
-      is unavailable from this environment's network egress
-      (Cloudflare edge IPs aren't in the allowed domain list). Next
-      step: either the Cloudflare dashboard's Observability/Logs view,
-      or a local `wrangler tail` run (from a machine with unrestricted
-      egress) during a live `openai` cron tick, to capture the actual
-      platform error text. Once diagnosed, also remove the temporary
-      `recordSourceRunProgress` diagnostic checkpoint
-      (`packages/db/src/sources-repo.ts`) added 2026-08-13 — it was
-      explicitly a diagnostic aid, not a permanent feature.
+**Root cause (found 2026-08-15):** `JOBS_PER_CHUNK=40` was a fixed
+job-count ceiling sized against a single "~14 subrequests/job
+worst-case" estimate, but real per-job cost varies sharply — an
+unchanged existing job returns early after ~2 D1 calls, while a
+brand-new job pays the full ~14-call path. A 40-job chunk landing
+disproportionately on new jobs (exactly what an unpolled board like
+`openai`'s produces on its first run) could still blow the real
+1,000-subrequest-per-invocation cap mid-chunk, below the JS layer
+entirely.
+
+**Fix:** stop estimating, start counting. `SubrequestBudget`
+(`apps/api/src/jobs/ingest-consumer.ts`) tracks the real number of
+Cloudflare-service calls issued so far this invocation, threaded
+through `processNormalizedJob` and its callees. The chunk loop checks
+remaining budget before each job and breaks — re-enqueuing the exact
+next unprocessed job as the next chunk's offset — once
+`SUBREQUEST_SAFETY_MARGIN=700` is reached, regardless of job count.
+Self-correcting against real per-job cost variance instead of a
+static guess. `JOBS_PER_CHUNK=40` kept as a secondary hard backstop
+ceiling, not the primary boundary anymore. 6 new pure-function tests
+(`apps/api/test/jobs/ingest-consumer-budget.test.ts`) covering the
+budget math in isolation, since `ingest-consumer.test.ts` itself is
+live-D1/manual-only.
+
+- [x] **Root-cause and fix the silent per-chunk kill.** Committed and
+      deployed 2026-08-16. `pnpm -r typecheck` clean across all 6
+      workspace packages; `apps/api` lint zero-warning clean;
+      `ingest-consumer-budget.test.ts` 6/6 passing.
+- [ ] **Live confirmation.** Watch the next `openai` cron tick(s)
+      post-deploy: a full run should reach `status='success'` with a
+      real `jobs_normalized` count (not stuck at `running`/NULL), via
+      however many `ingest_chunk_continued` log lines it takes. Once
+      confirmed, remove the temporary `recordSourceRunProgress`
+      diagnostic checkpoint (`packages/db/src/sources-repo.ts`, called
+      from the chunk loop every `PROGRESS_CHECKPOINT_INTERVAL=10`
+      jobs) — it was explicitly a diagnostic aid, not a permanent
+      feature, kept only as a belt-and-suspenders safety net until the
+      new boundary logic is proven live.
 
 ### G.4 — standing guardrail (not active work)
 
