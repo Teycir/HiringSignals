@@ -7,10 +7,6 @@ import Link from "next/link";
 // typographic glyphs and the two share icons are inline SVGs copied
 // verbatim from the ArxivExplorer source. /how-to-use and /faq are the
 // ArxivExplorer-style info pages ported alongside this footer.
-//
-// The Greenhouse/Lever links replace ArxivExplorer's arXiv.org
-// data-source link: they are the two flagship ATS providers of the 8
-// in the dataset (packages/adapters).
 
 // Deploy target per apps/web/wrangler.jsonc; used for share URLs.
 const SITE_URL = "https://hiring-signals-web.teycircoder14.workers.dev";
@@ -52,24 +48,6 @@ export function Footer() {
               className="underline transition-colors hover:text-ink"
             >
               GitHub
-            </a>
-            <span aria-hidden="true">•</span>
-            <a
-              href="https://boards.greenhouse.io"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline transition-colors hover:text-ink"
-            >
-              Greenhouse
-            </a>
-            <span aria-hidden="true">•</span>
-            <a
-              href="https://jobs.lever.co"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline transition-colors hover:text-ink"
-            >
-              Lever
             </a>
           </div>
         </div>
