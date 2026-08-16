@@ -1,0 +1,33 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "hiring-signals-web",
+	"main": ".open-next/worker.js",
+	// Matches apps/api/wrangler.toml's account_id (same Cloudflare
+	// account, "teycircoder14" subdomain, one deployment target per app --
+	// see that file's own comments for the account/subdomain history).
+	"account_id": "c62f54368e3f6a1f503afa434771b7e4",
+	// Set to the day this Worker config was first created (2026-08-16).
+	// OpenNext's own docs say "set this to today's date" -- pin, don't
+	// auto-advance, so runtime behavior only changes on a deliberate
+	// bump, same reasoning apps/api/wrangler.toml's own compatibility_date
+	// comment would give.
+	"compatibility_date": "2026-08-16",
+	// Required by @opennextjs/cloudflare (Cloudflare docs: "you must
+	// enable the nodejs_compat compatibility flag ... for your Next.js
+	// app to work with @opennextjs/cloudflare"). Distinct requirement
+	// from apps/api's own nodejs_compat flag -- each Worker declares it
+	// independently, this file doesn't inherit apps/api's config.
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
+	},
+	// Deploy to workers.dev by default, same as apps/api -- final URL:
+	//   https://hiring-signals-web.teycircoder14.workers.dev
+	// Swap for a custom `routes`/`domains` entry later if/when this app
+	// gets a real domain.
+	"workers_dev": true,
+	"observability": {
+		"enabled": true
+	}
+}
