@@ -84,15 +84,20 @@ export async function safeRateLimitIdentifier(raw: string): Promise<string> {
 }
 
 /**
- * Increment the active shard atomically. Workers KV exposes `increment`
- * which does a get+add+put server-side (no client race); older Workers
- * types expose it via the runtime but the type package may omit it, so
- * we guard both call and result. Falls back to a plain `put` of
- * `prior+1` on the current client value (still subject to the client
+ * Increment a KV-backed integer counter atomically. Workers KV exposes
+ * `increment` which does a get+add+put server-side (no client race);
+ * older Workers types expose it via the runtime but the type package may
+ * omit it, so we guard both call and result. Falls back to a plain `put`
+ * of `prior+1` on the current client value (still subject to the client
  * get→put race, but bounded to at most 1 lost count per concurrency burst
  * instead of rewriting the full window sum).
+ *
+ * Exported (not just used internally for rate-limit shards) so any other
+ * KV-backed counter in this codebase -- e.g. admin-auth.ts's strike
+ * counter, roadmap S.3 -- can close the same get→put race with the same
+ * primitive instead of re-deriving it.
  */
-async function incrementActiveShard(
+export async function incrementActiveShard(
   kv: KVNamespace,
   key: string,
   ttlSeconds: number,

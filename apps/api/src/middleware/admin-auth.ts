@@ -33,6 +33,7 @@ import {
   AbuseEventType,
   type AbuseEvent,
 } from "../../../../lib/observability/audit-abuse";
+import { incrementActiveShard } from "../../../../lib/http/rate-limit";
 
 const ADMIN_RL_STRIKE_LIMIT = 3;
 const ADMIN_RL_WINDOW_SECONDS = 60;
@@ -116,41 +117,39 @@ interface StrikeState {
   resetAt: number;
 }
 
+/**
+ * Window bucketing for the strike counter. Rather than storing
+ * `{strikes, windowStartSec}` as one JSON blob (the pre-S.3 shape, which
+ * requires a read-modify-write to bump `strikes` and is therefore racy
+ * under concurrent requests from the same IP -- see addStrike below), the
+ * window itself is folded into the KV key: `windowStartSec` is rounded
+ * down to a fixed-size bucket, so all requests within the same
+ * ADMIN_RL_WINDOW_SECONDS window agree on the same key without needing to
+ * coordinate through a read first. The strike count at that key is then a
+ * bare integer, incrementable via the same atomic
+ * `incrementActiveShard`/KV-`increment` primitive lib/http/rate-limit.ts
+ * already uses to close this exact class of race for the sliding-window
+ * rate limiter (roadmap S.3, spec §11.1).
+ */
+function windowStartSecFor(nowSec: number): number {
+  return Math.floor(nowSec / ADMIN_RL_WINDOW_SECONDS) * ADMIN_RL_WINDOW_SECONDS;
+}
+
 async function loadStrikes(
   kv: AppEnv["Bindings"]["ABUSE_LOGS"],
   ipHash: string,
 ): Promise<StrikeState & { key: string; ttl: number; windowStartSec: number }> {
   const nowSec = Math.floor(Date.now() / 1000);
-  const key = `${ADMIN_RL_KEY_PREFIX}${ipHash}`;
+  const windowStartSec = windowStartSecFor(nowSec);
+  const key = `${ADMIN_RL_KEY_PREFIX}${ipHash}:${windowStartSec}`;
   const ttl = ADMIN_RL_WINDOW_SECONDS + 5;
 
   const raw = await kv.get(key, "text");
-  let existing: { strikes: number; windowStartSec: number } | null = null;
+  let strikes = 0;
   if (raw != null) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (
-        parsed &&
-        typeof parsed.strikes === "number" &&
-        typeof parsed.windowStartSec === "number" &&
-        Number.isFinite(parsed.strikes) &&
-        Number.isFinite(parsed.windowStartSec)
-      ) {
-        existing = parsed;
-      }
-    } catch {
-      existing = null;
-    }
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) strikes = Math.floor(n);
   }
-
-  const windowStartSec =
-    existing && nowSec - existing.windowStartSec < ADMIN_RL_WINDOW_SECONDS
-      ? existing.windowStartSec
-      : nowSec;
-  const strikes =
-    existing && nowSec - existing.windowStartSec < ADMIN_RL_WINDOW_SECONDS
-      ? Math.max(0, Math.floor(existing.strikes))
-      : 0;
 
   return {
     strikes,
@@ -167,18 +166,15 @@ async function addStrike(
   s: Awaited<ReturnType<typeof loadStrikes>>,
 ): Promise<number> {
   if (s.lockedOut) return s.strikes;
-  const next = s.strikes + 1;
-  try {
-    await kv.put(
-      s.key,
-      JSON.stringify({ strikes: next, windowStartSec: s.windowStartSec }),
-      { expirationTtl: s.ttl },
-    );
-  } catch {
-    // KV write degraded — return local count (best-effort lockout still
-    // enforced by in-flight loadStrikes.lockedOut check above on next call).
-  }
-  return next;
+  // Atomic bump via KV's native increment (falls back to a bounded-loss
+  // client put when the runtime doesn't expose `increment` -- same
+  // fallback contract as checkRateLimit's sliding-window shards). Closes
+  // the get-then-put race a burst of concurrent wrong-password attempts
+  // from the same IP used to hit: previously every concurrent request
+  // could read the same prior `strikes` value before any of them wrote,
+  // undercounting strikes and stretching the lockout window past its
+  // intended threshold.
+  return incrementActiveShard(kv, s.key, s.ttl, s.strikes);
 }
 
 export function adminAuth(): MiddlewareHandler<AppEnv> {

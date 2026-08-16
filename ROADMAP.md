@@ -9,13 +9,13 @@ Source of truth for *behavior* is always `hiring-signals-spec.md` —
 every task cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
-**Status summary (last updated 2026-08-16):** All originally scoped
+**Status summary (last updated 2026-08-17):** All originally scoped
 milestones (Phase 0 → R, G.1–G.5) are shipped and verified. Full
 narrative/evidence for completed work lives in git history and
 `CHANGELOG.md` — this file keeps only short landed-summaries plus the
 items still genuinely open below.
 
-**Open-item count: 5**:
+**Open-item count: 2**:
 1. G.3 — root cause found and fixed in code (`SubrequestBudget`),
    deployed 2026-08-16. First live `openai` run under the new code
    completed successfully the same day (see below) — one data point,
@@ -24,11 +24,9 @@ items still genuinely open below.
    cycles before removing it.
 2. G.4 — "never point preview/staging at prod secrets" — a standing
    guardrail, deliberately kept unchecked, not a task to build today.
-3. S.1 — CSV export formula-injection escaping (spec §11.1).
-4. S.2 — CORS reflects Origin + sets Allow-Credentials unconditionally
-   (spec §11.1).
-5. S.3 — admin-auth strike counter has an unprotected KV race
-   (spec §11.1).
+
+S.1–S.3 (2026-08-16 code-review findings) fixed and verified
+2026-08-17 — see "Shipped milestones" below and CHANGELOG.md.
 
 ---
 
@@ -203,15 +201,23 @@ live-D1/manual-only.
       constraint in case that decision is ever revisited. Not a task
       to schedule.
 
-### S — code review findings (2026-08-16, security/data-integrity pass)
+### S — code review findings (2026-08-16, security/data-integrity pass) — fixed 2026-08-17
 
 Three issues found during a manual review of `apps/api`, `packages/db`,
 and `packages/adapters` (not tied to a prior incident — proactive pass).
 All three map to spec §11.1's own stated bar ("Escape/sanitize untrusted
 job descriptions," "appropriate...headers," general security-controls
-list), so these are drift from the spec, not new scope.
+list), so these are drift from the spec, not new scope. All three fixed
+and verified 2026-08-17 (`pnpm -r typecheck` / `pnpm -r lint` clean
+across all 8 workspace packages; new + existing test suites passing —
+see CHANGELOG.md for the per-item verification detail). While fixing
+S.2, also found and fixed an adjacent, more serious bug in the same
+code path: `security-headers.ts`'s CORS reflection headers were being
+set via `c.header()` *after* the OPTIONS branch had already returned a
+finalized `Response`, so real cross-origin preflights never actually
+received `Access-Control-Allow-Origin` at all — see CHANGELOG.md.
 
-- [ ] **S.1 — CSV export is vulnerable to formula injection.**
+- [x] **S.1 — CSV export is vulnerable to formula injection.**
       `lib/text/csv.ts`'s `escapeCsvField` only implements RFC 4180
       quoting (comma/quote/newline). It does not neutralize a leading
       `=`, `+`, `-`, `@`, tab, or CR, which Excel/Sheets/LibreOffice
@@ -231,7 +237,7 @@ list), so these are drift from the spec, not new scope.
       existing RFC-4180 quoting logic runs. Add a fixture test with a
       `=`-leading company name asserting the output cell is
       neutralized.
-- [ ] **S.2 — CORS reflects any Origin *and* sets
+- [x] **S.2 — CORS reflects any Origin *and* sets
       `Access-Control-Allow-Credentials: true`.**
       `apps/api/src/middleware/security-headers.ts`'s `securityHeaders()`
       reflects the request's `Origin` header verbatim (by design,
@@ -253,7 +259,7 @@ list), so these are drift from the spec, not new scope.
       Re-add credentials=true only alongside whatever future change
       actually introduces a credentialed route, scoped to real
       allowed origins at that point, not blanket reflection.
-- [ ] **S.3 — Admin-auth strike counter has an unprotected
+- [x] **S.3 — Admin-auth strike counter has an unprotected
       read-then-write race.** `apps/api/src/middleware/admin-auth.ts`'s
       `addStrike` does a bare `kv.get` (via `loadStrikes`) followed by
       a plain `kv.put(strikes + 1, ...)` with no atomicity between the

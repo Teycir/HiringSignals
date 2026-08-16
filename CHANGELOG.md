@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-08-17)
+
+- **S.1 — CSV export formula-injection (spec §11.1).** `lib/text/csv.ts`'s
+  `escapeCsvField` now prefixes any field whose first character is `=`,
+  `+`, `-`, `@`, tab, or CR with a literal `'` before RFC-4180 quoting
+  runs, neutralizing the CSV-injection vector (OWASP) that let untrusted
+  upstream ATS data (company display name, job title) reach
+  `GET /api/v1/export/signals.csv` as a live formula when opened in
+  Excel/Sheets/LibreOffice. New tests: `apps/api/test/lib/csv.test.ts`
+  (10/10 passing).
+- **S.2 — CORS reflected-origin + credentials, plus a related OPTIONS
+  preflight bug found in the same code path (spec §11.1).**
+  `apps/api/src/middleware/security-headers.ts` no longer sets
+  `Access-Control-Allow-Credentials: true` unconditionally alongside its
+  by-design reflected-origin CORS. While fixing that, found and fixed a
+  second, more serious bug in the same wrapper: `Access-Control-Allow-
+  Origin`/`Vary` were being set via `c.header()` *after* the base
+  middleware had already returned a finalized `Response` for OPTIONS
+  preflight (`c.body(null, 204)`) — Hono does not apply `c.header()`
+  calls made after a Response is already constructed, so every real
+  cross-origin preflight was silently missing `Access-Control-Allow-
+  Origin` and would have been blocked by the browser regardless of the
+  credentials issue. Fixed by setting the origin-reflection headers
+  before calling the base middleware. New tests:
+  `apps/api/test/middleware/security-headers.test.ts` (4/4 passing,
+  including a dedicated OPTIONS-preflight case).
+- **S.3 — Admin-auth strike-counter KV race (spec §11.1).**
+  `apps/api/src/middleware/admin-auth.ts`'s `addStrike` previously did a
+  bare `kv.get` → `kv.put(strikes + 1, ...)` with no atomicity, letting a
+  burst of concurrent wrong-password attempts from the same IP undercount
+  strikes and stretch the 3-attempt/60s lockout past its intended
+  threshold. Now routes through `incrementActiveShard` (exported from
+  `lib/http/rate-limit.ts`, previously private to that file's sliding-
+  window rate limiter — same atomic KV-`increment` primitive, reused
+  instead of re-derived). Strike keys switched from a JSON blob requiring
+  read-modify-write to a bare integer keyed on a fixed time bucket, so
+  concurrent requests in the same window increment without racing.
+  Existing live-KV integration suite (`apps/api/test/middleware/
+  admin-auth.test.ts`, 14/14) passes unmodified, including the 3-strike
+  lockout test.
+
 ### Added (2026-08-16 → 2026-08-17)
 
 - **`apps/web` restored + brought up to current API contract (2026-08-16, commit `1bc7a97`):** Reverts the 2026-08-07 deletion of the Next.js dashboard and closes the gap against everything the API gained since (Milestones O, P, Q). Restored: signals list/detail, filter rail, search bar, company combobox, export button, score breakdown, evidence table, more-like-this, scroll progress, animated tagline, outreach prompt, role/source/signal-type/score/since/work-mode filters, search history (`lib/searchHistory.ts`), URL search-param sync (`lib/searchParams.ts`). New pages and components added to match the current API surface:
