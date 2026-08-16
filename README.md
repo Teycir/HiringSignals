@@ -1,3 +1,5 @@
+<div align="center">
+
 # Hiring Signals Intelligence
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -6,6 +8,12 @@
 [![pnpm](https://img.shields.io/badge/pnpm-Manager-red?logo=pnpm)](https://pnpm.io/)
 [![D1 Database](https://img.shields.io/badge/D1-Database-FF8C00?logo=cloudflare)](https://developers.cloudflare.com/d1/)
 [![Hono](https://img.shields.io/badge/Hono-Framework-E26046?logo=hono)](https://hono.dev/)
+
+**Turn raw job postings into scored hiring signals — before they surface on LinkedIn.**
+
+_"What is actually happening at this company, right now."_
+
+</div>
 
 > **AI Agent Discovery**: This project includes optimized metadata for AI agents. See [`llm.txt`](llm.txt) for machine-readable project summary and [`project-metadata.json`](project-metadata.json) for structured metadata.
 
@@ -216,29 +224,18 @@ For human-readable documentation, refer to [`hiring-signals-spec.md`](hiring-sig
 
 ## License
 
-MIT License
+This project is licensed under the **MIT License**.
 
-Copyright (c) 2026 Teycir Ben Soltane
+- ✅ Free for personal, commercial, and open-source use
+- ✅ Modify and distribute freely
+- ✅ No warranty — use at your own risk
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+See [LICENSE](LICENSE) for full terms.
 
 ---
+
+<!-- donation:eth:start -->
+<div align="center">
 
 ## 💼 Support Development
 
@@ -253,12 +250,15 @@ If this project helps your work, support ongoing maintenance and new features.
 
 _Scan the QR code or copy the wallet address above._
 
+</div>
+<!-- donation:eth:end -->
+
 ---
 
+<!-- related-projects:start -->
 ## 🌐 Related Projects
 
-More projects from the same author — not part of Hiring Signals, listed for
-discovery only:
+More projects from the same author — not part of Hiring Signals, listed for discovery only:
 
 ### AI Agent Coordination & Memory
 
@@ -288,3 +288,29 @@ discovery only:
 - **[GhostChat](https://github.com/Teycir/GhostChat)** - True P2P encrypted chat via WebRTC. No servers, no storage, self-destructing messages.
 - **[xmrproof](https://github.com/Teycir/xmrproof)** - Monero payment verification, 100% client-side.
 - **[GhostReceipt](https://github.com/Teycir/GhostReceipt)** - Anonymous receipt generation with zero-knowledge proofs.
+<!-- related-projects:end -->
+
+---
+
+<!-- services:start -->
+## 💼 Services Offered
+
+- 🔍 **Hiring Intelligence Tools** — Signal detection, ATS integrations, hiring velocity analytics
+- 🤖 **AI Agent Integration** — CLI-first tooling, structured JSON output, saved filter profiles for automated workflows
+- 🚀 **Edge Computing Solutions** — Cloudflare Workers, D1, KV, Vectorize, Queue-based pipelines
+- 🔒 **Privacy-First Development** — No personal data collection, hashed identifiers, zero-scraping architecture
+- 🛡️ **Security Tool Development** — Burp extensions, penetration testing tools, MCP security servers
+- 🔧 **Full-Stack TypeScript** — Hono APIs, pnpm monorepos, strict TypeScript, Zod validation
+
+**Get in Touch**: [teycirbensoltane.tn](https://teycirbensoltane.tn) | Available for freelance projects and consulting
+<!-- services:end -->
+
+---
+
+<!-- attribution:start -->
+<div align="center">
+
+**Built with 💚 by [Teycir Ben Soltane](https://teycirbensoltane.tn)**
+
+</div>
+<!-- attribution:end -->
