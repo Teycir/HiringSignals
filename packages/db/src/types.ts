@@ -78,6 +78,18 @@ export interface CompanySummary {
   velocityComputedAt: string | null;
 }
 
+/** One recent active signal for a company page (spec 9.2, 10.5 trend
+ * block), returned by getRecentSignalsForCompany and embedded in
+ * GET /api/v1/companies/:slug's response as `recentSignals`. */
+export interface CompanyRecentSignal {
+  id: string;
+  roleCategory: string;
+  signalType: string;
+  score: number;
+  headline: string;
+  lastDetectedAt: string;
+}
+
 export interface FacetCount {
   value: string;
   count: number;

@@ -98,14 +98,10 @@ export async function getCompanyBySlug(
   return row ? toSummary(row) : null;
 }
 
-export interface CompanyRecentSignal {
-  id: string;
-  roleCategory: string;
-  signalType: string;
-  score: number;
-  headline: string;
-  lastDetectedAt: string;
-}
+// CompanyRecentSignal moved to ./types.ts so type-only consumers (e.g.
+// apps/web) don't pull in D1Client -- see that file's header comment.
+export type { CompanyRecentSignal } from "./types";
+import type { CompanyRecentSignal } from "./types";
 
 /** Recent active signals for a company page (spec 9.2, 10.5 trend block). */
 export async function getRecentSignalsForCompany(
