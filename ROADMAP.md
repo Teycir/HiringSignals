@@ -16,10 +16,12 @@ narrative/evidence for completed work lives in git history and
 two items still genuinely open below.
 
 **Open-item count: 2**, both inside Milestone G:
-1. G.3 — root cause found and fixed in code (`SubrequestBudget`,
-   2026-08-15); deployed 2026-08-16, awaiting live confirmation against
-   a real `openai` cron tick before the diagnostic checkpoint is
-   removed (see below).
+1. G.3 — root cause found and fixed in code (`SubrequestBudget`),
+   deployed 2026-08-16. First live `openai` run under the new code
+   completed successfully the same day (see below) — one data point,
+   not yet the "a few real production runs" bar the diagnostic
+   checkpoint's own removal condition sets. Watch a few more cron
+   cycles before removing it.
 2. G.4 — "never point preview/staging at prod secrets" — a standing
    guardrail, deliberately kept unchecked, not a task to build today.
 
@@ -156,20 +158,36 @@ ceiling, not the primary boundary anymore. 6 new pure-function tests
 budget math in isolation, since `ingest-consumer.test.ts` itself is
 live-D1/manual-only.
 
-- [x] **Root-cause and fix the silent per-chunk kill.** Committed and
-      deployed 2026-08-16. `pnpm -r typecheck` clean across all 6
-      workspace packages; `apps/api` lint zero-warning clean;
-      `ingest-consumer-budget.test.ts` 6/6 passing.
-- [ ] **Live confirmation.** Watch the next `openai` cron tick(s)
-      post-deploy: a full run should reach `status='success'` with a
-      real `jobs_normalized` count (not stuck at `running`/NULL), via
-      however many `ingest_chunk_continued` log lines it takes. Once
-      confirmed, remove the temporary `recordSourceRunProgress`
-      diagnostic checkpoint (`packages/db/src/sources-repo.ts`, called
-      from the chunk loop every `PROGRESS_CHECKPOINT_INTERVAL=10`
-      jobs) — it was explicitly a diagnostic aid, not a permanent
-      feature, kept only as a belt-and-suspenders safety net until the
-      new boundary logic is proven live.
+- [x] **Root-cause and fix the silent per-chunk kill.** Committed
+      (`12ae111`) and deployed 2026-08-16 (Worker version
+      `d9960f2a-bb0c-4e67-a8c1-173496c466f1`). `pnpm -r typecheck`
+      clean across all 6 workspace packages; `apps/api` lint
+      zero-warning clean; `ingest-consumer-budget.test.ts` 6/6 passing.
+- [x] **First live confirmation (2026-08-16).** Watched run
+      `2dbb7ed4-44bd-40cc-921b-2fef7a544b13` (started
+      2026-08-16T20:15:50.318Z, the first `openai` cron tick after
+      deploy) through 4 continuation chunks — `jobs_normalized`
+      progressed 400 → 640 → 720 → 746, reaching
+      `status='success'`/`completed_at` at 20:33:39Z, `duration_ms`
+      46641. `markSourceSuccess` fired correctly: source row's
+      `last_success_at`/`next_poll_at` both populated (next poll ~6h
+      out, matching `poll_interval_minutes`). First time in this
+      incident's history an `openai` run has ever reached a terminal
+      success state. Also found and closed 69 pre-fix orphaned
+      `status='running'` rows (hourly since 2026-08-14, i.e. the
+      `hasRecentRunningRun` guard's 45-min staleness window kept
+      re-triggering hourly rather than stacking sub-hour, but the
+      underlying per-run kill this fix addresses meant none of those
+      hourly attempts ever completed) — same cleanup pattern as the
+      577-row incident, `error_code='abandoned_run_cleanup'`.
+- [ ] **Remove the temporary diagnostic checkpoint.**
+      `recordSourceRunProgress`'s own removal condition is "a few real
+      production runs," plural — one successful run (above) is a
+      strong signal but not yet that bar. Watch 2-3 more `openai` cron
+      cycles reach `status='success'` cleanly, then remove the
+      checkpoint (`packages/db/src/sources-repo.ts`, called from the
+      chunk loop every `PROGRESS_CHECKPOINT_INTERVAL=10` jobs in
+      `apps/api/src/jobs/ingest-consumer.ts`) and close this item.
 
 ### G.4 — standing guardrail (not active work)
 
