@@ -38,7 +38,8 @@ export function getRecentSearches(): string[] {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((entry): entry is string => typeof entry === "string");
-  } catch {
+  } catch (e) {
+    console.error("[searchHistory] Failed to read recent searches:", e);
     return [];
   }
 }
@@ -60,9 +61,8 @@ export function addRecentSearch(query: string): void {
     );
     const next = [trimmed, ...existing].slice(0, MAX_ENTRIES);
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Storage full/disabled -- recent searches silently stop persisting
-    // rather than breaking the search box itself.
+  } catch (e) {
+    console.error("[searchHistory] Failed to persist recent search:", e);
   }
 }
 
@@ -72,7 +72,7 @@ export function clearRecentSearches(): void {
   if (!isBrowser()) return;
   try {
     window.localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // No-op: nothing to clear if storage was already unavailable.
+  } catch (e) {
+    console.error("[searchHistory] Failed to clear recent searches:", e);
   }
 }

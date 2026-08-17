@@ -72,12 +72,8 @@ export function SignalsView() {
       .then((res) => {
         if (!cancelled) setFacets(res.data);
       })
-      .catch(() => {
-        // Facets are progressive enhancement (counts next to each filter
-        // option) -- FilterRail's children already render without them
-        // (facets is an optional prop throughout), so a failed facets
-        // fetch degrades to filters-without-counts rather than blocking
-        // the page or showing an error for a non-critical request.
+      .catch((e) => {
+        console.error("[SignalsView] Failed to fetch facets:", e);
       });
     return () => {
       cancelled = true;

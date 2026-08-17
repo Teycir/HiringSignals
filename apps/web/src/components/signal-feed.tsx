@@ -100,10 +100,8 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
             : prev,
         );
       })
-      .catch(() => {
-        // Load-more failure keeps existing results visible rather than
-        // replacing the feed with an error state -- only clears the
-        // in-flight flag so the button becomes retryable.
+      .catch((e) => {
+        console.error("[SignalFeed] Load more failed:", e);
         setState((prev) => (prev.status === "ready" ? { ...prev, loadingMore: false } : prev));
       });
   }

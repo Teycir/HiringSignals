@@ -45,10 +45,9 @@ export function OutreachPrompt({ signal }: OutreachPromptProps) {
       await navigator.clipboard.writeText(prompt);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard API can fail (permissions, insecure context) -- the
-      // prompt text is still visible and selectable in the <pre> below,
-      // so a failed copy degrades to "select manually," not a dead end.
+    } catch (e) {
+      console.error("[OutreachPrompt] Clipboard write failed:", e);
+      // Text is still visible and selectable in the <pre> below.
     }
   }
 
