@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { platform } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 /**
@@ -104,5 +105,69 @@ describe("hs companies list --watched", () => {
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout.trim());
     expect(parsed.data).toEqual([]);
+  });
+});
+
+/**
+ * Bug found in review: watchCompany/unwatchCompany originally had no
+ * local error handling at all around their fs writes. main.ts's
+ * top-level catch already turns *any* thrown error into a structured
+ * CLI_ERROR envelope (never an uncaught crash), so this was never a
+ * crash bug -- but the surfaced message was Node's raw
+ * "EACCES: permission denied, mkdir '...'" string rather than a clean,
+ * CLI-authored one. config-store.ts's writeConfigFile() now wraps that.
+ * These tests force a real EACCES by chmod'ing the config dir's PARENT
+ * read-only (555) before the CLI can mkdir the actual config dir under
+ * it -- not the config dir itself, since mkdtemp already created that
+ * writable, and a subsequent chmod on it wouldn't block *creating a
+ * config.json inside it* the same reliable way a missing, permission-
+ * denied parent does. Skipped on win32: POSIX permission bits don't
+ * apply the same way there, so this would be flaky/no-op on Windows CI.
+ */
+describe.skipIf(platform() === "win32")("write failure surfaces a clean CLI_ERROR, not a raw fs error", () => {
+  let readonlyParent: string;
+  let unwritableConfigDir: string;
+
+  beforeEach(async () => {
+    readonlyParent = await mkdtemp(join(tmpdir(), "hs-cli-watchlist-ro-"));
+    unwritableConfigDir = join(readonlyParent, "config-dir-that-cant-be-created");
+    await chmod(readonlyParent, 0o555);
+  });
+
+  afterEach(async () => {
+    await chmod(readonlyParent, 0o755); // restore write perms so rm can clean up
+    await rm(readonlyParent, { recursive: true, force: true });
+  });
+
+  it("hs companies watch <slug> fails with CLI_ERROR and a clean message, not a raw EACCES string", () => {
+    const result = runCli(["companies", "watch", "gitlab"], { HS_CONFIG_DIR: unwritableConfigDir });
+    expect(result.status).not.toBe(0);
+    const err = JSON.parse(result.stderr.trim());
+    expect(err.error.code).toBe("CLI_ERROR");
+    expect(err.error.message).toContain("Could not write to config file");
+    expect(err.error.message).toContain("EACCES");
+  });
+
+  it("hs signals list --save fails with CLI_ERROR and a clean message, not a raw EACCES string", () => {
+    const result = runCli(
+      ["signals", "list", "--role", "backend", "--save"],
+      { HS_CONFIG_DIR: unwritableConfigDir },
+    );
+    expect(result.status).not.toBe(0);
+    const err = JSON.parse(result.stderr.trim());
+    expect(err.error.code).toBe("CLI_ERROR");
+    expect(err.error.message).toContain("Could not write to config file");
+  });
+
+  it("hs companies unwatch <slug> is unaffected -- it never writes when there's nothing to remove", () => {
+    // unwatchCompany's early-return (no existing file / no watchedCompanies
+    // array) means this never reaches writeConfigFile at all, so it should
+    // still succeed even with an unwritable parent -- confirms the fix
+    // didn't accidentally make a genuinely-no-op path start failing.
+    const result = runCli(["companies", "unwatch", "gitlab"], { HS_CONFIG_DIR: unwritableConfigDir });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      data: { unwatched: "gitlab", watchedCompanies: [] },
+    });
   });
 });

@@ -1,5 +1,5 @@
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, rm, readFile, writeFile, chmod } from "node:fs/promises";
+import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -209,5 +209,62 @@ describe("watchCompany / unwatchCompany / loadWatchedCompanies (feature request:
     expect(await loadSavedFilters(env)).toEqual({ role: "cybersecurity" });
     expect(await loadLastCheckedAt(env)).toBe("2026-08-17T00:00:00.000Z");
     expect(await loadWatchedCompanies(env)).toEqual(["gitlab"]);
+  });
+});
+
+/**
+ * Bug found in review: saveFilters/watchCompany/unwatchCompany had no
+ * local try/catch around their fs writes at all, unlike
+ * recordLastCheckedAt (which deliberately swallows write failures as
+ * best-effort). A raw EACCES/ENOSPC/etc. would still surface correctly
+ * as a CLI_ERROR (main.ts's top-level catch handles any thrown error --
+ * this was never an uncaught-crash bug), but with Node's raw message
+ * instead of a clean one. writeConfigFile() now wraps every write in
+ * these three functions with a consistent, CLI-authored message.
+ *
+ * Forces a real EACCES the same way as companies-watchlist.test.ts's
+ * subprocess-level version: chmod the config dir's PARENT read-only so
+ * the CLI can't mkdir the actual (not-yet-existing) config dir under
+ * it. Skipped on win32 -- POSIX permission bits don't apply there.
+ */
+describe.skipIf(platform() === "win32")("write failure produces a clean wrapped error, not a raw fs error", () => {
+  let readonlyParent: string;
+  let unwritableEnv: NodeJS.ProcessEnv;
+
+  beforeEach(async () => {
+    readonlyParent = await mkdtemp(join(tmpdir(), "hs-config-test-ro-"));
+    unwritableEnv = { HS_CONFIG_DIR: join(readonlyParent, "config-dir-that-cant-be-created") };
+    await chmod(readonlyParent, 0o555);
+  });
+
+  afterEach(async () => {
+    await chmod(readonlyParent, 0o755); // restore write perms so rm can clean up
+    await rm(readonlyParent, { recursive: true, force: true });
+  });
+
+  it("saveFilters rejects with a clean 'Could not write to config file' message wrapping the real EACCES", async () => {
+    await expect(saveFilters({ role: "backend" }, unwritableEnv)).rejects.toThrow(
+      /Could not write to config file.*EACCES/s,
+    );
+  });
+
+  it("watchCompany rejects with the same clean wrapped message", async () => {
+    await expect(watchCompany("gitlab", unwritableEnv)).rejects.toThrow(
+      /Could not write to config file.*EACCES/s,
+    );
+  });
+
+  it("the thrown error's cause is the original fs error (not swallowed, just wrapped)", async () => {
+    await expect(saveFilters({ role: "backend" }, unwritableEnv)).rejects.toMatchObject({
+      cause: expect.objectContaining({ code: "EACCES" }),
+    });
+  });
+
+  it("unwatchCompany does NOT throw -- its early-return means it never reaches the write at all", async () => {
+    // No existing config file under unwritableEnv, so unwatchCompany's
+    // `if (!existing...) return []` fires before any fs write is
+    // attempted -- confirms the fix didn't change this genuinely-no-op
+    // path's behavior.
+    await expect(unwatchCompany("gitlab", unwritableEnv)).resolves.toEqual([]);
   });
 });

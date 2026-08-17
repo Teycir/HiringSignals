@@ -102,6 +102,29 @@ async function readConfigFile(path: string): Promise<ConfigFileShape | null> {
 }
 
 /**
+ * Creates the config directory and writes `contents`, wrapping any raw
+ * fs error (EACCES, ENOSPC, EROFS, etc.) in a clean, CLI-authored
+ * message. Without this, a permissions/disk-full failure would still
+ * reach the user (main.ts's top-level catch turns *any* thrown error
+ * into a `CLI_ERROR` JSON envelope -- it never crashes uncaught), but
+ * the message would be Node's raw `"EACCES: permission denied, mkdir
+ * '...'"` string, which is out of step with every hand-authored CLI_ERROR
+ * message elsewhere (e.g. signals.ts's "--watch must be a positive
+ * number of seconds"). This is the one write path saveFilters/
+ * watchCompany/unwatchCompany all now share, so the message is
+ * consistent regardless of which command triggered it.
+ */
+async function writeConfigFile(path: string, contents: ConfigFileShape): Promise<void> {
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(contents, null, 2) + "\n", "utf8");
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not write to config file at ${path}: ${reason}`, { cause: err });
+  }
+}
+
+/**
  * Loads the saved filter profile, or null if none exists / the stored
  * value fails signalsQuerySchema validation (N.1's "no v1 versioning --
  * silently discard on parse failure" decision). Re-validates against the
@@ -135,10 +158,9 @@ export async function loadSavedFilters(env: NodeJS.ProcessEnv = process.env): Pr
  * describes a single saved profile, not multiple named profiles. */
 export async function saveFilters(flags: SavedFilterFlags, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const path = getConfigPath(env);
-  await mkdir(dirname(path), { recursive: true });
   const existing = (await readConfigFile(path)) ?? {};
   const next: ConfigFileShape = { ...existing, savedFilters: flags };
-  await writeFile(path, JSON.stringify(next, null, 2) + "\n", "utf8");
+  await writeConfigFile(path, next);
 }
 
 /** Removes the saved filter profile (`hs signals list --clear-saved`).
@@ -230,12 +252,11 @@ export async function watchCompany(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string[]> {
   const path = getConfigPath(env);
-  await mkdir(dirname(path), { recursive: true });
   const existing = (await readConfigFile(path)) ?? {};
   const current = Array.isArray(existing.watchedCompanies) ? existing.watchedCompanies : [];
   const next = current.includes(slug) ? current : [...current, slug];
   const nextFile: ConfigFileShape = { ...existing, watchedCompanies: next };
-  await writeFile(path, JSON.stringify(nextFile, null, 2) + "\n", "utf8");
+  await writeConfigFile(path, nextFile);
   return next;
 }
 
@@ -251,7 +272,6 @@ export async function unwatchCompany(
   if (!existing || !Array.isArray(existing.watchedCompanies)) return [];
   const next = existing.watchedCompanies.filter((s) => s !== slug);
   const nextFile: ConfigFileShape = { ...existing, watchedCompanies: next };
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(nextFile, null, 2) + "\n", "utf8");
+  await writeConfigFile(path, nextFile);
   return next;
 }
