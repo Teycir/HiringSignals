@@ -1,7 +1,9 @@
 # CI: typecheck + lint across every workspace package, fast pure-logic
-# tests (packages/domain, packages/adapters), and -- as of 2026-08-05 --
-# the subset of live-D1 test suites that touch ONLY D1, run against an
-# isolated `hiring-signals-ci` database, never production.
+# tests (packages/domain, packages/adapters, apps/cli, and -- as of
+# 2026-08-17 -- apps/api's pure-logic/in-memory-only test subset), and
+# -- as of 2026-08-05 -- the subset of live-D1 test suites that touch
+# ONLY D1, run against an isolated `hiring-signals-ci` database, never
+# production.
 #
 # History: this workflow originally ran zero live-D1 suites at all
 # (2026-08-02 decision, see below), because every one of them talks to
@@ -39,12 +41,20 @@
 # 2026-08-05, not an oversight). Revisit if/when an equivalent
 # account-level isolation story exists for AI/Vectorize/KV.
 #
-# packages/domain and packages/adapters remain the always-on fast
-# exception: both are pure logic with zero @hiring-signals/test-support
-# or live-D1 dependency (confirmed via their package.json dependency
-# lists, 2026-08-02) -- domain has none of this repo's own packages as a
-# dependency at all, adapters depends only on domain. Their vitest
-# suites run in seconds against fixtures/pure functions.
+# packages/domain, packages/adapters, and (as of 2026-08-17) apps/cli
+# are the always-on fast exception: all pure logic plus, for apps/cli,
+# real local filesystem I/O and fetch calls that never reach live
+# Cloudflare infra in any test (every network-touching case points at
+# an unreachable host and asserts the resulting error; local-state
+# cases never call fetch at all) -- confirmed via a zero-hit grep for
+# @hiring-signals/test-support / createLive* imports in apps/cli, and
+# a full local run of its suite under a stripped env with no
+# CLOUDFLARE_API_TOKEN set. domain has none of this repo's own
+# packages as a dependency at all, adapters depends only on domain.
+# apps/cli depends on domain and db, but only imports db's exported
+# *types*, never a live D1Client -- its own tests construct all
+# fixtures locally. Their vitest suites run in seconds against
+# fixtures/pure functions.
 #
 # Auth: the live-d1-tests job below needs the same CF_TOKEN this repo
 # already uses locally (widened 2026-08-02 to include D1:Edit alongside
@@ -115,6 +125,63 @@ jobs:
 
       - name: Test (packages/adapters)
         run: pnpm --filter @hiring-signals/adapters test
+
+      # apps/cli: pure local logic + real filesystem I/O against a
+      # per-test mkdtemp() temp dir (config-store.ts) plus HTTP calls
+      # made through fetch, which every test either points at an
+      # unreachable host (127.0.0.1:1, asserting the resulting
+      # NETWORK_ERROR) or never reaches at all (validation/local-state
+      # cases) -- same "no live Cloudflare binding, no secret" profile
+      # as domain/adapters above, confirmed 2026-08-17 by grepping for
+      # @hiring-signals/test-support / createLive* imports (zero hits)
+      # and running the full suite under a stripped env with no
+      # CLOUDFLARE_API_TOKEN present. Added here rather than to
+      # live-d1-tests since it needs neither that job's secret nor its
+      # migrations-apply step.
+      - name: Test (apps/cli)
+        run: pnpm --filter @hiring-signals/cli test
+
+      # apps/api's own `test` script is bare `vitest run` (everything in
+      # test/, including the live-D1/KV/AI/Vectorize files) -- unlike
+      # domain/adapters/cli above, it can't be run via a plain
+      # `--filter ... test` here. This step instead names, explicitly,
+      # every apps/api test file confirmed to need zero live Cloudflare
+      # binding: test/lib (csv, rss -- plain functions), test/routes
+      # (companies, trends -- resolveTimelineWindow/resolveTrendsSince,
+      # pure), test/middleware/api-metrics.test.ts and
+      # security-headers.test.ts (pure function / in-memory Hono app,
+      # no binding touched), and test/jobs/ingest-consumer-budget.test.ts
+      # (pure chargeSubrequests/budgetExhausted math, per that file's own
+      # header comment). Confirmed 2026-08-17 by reading every file's
+      # imports and running exactly this file list under a stripped env
+      # with no CLOUDFLARE_API_TOKEN -- 49 tests, ~4s, all pass.
+      #
+      # Explicitly NOT included, and NOT swept in by a directory glob:
+      # test/middleware/admin-auth.test.ts (createLiveKvNamespace
+      # ("ABUSE_LOGS"), real live KV -- confirmed by reading the file,
+      # despite "admin" suggesting it might parallel companies/trends'
+      # pure-route-helper pattern) and test/jobs/ingest-consumer.test.ts
+      # (live D1/AI/Vectorize, already covered by this file's header
+      # comment). Both need @hiring-signals/test-support's live
+      # createLive*() helpers, so a secret, and neither fits
+      # live-d1-tests either (KV/AI/Vectorize aren't isolated from
+      # production the way D1 now is -- see this file's header comment) --
+      # they stay excluded and manual-only, matching
+      # ingest-consumer.test.ts's existing status. Named explicitly
+      # (not `test/lib test/routes ... test/jobs/*.test.ts`) so a new
+      # live-infra file added later under test/middleware or test/jobs
+      # can never be silently swept into this step by a directory glob.
+      - name: Test (apps/api, pure logic and in-memory-only subset)
+        working-directory: apps/api
+        run: >-
+          npx vitest run
+          test/lib/csv.test.ts
+          test/lib/rss.test.ts
+          test/middleware/api-metrics.test.ts
+          test/middleware/security-headers.test.ts
+          test/routes/companies.test.ts
+          test/routes/trends.test.ts
+          test/jobs/ingest-consumer-budget.test.ts
 
       # Dependency vulnerability scan (ROADMAP.md Milestone G.1/G.2,
       # spec 14.1's "use dependency scanning; patch critical
