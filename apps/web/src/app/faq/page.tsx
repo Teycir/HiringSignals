@@ -56,7 +56,7 @@ const FAQS = [
   },
   {
     q: "Can I access the source code?",
-    a: "Yes — the project is MIT licensed. Find it on GitHub via the link in the footer.",
+    a: "Yes — the project is BSL 1.1 licensed. Find it on GitHub via the link in the footer.",
   },
   {
     q: "Who built this?",

@@ -139,23 +139,47 @@ CHANGELOG.md.
   Last-Modified/304 support (R.2), `hs feed-url` for discoverability
   (R.3).
 
-- **S — Security/data-integrity code-review pass (`apps/api`,
-  `packages/db`, `packages/adapters`).** 3 issues found and fixed
-  2026-08-17: CSV export formula-injection (S.1), CORS reflected-
-  origin + credentials misconfiguration plus an adjacent OPTIONS-
-  preflight bug found in the same file (S.2), admin-auth strike-
-  counter KV race (S.3). Full detail in CHANGELOG.md.
+- **S — Security/data-integrity code-review pass.** 3 issues found and
+  fixed 2026-08-17: CSV export formula-injection, CORS reflected-origin
+  + credentials misconfiguration, admin-auth strike-counter KV race.
+  Full detail in CHANGELOG.md.
+
+- **T — `apps/cli` `--watch`/watchlist code-review pass.** 6 issues
+  reviewed 2026-08-17; 5 already fixed in the original implementation,
+  1 verified as acceptable design. Full detail in CHANGELOG.md.
 
 - **U — Hybrid-search / query-schema bug hunt.** 4 issues found and
-  fixed 2026-08-17, starting from a prior trends-CLI investigation:
-  missing regression coverage for an already-fixed CLI bug (U.1);
-  `signalsQuerySchema.roles` silently treating an empty `--role` as
-  "no filter" instead of erroring (U.2), duplicated unfixed on the
-  public HTTP export/feed routes (U.3); and a semantic-search ranking
-  bug where every hybrid-search result got the same similarity score
-  regardless of which job actually matched (U.4), root-fixed via a
-  new `matched_job_id` field on `findSignalsByJobIds`. Full detail in
+  fixed 2026-08-17: missing regression coverage for an already-fixed
+  CLI bug, an empty `--role`/`?roles=` silently matching "no filter"
+  instead of erroring (CLI schema + duplicated unfixed on the public
+  HTTP export/feed routes), and a semantic-search ranking bug where
+  every hybrid result got the same similarity score. Full detail in
   CHANGELOG.md.
+
+- **V — `apps/web` UI wiring gaps.** 4 design deferrals closed
+  2026-08-17: root redirect, real empty/stale-source states on the
+  signal feed, real per-signal score-component breakdown, real
+  role-scoped activity on the trend block. Full detail in CHANGELOG.md.
+
+- **W — `apps/web`/API production bugs found verifying V.** 4 bugs
+  found and fixed 2026-08-17, none caught by typecheck/lint/tests:
+  a CSP nonce blocking hydration on every page, a snake_case/camelCase
+  field mismatch breaking last-sync/staleness display, an unapplied
+  remote D1 migration 500ing signal detail, and a Worker-to-Worker
+  fetch restriction (error 1042) silently breaking `generateMetadata`.
+  Full detail in CHANGELOG.md.
+
+- **API client consolidation (`packages/domain`).** Landed 2026-08-17
+  (commit `1904501`). Extracted the request/error-envelope/query-
+  serialization logic duplicated between `apps/cli`'s and `apps/web`'s
+  hand-maintained API clients into a shared, platform-agnostic
+  `packages/domain/src/api-client-core.ts`; `apps/web`'s param types
+  now derive from the same Zod schemas `apps/cli` and the live routes
+  validate against instead of a hand-copied, already-drifted set.
+  Zero call-site changes in either app. Verified: typecheck + lint
+  clean on all 3 touched packages, `apps/cli`'s full 101-test suite
+  (including 22 live-network api-client tests) passing unchanged.
+  Deployed the same day (`apps/web` Worker version `56084565`).
 
 ---
 
@@ -242,85 +266,3 @@ live-D1/manual-only.
       a separate preview/staging tier — but kept here as an explicit
       constraint in case that decision is ever revisited. Not a task
       to schedule.
-
-### T — `apps/cli` code review findings (2026-08-17, --watch / company-watchlist pass)
-
-Six issues found during a manual review of the `--watch` polling mode,
-company-watchlist commands (`hs companies watch`/`unwatch`/
-`list --watched`), and the `lastCheckedAt` incremental-default feature —
-all landed the same day (F.1/N follow-on work, not tied to a spec
-section directly, but in service of spec P1's "Company watchlists" and
-the CLI's own F.1 "unattended agent" design principles). All resolved
-2026-08-17: T.1, T.2, T.3, T.4, T.6 fixed in the original feature
-implementation; T.5 verified as acceptable design (current order prevents
-silent signal drops, replay window is negligible).
-
-### V — `apps/web` UI wiring gaps (identified 2026-08-17)
-
-Four gaps found during a thorough audit of the web UI's backend
-integration. The API client (`src/lib/api-client.ts`) is fully wired
-to every deployed endpoint — all pages fetch real data. These are
-design deferrals and one UX omission, not broken wiring. All completed
-2026-08-17:
-
-- [x] **V.1 — Root `/` page shows a text link instead of redirecting.**
-- [x] **V.2 — Signal feed has no "sources haven't run yet" / "all sources are stale" status state.**
-- [x] **V.3 — `ScoreBreakdown` shows a generic formula description instead of real per-signal component values.**
-- [x] **V.4 — `TrendBlock` on signal detail links out instead of showing role-scoped 7/30/90-day activity.**
-
-Note: V.2's staleness check and the masthead's own last-sync label
-(added by a same-day follow-up commit) both silently no-opped due to a
-field-name mismatch discovered afterward — see Section W below.
-
-### W — `apps/web`/API production bugs found verifying V (found + fixed 2026-08-17)
-
-Four bugs surfaced while manually verifying the day's other web work end
-to end in a real browser against the live Workers runtime — none was
-caught by `tsc`, lint, or the existing test suite, because each was
-either a CSP policy interacting with framework-internal behavior, a type
-that was internally consistent within `apps/web` but didn't describe
-what the server actually sends, a migration that had only ever been run
-locally and was never applied to the remote database (W.3), or (W.4) a
-Cloudflare Worker-to-Worker fetch restriction plus a bare catch block
-that hid it.
-
-- [x] **W.1 — Production CSP blocked Next.js's own hydration scripts on
-  every page**, leaving `/signals` (and every other route) rendering a
-  dead, unhydrated shell. Fixed via per-request nonce middleware +
-  forcing every route dynamic so the nonce reaches every page's scripts.
-  See CHANGELOG.md for the full root-cause chain, including the
-  `middleware.ts`-vs-`proxy.ts` OpenNext compatibility finding.
-- [x] **W.2 — Masthead "last sync" and `SignalFeed`'s V.2 staleness
-  check were permanently stuck on "pending"/never-fired** because
-  `apps/web/src/lib/api-client.ts`'s local `SourceSummary` type used
-  snake_case (`last_success_at`) while the real API response (from
-  `packages/db`'s `toSummary()`) has always been camelCase
-  (`lastSuccessAt`). Fixed by correcting the type and both call sites.
-  Verified live: preview now shows `last sync: 26m ago`.
-- [x] **W.3 — `GET /api/v1/signals/:signalId` 500ing in production**
-  because migration `0010_signal_score_components.sql` (V.3's score
-  components) had only ever been applied locally —
-  `wrangler d1 migrations list hiring-signals --remote` showed it still
-  pending, so `getSignalDetail`'s query threw `D1_ERROR: no such column:
-  s.score_freshness` on every request (confirmed via `wrangler tail`).
-  Discovered while verifying the SEO `generateMetadata` fix for
-  `/signals/[signalId]`, not by this section's own original bug hunt.
-  Fixed by running `wrangler d1 migrations apply hiring-signals --remote`.
-  See CHANGELOG.md for the full root-cause chain.
-- [x] **W.4 — `generateMetadata` for companies/[slug] and
-  signals/[signalId] silently served the generic fallback title in
-  production**, via two stacked causes. First,
-  `NEXT_PUBLIC_API_BASE_URL` never reached the deployed Worker's runtime
-  `process.env` (it's only inlined into client bundles at build time) —
-  fixed with a `vars` entry in `wrangler.jsonc`. That surfaced a deeper
-  issue: server-side fetches to the API Worker's public
-  `*.workers.dev` hostname hit Cloudflare error 1042
-  ("Worker-to-Worker fetch on the same account over a public hostname is
-  disallowed"). Both `generateMetadata` catch blocks had a bare,
-  unlogged catch-all masking this — fixed those to `console.error` any
-  non-NOT_FOUND failure first (which is what actually surfaced the 1042
-  message via `wrangler tail`), then fixed the root cause with a proper
-  Cloudflare service binding (`wrangler.jsonc`'s `services`) so
-  server-side API calls route Worker-to-Worker directly instead of over
-  the public internet. See CHANGELOG.md for the full root-cause chain
-  and code details.

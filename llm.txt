@@ -4,13 +4,13 @@
 Hiring Signals Intelligence is a CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as scored, filterable signals as soon as they appear publicly across 8 ATS providers via official documented APIs (no scraping). Signals go beyond raw job listings to detect what is actually happening: new roles, reopened roles, hiring bursts, role acceleration, multi-location expansion, persistent demand. Designed for job seekers who want to see openings before the crowd, analysts/investors tracking hiring velocity, and AI agents acting on a person's behalf.
 
 ## Tech Stack
-- **Interface**: `apps/cli` (complete, landed 2026-08-07) — thin CLI client over `apps/api`, JSON-by-default on stdout with single-JSON-object errors on stderr, `--format table` flat-list renderer for interactive human use (added 2026-08-10), no interactive prompts. Primary interface; `apps/web` dashboard deleted 2026-08-07.
+- **Interface**: Two front doors over the same `apps/api` — `apps/cli` (complete, landed 2026-08-07), a thin JSON-by-default CLI client (`--format table` for interactive human use, added 2026-08-10, no interactive prompts), primary interface for AI agents; and `apps/web`, a Next.js 16 dashboard, deleted 2026-08-07 in the original CLI-first decision, then **restored 2026-08-16** (commit `1bc7a97`) once it was clear the dashboard added real value for human users browsing rather than querying. Both stayed live and current through the 2026-08-17 S/T/U/V/W hardening passes.
 - **Backend**: Cloudflare Workers with Hono framework
-- **Database**: Cloudflare D1 (SQLite), 9 migrations (0001-0009)
+- **Database**: Cloudflare D1 (SQLite), 10 migrations (0001-0010)
 - **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize — hybrid semantic search: embeddings generated at ingest time (I.2), query-side merge with keyword results wired live into GET /api/v1/signals (I.3), falls back to keyword-only on subsequent pages or if the AI leg is unavailable
 - **Package Manager**: pnpm workspace
-- **Deployment**: Cloudflare Workers (API only — no UI deployment; `apps/web`/Cloudflare Pages was deleted 2026-08-07). Current live production Worker version: `6f82cd4a` (deployed 2026-08-14).
-- **Validation**: Zod schemas
+- **Deployment**: Two Cloudflare Workers, same account: `hiring-signals-api` (backend, includes the 2026-08-17 S/T/U/W fixes; last confirmed version in this file is `6f82cd4a` from 2026-08-14 — deployed again since but no newer version string has been recorded here yet) and `hiring-signals-web` (`apps/web`, restored 2026-08-16, deployed via `@opennextjs/cloudflare`, Worker version `56084565` as of 2026-08-17). The two talk to each other over a Cloudflare service binding, not the public internet (fixed as W.4 — see below).
+- **Validation**: Zod schemas — as of the 2026-08-17 api-client consolidation, `apps/web`'s param types derive from the same schemas `apps/cli` and the live routes validate against, via a new shared `packages/domain/src/api-client-core.ts`.
 - **Code Quality**: ESLint 10 flat config (--max-warnings 0), Prettier, strict TypeScript with noUncheckedIndexedAccess
 
 ## Architecture
@@ -24,10 +24,21 @@ apps/cli/        CLI, primary interface -> complete, landed 2026-08-07 (Mileston
                   decline and fall back to JSON with a stderr note).
                   Saved filter profiles: --save / --clear-saved stored at
                   ~/.hiring-signals/config.json; auto-applied on no-flag invocations.
-apps/web/        Deleted 2026-08-07. Was a Next.js 16 UI on Cloudflare Pages; removed
-                  entirely (not deprioritized-but-kept) once confirmed it added no
-                  capability apps/api didn't already expose. New interface work lands
-                  in apps/cli/ instead. See ROADMAP.md Milestone F's header note.
+apps/web/        Next.js 16 dashboard, deployed to Cloudflare Workers via
+                  @opennextjs/cloudflare. Deleted 2026-08-07 during the original
+                  CLI-first push, then RESTORED 2026-08-16 (commit 1bc7a97) and
+                  brought current against everything apps/api gained in the
+                  interim (Milestones O, P, Q). Pages: /signals (feed + filters +
+                  search), /signals/[signalId] (detail, score breakdown, evidence,
+                  more-like-this), /companies/[slug] (timeline), /trends
+                  (cross-company ranking), /faq, /how-to-use. Four 2026-08-17
+                  production bugs found and fixed the same day verifying the
+                  restore (Milestone W — CSP nonce blocking hydration, a
+                  snake_case/camelCase field mismatch, an unapplied D1 migration,
+                  a Worker-to-Worker fetch restriction) — see CHANGELOG.md.
+                  apps/cli remains the primary interface for AI agents; apps/web
+                  is for human browsing. See ROADMAP.md Milestones V/W and
+                  CHANGELOG.md for full detail.
 apps/api/        Cloudflare Worker API: routes, 15-min cron scheduler -> INGEST_QUEUE
                   consumer (multi-chunk continuation for large boards, max 40 jobs per
                   chunk to stay under the 1000-subrequest free-plan cap),
@@ -46,7 +57,11 @@ packages/domain/ Zod schemas, taxonomies (10 IT role categories), classification
                   + 0.10*breadth + 0.10*classification_confidence),
                   hiring velocity scoring (V = 0.40*acceleration + 0.25*breadth
                   + 0.20*volume_norm + 0.15*persistence, 0-100, investor-grade),
-                  embedding-text builder, search-merge hybrid-keyword-semantic logic.
+                  embedding-text builder, search-merge hybrid-keyword-semantic logic,
+                  api-client-core.ts (added 2026-08-17): shared request/error-envelope/
+                  query-serialization logic, extracted from apps/cli's and apps/web's
+                  previously independent, drifted API clients. Both apps' param types
+                  now derive from the same Zod schemas the live routes validate against.
 packages/adapters/ AtsAdapter interface; 8 P0 providers implemented (coverage closed at 8,
                   decided with the user 2026-08-04): Greenhouse, Lever, Ashby,
                   SmartRecruiters, Workable, Recruitee, Personio, Breezy.
@@ -72,7 +87,10 @@ lib/             Cross-workspace generic utilities (nothing here imports domain 
                   text utilities (base64url, SHA-256 content hash for observation
                   diff detection, RFC-4180 CSV serializer, location-mode inference,
                   dependency-free RSS 2.0 feed serializer).
-infrastructure/  D1 migrations 0001-0009. Ops scripts: add-source, update-source,
+infrastructure/  D1 migrations 0001-0010 (0010 adds signal score-component columns,
+                  Milestone V.3; applied locally on creation but not to the remote
+                  D1 database until 2026-08-17 as part of the W.3 fix — see
+                  CHANGELOG.md). Ops scripts: add-source, update-source,
                   add-company, update-company (industry/employee-band/remote tags),
                   source-health (stale/stuck/degraded detection, 90-min stuck threshold),
                   backfill-embeddings, build-category-centroids, import-sources
@@ -80,8 +98,8 @@ infrastructure/  D1 migrations 0001-0009. Ops scripts: add-source, update-source
                   rate with/without requisitionId tiering), seed-local-d1.sql.
 ```
 
-## Current Status (2026-08-15)
-**All originally scoped milestones shipped: Phases 0-1 complete. Milestones A-R (write pipeline through RSS feed, 8 adapters, CLI, saved filters, company timeline, hiring trends, hiring velocity, G.3-G.5 acceptance criteria) all complete. 8 active ATS adapters live. 9 D1 migrations (0001-0009) applied. `apps/web` (the dashboard UI) was deleted 2026-08-07; `apps/cli` is now the primary interface and shipped the same day. Production Worker deployed at version `6f82cd4a` (2026-08-14).**
+## Current Status (2026-08-17)
+**All originally scoped milestones (Phase 0 -> R, G.1-G.5) plus five later code-review/bug-hunt passes (S, T, U, V, W) are shipped and verified. 8 active ATS adapters live. 10 D1 migrations (0001-0010) applied to remote. `apps/web` (the dashboard UI) was deleted 2026-08-07, then RESTORED 2026-08-16 (commit `1bc7a97`) and is live again alongside `apps/cli`, which remains the primary interface for AI agents. Both apps' API clients were consolidated onto a shared `packages/domain/src/api-client-core.ts` the same day (2026-08-17). One genuinely open item remains — see "Not yet done" below.**
 
 Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in sync with it.
 
@@ -89,7 +107,7 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 - pnpm workspace, strict TypeScript base config (noUncheckedIndexedAccess on), Prettier, shared ESLint 10 flat base with --max-warnings 0
 - Hono Worker with full middleware chain, real cron scheduler (15-min source ticks), real queue consumer (multi-chunk continuation for 700+ job boards, 40 jobs/chunk, in-flight stacking guard via hasRecentRunningRun(45min window)), daily reconciliation cron (stale signal score recompute + company hiring velocity recompute for touched companies)
 - 8 P0 ATS adapters implemented with fixture-driven tests, location-mode inference, custom-host validation (port-injection bug fixed 2026-08-10)
-- Full D1 schema with indexes: migrations 0001-0009 (initial, signal evidence, raw payload key rename, job observations idempotency, signals dedup, one-active-signal-per-triple unique, trends role/first-seen index, company velocity score columns, jobs requisition ID column)
+- Full D1 schema with indexes: migrations 0001-0010 (initial, signal evidence, raw payload key rename, job observations idempotency, signals dedup, one-active-signal-per-triple unique, trends role/first-seen index, company velocity score columns, jobs requisition ID column, signal score-component columns)
 - Parameterized D1 client wrapper (no string concatenation, .bind() for all params) with read repos (signals/companies/facets/export/trends/timeline/company-stats) and write repos (sources/jobs/signals/companies)
 - Full ingestion pipeline: fetch → validate → normalize → upsert → observe → lifecycle → classify → score → signal, idempotent per (sourceId, runId), provider/schema errors skip retry immediately, only network failures (429/5xx) get 5-attempt capped exponential backoff with correct attempt incrementing; D1 batch() used for upsert+lifecycle pair to cut per-job subrequest cost
 - Signal scoring v2: real Volume/Acceleration/Breadth with company-role activity stats backing, 28-day active-signal lookback to avoid folding multi-month-lull bursts into stale rows, daysSinceObservation anchored on postedAt before falling back
@@ -103,7 +121,7 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 - Security hardening: safeRateLimitIdentifier() SHA-256 base64url hashing in rate-limit.ts (prevents IPv6 colon injection and scrubs IP PII from KV keys); trusted-first IP extraction in client-ip.ts (CF-Connecting-IP > last X-Forwarded-For hop, never untrusted first hop)
 - Semantic search (Milestone I.1-I.3): jobs embedded into a 768-dim cosine Vectorize index at ingest time (gated on new-or-content-changed jobs, non-blocking try/catch so an embed failure never fails the enclosing ingest); query-side hybrid keyword+semantic search service + merge logic wired live into GET /api/v1/signals page 1, degrades gracefully to keyword-only
 - Zero-mocks live test infrastructure (packages/test-support) against real Cloudflare D1/KV/AI/Vectorize resources
-- CLI (apps/cli): F.1-F.1.6 + G.5 §16.2 table renderer, landed 2026-08-07 with --format table added 2026-08-10. All commands: hs signals list/get, companies list/get/timeline, facets, sources list, export signals, feed-url, trends hiring, admin commands. Saved filter profiles (--save/--clear-saved/auto-apply). JSON-by-default stdout + single-JSON-object stderr. 59 tests across api-client, cli-process, config-store, signals-list-saved-filters, and feed-url suites. See apps/cli/README.md.
+- CLI (apps/cli): F.1-F.1.6 + G.5 §16.2 table renderer, landed 2026-08-07 with --format table added 2026-08-10. All commands: hs signals list/get, companies list/get/timeline, facets, sources list, export signals, feed-url, trends hiring, admin commands. Saved filter profiles (--save/--clear-saved/auto-apply). JSON-by-default stdout + single-JSON-object stderr. 101 tests across api-client (including 22 live-network cases), cli-process, config-store, signals-list-saved-filters, and feed-url suites. See apps/cli/README.md.
 - Saved filter profiles (Milestone N): stores raw pre-parse flag strings (not parsed defaults, so sort/limit/minScore aren't silently baked into saved profiles), ~/.hiring-signals/config.json or $XDG_CONFIG_HOME/hiring-signals/config.json, auto-applied with one-line stderr note when no flags given
 - Company hiring timeline API + CLI (Milestone O): time-bucketed 7/14/30-day windows (90-day cap), role/location breakdowns, signal types per bucket, approximate closed-job counts (documented)
 - Cross-company hiring trend API + CLI (Milestone P): ranked companies with acceleration/volume/newest-signal/velocity sorts, industry/country/role/recency filters, top-5-location per-company breakdown, 5-min KV cache
@@ -112,17 +130,23 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 - Source-health ops script: stuck-run detection (90-minute STALE_RUNNING_MINUTES threshold, catches the 2026-08-13 openai stuck-run failure mode that 277 rows previously slipped through)
 - API error-rate monitoring: Analytics Engine API_METRICS binding with per-request data points (method, normalized route shape, status, durationMs); UUIDs/slugs collapsed into :id/:param to keep cardinality bounded
 - G.5 acceptance criteria walkthrough: 16.1 (functional) through 16.3.6 (monitoring) all PASS, each with live verification and fix notes
+- Milestone S (2026-08-17, security/data-integrity review): 3 issues fixed — CSV export formula-injection, CORS reflected-origin + credentials misconfiguration (plus a related OPTIONS-preflight header-ordering bug found in the same code path), admin-auth strike-counter KV race
+- Milestone T (2026-08-17, `apps/cli` `--watch`/watchlist review): 6 issues reviewed, 5 fixed, 1 (T.5) verified as acceptable existing design
+- Milestone U (2026-08-17, hybrid-search/query-schema bug hunt): 4 issues fixed — missing regression coverage for an already-fixed CLI bug, an empty `--role`/`?roles=` silently matching "no filter" instead of erroring (fixed in the CLI's domain schema and, separately, in two hand-copied HTTP-route schemas that hadn't inherited the first fix), and a semantic-search ranking bug where every hybrid result got the same similarity score
+- Milestone V (2026-08-17, `apps/web` UI wiring gaps): 4 design deferrals closed — root redirect, real empty/stale-source states on the signal feed, real per-signal score-component breakdown, real role-scoped activity on the trend block
+- Milestone W (2026-08-17, `apps/web`/API production bugs found verifying V): 4 bugs fixed, none caught by typecheck/lint/tests — a CSP nonce blocking hydration on every page, the snake_case/camelCase field mismatch noted above under Deployment, an unapplied remote D1 migration (0010) 500ing signal detail, and a Worker-to-Worker fetch restriction (Cloudflare error 1042) silently breaking `generateMetadata`
+- API client consolidation (2026-08-17): shared `packages/domain/src/api-client-core.ts` extracted from `apps/cli`'s and `apps/web`'s previously independent API clients; `apps/web`'s param types now derive from the same Zod schemas the live routes validate against instead of a hand-copied, already-drifted set
 - ENVIRONMENT var hygiene: apps/api/wrangler.toml top-level [vars] ENVIRONMENT corrected from "development" to "production"
 - Ingest consumer multi-chunk continuation: processes at most JOBS_PER_CHUNK=40 jobs per invocation, re-enqueues a continuation message for the remainder so full 700+ job Ashby boards stay under the 1000-service-subrequest cap; chunkOffset/runId/sourceId forwarded so dedupe stays coherent; JOBS_PER_CHUNK_OVERRIDE test seam
-- Temporary diagnostic checkpoint: recordSourceRunProgress writes source_runs.jobs_normalized every 10 jobs inside the chunk loop (explicitly temporary, to be removed once the per-chunk kill mechanism is root-caused via wrangler tail)
+- Temporary diagnostic checkpoint: recordSourceRunProgress writes source_runs.jobs_normalized every 10 jobs inside the chunk loop; root cause is now found and fixed (SubrequestBudget), one live confirmation run succeeded 2026-08-16 — checkpoint itself still in place pending a few more clean runs, see "Not yet done" below
 - Scheduler stacking guard: hasRecentRunningRun(staleAfterMinutes=45) called before enqueueing; skips any source still in flight to prevent stacked runs from contending for the same invocation's CPU/subrequest budget (prevented the openai 577 concurrent stuck-run growth mode)
 - 577 abandoned running rows + 1 leaked test-fixture company/source cleaned up from production D1 post-fix (abandoned_run_cleanup error_code, full FK-safe cascade delete order for the test fixture)
-- All workspace typecheck/lint clean (pnpm -r typecheck && pnpm -r lint: 6/6 workspace projects, zero warnings)
+- All workspace typecheck/lint clean (pnpm -r typecheck && pnpm -r lint: 7/7 workspace projects, zero warnings)
 
-**Note on removed work:** Milestone F (dashboard UI: /signals feed, FilterRail, SignalCard, SignalDetail view) and Milestone I.4 (search UI: search bar, recent-searches, more-like-this) both shipped inside apps/web and are accurately recorded as complete in CHANGELOG.md/ROADMAP.md — but apps/web itself was deleted 2026-08-07. That UI code no longer exists in the repo; the API routes and domain logic it called are still live and unaffected.
+**Note on apps/web's history:** Milestone F (dashboard UI: /signals feed, FilterRail, SignalCard, SignalDetail view) and Milestone I.4 (search UI: search bar, recent-searches, more-like-this) shipped inside apps/web, were deleted along with the rest of apps/web on 2026-08-07 during the original CLI-first push, then RESTORED 2026-08-16 (commit `1bc7a97`) and brought current against everything the API gained in the interim (Milestones O, P, Q — company timeline, hiring trends, hiring velocity). The code exists in the repo again and is live in production, including the 2026-08-17 V/W follow-up work above. apps/cli remains the primary interface for AI agents.
 
 **Not yet done / still open:**
-- Per-chunk silent-kill root cause still unconfirmed for the G.3 incident follow-up: why a given chunk-continuation run dies silently partway through with zero JS-catchable error and no source_runs.error_code populated. Needs live wrangler tail during an openai cron tick, then removal of the temporary recordSourceRunProgress checkpoint once diagnosed. This is the only genuinely open code item in the entire repo.
+- G.3 per-chunk-kill diagnostic checkpoint removal: root cause was found and fixed 2026-08-15/16 (`SubrequestBudget`, see CHANGELOG.md), and the first live `openai` run under the new code completed successfully 2026-08-16 — but the checkpoint's own removal condition is "a few real production runs," plural, and only one has been observed so far. Watch 2-3 more `openai` cron cycles reach `status='success'` cleanly, then remove `recordSourceRunProgress` and close this item. This is the only genuinely open code item in the entire repo.
 - Classification assist from embeddings (I.5, deliberately deferred until I.1-I.4 have real production traffic to measure)
 - If a preview/staging tier is ever added (currently explicitly not planned per G.4's environment-scope decision): never point it at production secrets or write bindings — explicit future guardrail retained, not a task to build today
 - No authentication anywhere in the read surface of this app, by permanent design decision (spec §3/§10.5/§11.1) — not a gap to fill; the admin trigger surface already uses bearer-secret gating which is the extent of auth ever planned
@@ -157,7 +181,7 @@ Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in s
 ```bash
 pnpm install
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
-pnpm -r typecheck                           # all 6 workspace projects, strict TS, noUncheckedIndexedAccess on
+pnpm -r typecheck                           # all 7 workspace projects, strict TS, noUncheckedIndexedAccess on
 pnpm -r lint                                # ESLint across workspaces, --max-warnings 0, 0/0 expected
 pnpm --filter @hiring-signals/domain test   # fast pure-logic suite (~93 tests, ~1s)
 pnpm --filter @hiring-signals/adapters test # fast fixture suite (~114 tests, ~3s)
@@ -167,7 +191,11 @@ pnpm --filter @hiring-signals/adapters test # fast fixture suite (~114 tests, ~3
 # apps/api has a 90s per-test vitest.config.ts timeout; ingestion-consumer tests
 # can genuinely exceed this even in isolation (full pipeline ~65s+ per run).
 ```
-No `@hiring-signals/web` package exists — `apps/web` was deleted 2026-08-07.
+`apps/web` was deleted 2026-08-07 and restored 2026-08-16 — a `@hiring-signals/web`-scoped
+package exists again:
+```bash
+pnpm --filter @hiring-signals/web dev                           # Next.js dev server
+```
 `apps/cli` has no `pnpm dev` (it's not a server):
 ```bash
 pnpm --filter @hiring-signals/api dev                          # terminal 1
