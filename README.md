@@ -92,7 +92,7 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 | Directory | Purpose | Status & Details |
 |-----------|---------|-----------------|
 | `apps/cli/` | CLI, primary interface | **Complete** → landed 2026-08-07, `--format table` renderer added 2026-08-10. The real end-user is an AI agent, not a human typing commands, so JSON is the default on stdout with single-JSON-object machine-readable errors on stderr and no interactive prompts (admin actions require `--yes`). Thin client over `apps/api`'s existing routes only — no D1 access, no bypassing API validation/rate-limits/auth. Commands: `hs signals list/get`, `hs companies list/get/timeline`, `hs facets`, `hs sources list`, `hs export signals`, `hs feed-url`, `hs trends hiring`, `hs admin source run/scheduler flush/reconcile`. `--format table` works on flat-list commands; nested/dense shapes (signal detail, company detail, timeline buckets) fall back to JSON. Saved filter profiles (`--save`/`--clear-saved`) stored at `~/.hiring-signals/config.json` auto-apply on no-flag invocations. See `apps/cli/README.md` for exact invocations/output. |
-| `apps/web/` | *Deleted 2026-08-07* | **Removed, not deprioritized** → the Next.js/Cloudflare Pages dashboard was fully deleted (not left in place) once the CLI-first decision confirmed it added no capability the CLI/API surface didn't already have — every route it called is one of the same `apps/api` endpoints the CLI uses. Milestone F shell + FilterRail/SignalCard routes and Milestone I.4 search UI (search bar + recent searches + MoreLikeThis) were all part of the deletion; ROADMAP.md carries full rationale and work-item history. |
+| `apps/web/` | Next.js web UI | **Complete** → Next.js 16 app deployed on Cloudflare Pages via OpenNext. Routes: `/` (signal feed with FilterRail, SignalCard, hybrid search bar + recent searches), `/signals/:id` (signal detail with evidence table, score breakdown, MoreLikeThis), `/companies/:slug` (company detail with hiring timeline), `/trends` (cross-company hiring trends table with velocity badges), `/how-to-use`, `/faq`. Thin client over `apps/api` — no direct D1 access. All signal filters (role, location, source, signal type, company, min score, recency, free-text `q`) are exposed as URL search params and kept in sync with the FilterRail. Export button triggers `GET /export/signals.csv`. See `apps/web/README.md`. |
 | `apps/api/` | Cloudflare Worker API | **Complete** → Hono Worker. Routes: `GET /signals` (hybrid search, cursor pagination), `GET /signals/:id`, `GET /companies`, `GET /companies/:slug`, `GET /companies/:slug/timeline` (time-bucketed hiring activity, 7/14/30-day buckets, 90-day window cap), `GET /trends/hiring` (cross-company ranked analytics, acceleration/volume/velocity/newest-signal sorts, 5-min KV cache), `GET /facets` (60s KV cache), `GET /sources`, `GET /export/signals.csv` (2 000-row cap, `X-Export-Truncated` header), `GET /feed.rss` (RSS 2.0, 50-item cap, ETag/304 conditional requests). Three `POST /admin/*` pipeline triggers gated on bearer `HS_ADMIN_SECRET`. Middleware chain: request-id, client-IP (trusted-first CF-Connecting-IP extraction), security headers, circuit-breaker-wrapped D1 client, anti-abuse rate-limiting (SHA-256-hashed identifiers), free-read-tier enforcement, API error-rate metrics (Analytics Engine `API_METRICS` dataset with normalized route-shape cardinality). Background: 15-min cron scheduler → `INGEST_QUEUE` consumer with 5-retry exponential backoff, daily reconciliation cron (stale score recompute + company hiring velocity recompute). |
 | `packages/domain/` | Core domain logic | **Complete** → Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge logic. |
 | `packages/adapters/` | ATS provider integrations | **8 P0 providers built** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio, breezy. |
@@ -104,6 +104,7 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 ## 🛠 Tech Stack
 
 - **CLI**: Node, TypeScript 5.x (complete — see `apps/cli/README.md`)
+- **Web UI**: Next.js 16, React 19, Tailwind CSS 4, deployed on Cloudflare Pages via OpenNext
 - **Backend**: Cloudflare Workers with Hono framework
 - **Database**: Cloudflare D1 (SQLite)
 - **Search**: Workers AI (`@cf/baai/bge-base-en-v1.5` embeddings) + Vectorize (hybrid semantic search — embeddings stored at ingestion, query path wired as of Milestone I.3; page-1-only, degrades gracefully to keyword-only)
@@ -151,6 +152,7 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 ```bash
 pnpm install
 pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
+pnpm --filter @hiring-signals/web dev     # Next.js dev server (http://localhost:3000)
 ```
 
 There is no `pnpm dev` for the CLI -- it's not a server. Point it at a
