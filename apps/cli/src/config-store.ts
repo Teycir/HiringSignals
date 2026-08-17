@@ -47,6 +47,24 @@ export interface SavedFilterFlags {
 
 interface ConfigFileShape {
   savedFilters?: SavedFilterFlags;
+  /** ISO-8601 timestamp of the last successful `hs signals list` call
+   * that used the saved filter profile (feature request: default
+   * `--observed-since` to "since my last check" for the saved profile,
+   * so a passive/scripted agent gets an incremental "what's new" feed
+   * without having to track its own last-run timestamp). Updated after
+   * every successful saved-profile-backed `signals list` call, not on
+   * every invocation with arbitrary flags -- this is specifically "when
+   * did I last check my usual search," not a generic request log. */
+  lastCheckedAt?: string;
+  /** Company slugs the user has flagged as worth tracking (feature
+   * request: company watchlist, spec P1 "Company watchlists"). No
+   * server-side concept of "watched" exists -- this is purely local
+   * config, same storage tier as savedFilters -- so `hs companies
+   * list --watched` resolves each slug via a live `companies get` call
+   * rather than a filtered list query. Order is insertion order; no
+   * dedup guarantee is needed beyond what watchCompany() already
+   * enforces (see below). */
+  watchedCompanies?: string[];
 }
 
 /**
@@ -143,4 +161,97 @@ export async function clearSavedFilters(env: NodeJS.ProcessEnv = process.env): P
  * *no* flags were given, matching N.1's "no flags supplied" trigger). */
 export function hasAnyFilter(flags: SavedFilterFlags): boolean {
   return Object.values(flags).some((v) => v !== undefined && v !== "");
+}
+
+/**
+ * Reads the saved profile's `lastCheckedAt` (or null if never set / no
+ * profile exists). Deliberately does NOT validate against
+ * signalsQuerySchema the way loadSavedFilters does -- this is a plain
+ * ISO-8601 string with no schema-level defaults to worry about baking
+ * in, so a minimal own-format check (parses as a valid Date) is enough.
+ * Returns null rather than throwing on a corrupt/missing value, same
+ * "just proceed unfiltered" fallback as the rest of this file.
+ */
+export async function loadLastCheckedAt(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const file = await readConfigFile(getConfigPath(env));
+  const value = file?.lastCheckedAt;
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) return null;
+  return value;
+}
+
+/**
+ * Records `timestamp` as the saved profile's `lastCheckedAt`, preserving
+ * every other config key untouched. Called after a successful
+ * saved-profile-backed `hs signals list` run so the *next* invocation
+ * with no flags can default `observedSince` to "since that run" --
+ * turning the CLI into an incremental "what's new" feed for an
+ * unattended/scripted agent without it having to track its own
+ * last-run state (feature request, complements ROADMAP.md N.1's saved
+ * filters). Silently a no-op on write failure, matching this file's
+ * existing best-effort persistence posture elsewhere (saveFilters
+ * itself does propagate errors, but lastCheckedAt is a courtesy
+ * convenience value, not user-authored data -- losing one update here
+ * just means the next `--observed-since` default is slightly stale,
+ * never wrong in a way that drops real signals).
+ */
+export async function recordLastCheckedAt(
+  timestamp: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const path = getConfigPath(env);
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    const existing = (await readConfigFile(path)) ?? {};
+    const next: ConfigFileShape = { ...existing, lastCheckedAt: timestamp };
+    await writeFile(path, JSON.stringify(next, null, 2) + "\n", "utf8");
+  } catch {
+    // Best-effort only -- see docstring.
+  }
+}
+
+/**
+ * Company watchlist (spec P1 "Company watchlists"). Slugs only, no
+ * duplicate entries (`watchCompany` is idempotent -- watching an already
+ * -watched slug is a no-op, not an error, matching this CLI's existing
+ * "repeat operations are safe" posture elsewhere, e.g. clearSavedFilters
+ * on an empty file).
+ */
+export async function loadWatchedCompanies(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const file = await readConfigFile(getConfigPath(env));
+  const list = file?.watchedCompanies;
+  if (!Array.isArray(list)) return [];
+  return list.filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+/** Adds `slug` to the watchlist if not already present. Returns the
+ * full updated list. */
+export async function watchCompany(
+  slug: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string[]> {
+  const path = getConfigPath(env);
+  await mkdir(dirname(path), { recursive: true });
+  const existing = (await readConfigFile(path)) ?? {};
+  const current = Array.isArray(existing.watchedCompanies) ? existing.watchedCompanies : [];
+  const next = current.includes(slug) ? current : [...current, slug];
+  const nextFile: ConfigFileShape = { ...existing, watchedCompanies: next };
+  await writeFile(path, JSON.stringify(nextFile, null, 2) + "\n", "utf8");
+  return next;
+}
+
+/** Removes `slug` from the watchlist, if present. Returns the full
+ * updated list. No-op, not an error, if the slug wasn't watched or no
+ * watchlist exists yet. */
+export async function unwatchCompany(
+  slug: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string[]> {
+  const path = getConfigPath(env);
+  const existing = await readConfigFile(path);
+  if (!existing || !Array.isArray(existing.watchedCompanies)) return [];
+  const next = existing.watchedCompanies.filter((s) => s !== slug);
+  const nextFile: ConfigFileShape = { ...existing, watchedCompanies: next };
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(nextFile, null, 2) + "\n", "utf8");
+  return next;
 }

@@ -8,6 +8,11 @@ import {
   saveFilters,
   clearSavedFilters,
   hasAnyFilter,
+  loadLastCheckedAt,
+  recordLastCheckedAt,
+  loadWatchedCompanies,
+  watchCompany,
+  unwatchCompany,
 } from "../src/config-store";
 
 /**
@@ -118,5 +123,91 @@ describe("hasAnyFilter", () => {
 
   it("is true when at least one field has a real value", () => {
     expect(hasAnyFilter({ role: "backend" })).toBe(true);
+  });
+});
+
+describe("loadLastCheckedAt / recordLastCheckedAt (feature request: incremental --observed-since default)", () => {
+  it("returns null when nothing has been recorded yet", async () => {
+    expect(await loadLastCheckedAt(env)).toBeNull();
+  });
+
+  it("records and reads back a timestamp", async () => {
+    const ts = "2026-08-17T00:00:00.000Z";
+    await recordLastCheckedAt(ts, env);
+    expect(await loadLastCheckedAt(env)).toBe(ts);
+  });
+
+  it("overwrites a previous timestamp with a newer one", async () => {
+    await recordLastCheckedAt("2026-08-01T00:00:00.000Z", env);
+    await recordLastCheckedAt("2026-08-17T00:00:00.000Z", env);
+    expect(await loadLastCheckedAt(env)).toBe("2026-08-17T00:00:00.000Z");
+  });
+
+  it("preserves an existing saved filter profile when recording a timestamp", async () => {
+    await saveFilters({ role: "cybersecurity" }, env);
+    await recordLastCheckedAt("2026-08-17T00:00:00.000Z", env);
+    expect(await loadSavedFilters(env)).toEqual({ role: "cybersecurity" });
+    expect(await loadLastCheckedAt(env)).toBe("2026-08-17T00:00:00.000Z");
+  });
+
+  it("returns null for a corrupt (non-date) stored value rather than throwing", async () => {
+    await recordLastCheckedAt("2026-08-17T00:00:00.000Z", env);
+    await writeFile(
+      getConfigPath(env),
+      JSON.stringify({ lastCheckedAt: "not-a-real-date" }),
+      "utf8",
+    );
+    expect(await loadLastCheckedAt(env)).toBeNull();
+  });
+});
+
+describe("watchCompany / unwatchCompany / loadWatchedCompanies (feature request: company watchlist)", () => {
+  it("returns an empty list when nothing has been watched", async () => {
+    expect(await loadWatchedCompanies(env)).toEqual([]);
+  });
+
+  it("adds a company slug to the watchlist", async () => {
+    const result = await watchCompany("gitlab", env);
+    expect(result).toEqual(["gitlab"]);
+    expect(await loadWatchedCompanies(env)).toEqual(["gitlab"]);
+  });
+
+  it("appends additional slugs, preserving insertion order", async () => {
+    await watchCompany("gitlab", env);
+    await watchCompany("acme-fintech", env);
+    expect(await loadWatchedCompanies(env)).toEqual(["gitlab", "acme-fintech"]);
+  });
+
+  it("is idempotent -- watching an already-watched slug does not duplicate it", async () => {
+    await watchCompany("gitlab", env);
+    await watchCompany("gitlab", env);
+    expect(await loadWatchedCompanies(env)).toEqual(["gitlab"]);
+  });
+
+  it("removes a watched slug", async () => {
+    await watchCompany("gitlab", env);
+    await watchCompany("acme-fintech", env);
+    const result = await unwatchCompany("gitlab", env);
+    expect(result).toEqual(["acme-fintech"]);
+    expect(await loadWatchedCompanies(env)).toEqual(["acme-fintech"]);
+  });
+
+  it("is a no-op, not an error, when unwatching a slug that was never watched", async () => {
+    await watchCompany("gitlab", env);
+    const result = await unwatchCompany("not-watched", env);
+    expect(result).toEqual(["gitlab"]);
+  });
+
+  it("is a no-op, not an error, when unwatching with no watchlist file at all", async () => {
+    await expect(unwatchCompany("gitlab", env)).resolves.toEqual([]);
+  });
+
+  it("preserves an existing saved filter profile and lastCheckedAt when watching a company", async () => {
+    await saveFilters({ role: "cybersecurity" }, env);
+    await recordLastCheckedAt("2026-08-17T00:00:00.000Z", env);
+    await watchCompany("gitlab", env);
+    expect(await loadSavedFilters(env)).toEqual({ role: "cybersecurity" });
+    expect(await loadLastCheckedAt(env)).toBe("2026-08-17T00:00:00.000Z");
+    expect(await loadWatchedCompanies(env)).toEqual(["gitlab"]);
   });
 });

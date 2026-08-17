@@ -6,6 +6,8 @@ import {
   saveFilters,
   clearSavedFilters,
   hasAnyFilter,
+  loadLastCheckedAt,
+  recordLastCheckedAt,
   type SavedFilterFlags,
 } from "../config-store";
 import { printResult, renderTable, truncate, type TableColumn } from "../output";
@@ -78,6 +80,33 @@ function renderSignalListTable(result: SignalListResponse): string {
  * browser tab does, so "no flags supplied" is the CLI's equivalent of "no
  * URL params." A one-line stderr note makes this visible rather than
  * silent, since there's no banner UI to show it in otherwise.
+ *
+ * Incremental "what's new" default (feature request, complements N.1):
+ * when the saved profile is in use (no filter flags given) AND the
+ * caller didn't explicitly pass `--observed-since`, this defaults
+ * `observedSince` to the saved profile's `lastCheckedAt` (config-store.ts)
+ * -- the timestamp of this same saved profile's last successful run.
+ * That turns a bare `hs signals list` into "show me what's new since I
+ * last checked" for a scripted/unattended agent, without it needing to
+ * track its own last-run state. `lastCheckedAt` is then updated to "now"
+ * after a successful fetch. An explicit `--observed-since` always wins
+ * (never silently overridden), and this default never applies when any
+ * filter flag was given explicitly (same "no flags supplied" gate N.1's
+ * saved-profile auto-apply already uses) -- an ad hoc one-off query
+ * should never be silently narrowed by a stale saved-profile timestamp.
+ *
+ * `--watch <seconds>` (feature request): polls on an interval instead of
+ * exiting after one fetch, printing each tick as its own single-line JSON
+ * envelope (preserves "one JSON value per print" -- `| jq` on stdin
+ * reading line-delimited JSON still works, unlike accumulating results
+ * into one growing array). The first tick fetches with whatever filters
+ * were resolved normally (including the lastCheckedAt default above);
+ * every subsequent tick narrows to `observedSince = <end of the previous
+ * tick>`, so a long-running watch only ever reports genuinely new
+ * signals, never repeats. Runs until the process is killed (Ctrl-C /
+ * SIGINT) -- no built-in max-iterations, since an agent supervising this
+ * process is expected to manage its own lifecycle, matching this CLI's
+ * "no interactive prompts, the caller drives lifecycle" design principle.
  */
 const list = defineCommand({
   meta: { name: "list", description: "List signals matching filters." },
@@ -96,6 +125,7 @@ const list = defineCommand({
     limit: { type: "string", description: "Page size, 1-100" },
     save: { type: "boolean", description: "Save the given filter flags as the default profile" },
     clearSaved: { type: "boolean", description: "Remove the saved filter profile" },
+    watch: { type: "string", description: "Poll every N seconds, printing only newly-observed signals each tick" },
   },
   async run({ args }) {
     if (args.clearSaved) {
@@ -105,6 +135,8 @@ const list = defineCommand({
     }
 
     let filterFlags = pickFilterFlags(args as unknown as Record<string, unknown>);
+    const explicitObservedSince = typeof filterFlags.observedSince === "string" && filterFlags.observedSince !== "";
+    let usedSavedProfile = false;
 
     if (args.save) {
       await saveFilters(filterFlags);
@@ -112,6 +144,7 @@ const list = defineCommand({
       const saved = await loadSavedFilters();
       if (saved) {
         filterFlags = saved;
+        usedSavedProfile = true;
         const summary = Object.entries(saved)
           .filter(([, v]) => v !== undefined && v !== "")
           .map(([k, v]) => `${k}=${v}`)
@@ -120,22 +153,60 @@ const list = defineCommand({
       }
     }
 
-    const parsed = signalsQuerySchema.parse({
-      roles: filterFlags.role,
-      company: filterFlags.company,
-      q: filterFlags.q,
-      locationMode: filterFlags.locationMode,
-      country: filterFlags.country,
-      source: filterFlags.source,
-      signalType: filterFlags.signalType,
-      minScore: filterFlags.minScore,
-      observedSince: filterFlags.observedSince,
-      sort: args.sort,
-      cursor: args.cursor,
-      limit: args.limit,
-    });
-    const result = await fetchSignals(resolveConfig(), parsed);
-    printResult(result, renderSignalListTable);
+    // Incremental default: only when the saved profile is driving this
+    // call AND the caller didn't already pass --observed-since explicitly
+    // (checked against the ORIGINAL flags, before filterFlags was
+    // possibly overwritten by the saved profile above).
+    if (usedSavedProfile && !explicitObservedSince) {
+      const lastCheckedAt = await loadLastCheckedAt();
+      if (lastCheckedAt) {
+        filterFlags = { ...filterFlags, observedSince: lastCheckedAt };
+        process.stderr.write(`Showing signals observed since last check: ${lastCheckedAt}\n`);
+      }
+    }
+
+    const buildQuery = (overrideObservedSince?: string) =>
+      signalsQuerySchema.parse({
+        roles: filterFlags.role,
+        company: filterFlags.company,
+        q: filterFlags.q,
+        locationMode: filterFlags.locationMode,
+        country: filterFlags.country,
+        source: filterFlags.source,
+        signalType: filterFlags.signalType,
+        minScore: filterFlags.minScore,
+        observedSince: overrideObservedSince ?? filterFlags.observedSince,
+        sort: args.sort,
+        cursor: args.cursor,
+        limit: args.limit,
+      });
+
+    const watchSeconds = args.watch ? Number(args.watch) : undefined;
+    if (watchSeconds !== undefined && (!Number.isFinite(watchSeconds) || watchSeconds <= 0)) {
+      throw new Error("--watch must be a positive number of seconds.");
+    }
+
+    if (watchSeconds === undefined) {
+      const result = await fetchSignals(resolveConfig(), buildQuery());
+      printResult(result, renderSignalListTable);
+      if (usedSavedProfile) await recordLastCheckedAt(new Date().toISOString());
+      return;
+    }
+
+    // Watch mode: each tick is its own single-line JSON print (never
+    // accumulated), and every tick after the first narrows to
+    // observedSince = the previous tick's fetch time so results are
+    // never repeated across ticks.
+    let tickObservedSince = filterFlags.observedSince;
+    // Runs until the process is killed (Ctrl-C / SIGINT), by design -- see docstring.
+    while (true) {
+      const tickStartedAt = new Date().toISOString();
+      const result = await fetchSignals(resolveConfig(), buildQuery(tickObservedSince));
+      printResult(result, renderSignalListTable);
+      if (usedSavedProfile) await recordLastCheckedAt(tickStartedAt);
+      tickObservedSince = tickStartedAt;
+      await new Promise((resolve) => setTimeout(resolve, watchSeconds * 1000));
+    }
   },
 });
 
