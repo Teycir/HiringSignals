@@ -101,6 +101,13 @@ export async function handleReconciliation(
       const updateResult = await updateSignalScore(client, signal.id, signal.company_id, {
         score: scoreResult.score,
         scoreVersion: scoreResult.formulaVersion,
+        scoreComponents: {
+          freshness: scoreResult.components.freshness,
+          volume: scoreResult.components.volume,
+          acceleration: scoreResult.components.acceleration,
+          breadth: scoreResult.components.breadth,
+          confidence: scoreResult.components.quality,
+        },
       });
 
       if (updateResult.changes === 0) {

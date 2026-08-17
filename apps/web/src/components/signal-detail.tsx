@@ -75,7 +75,7 @@ export function SignalDetail({ signal }: SignalDetailProps) {
 
       <EvidenceTable evidence={signal.evidence} sourcePlatform={signal.sourcePlatform} />
 
-      <TrendBlock companyDisplayName={signal.companyDisplayName} companySlug={signal.companySlug} />
+      <TrendBlock companyDisplayName={signal.companyDisplayName} companySlug={signal.companySlug} roleCategory={signal.roleCategory} />
 
       {/* Verbatim per spec 10.5 -- not paraphrased. */}
       <p className="font-display text-xs text-soft-ink border-2 border-ink p-3">

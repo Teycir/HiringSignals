@@ -5,6 +5,7 @@ import {
   createD1Client,
   getCompanyBySlug,
   getCompanyHiringTimeline,
+  getCompanyRoleActivity,
   getRecentSignalsForCompany,
   searchCompanies,
 } from "@hiring-signals/db";
@@ -12,6 +13,7 @@ import {
   HIRING_VELOCITY_DISCLAIMER,
   companySlugParamSchema,
   companyTimelineQuerySchema,
+  roleCategorySchema,
 } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
 
@@ -162,5 +164,50 @@ companiesRoute.get("/:slug/timeline", async (c) => {
   return c.json({
     data: { company, buckets },
     meta: { requestId: c.get("requestId"), appliedFilters: { ...parsed, since, until } },
+  });
+});
+
+/**
+ * Role-scoped activity for signal detail's TrendBlock (ROADMAP V.4,
+ * spec §10.5: "active matching roles over 7, 30, and 90 days"). Returns
+ * three independent windows of new/active job counts for one
+ * (company, role) pair — no schema change required, pure read over the
+ * existing `jobs` table via getCompanyRoleActivity (packages/db).
+ *
+ * `role` is required (a role-scoped trend without a role is the company
+ * timeline, which is /:slug/timeline). Uses roleCategorySchema from
+ * domain so the accepted values stay in sync with the taxonomy.
+ */
+const roleActivityQuerySchema = z.object({
+  role: roleCategorySchema,
+});
+
+companiesRoute.get("/:slug/role-activity", async (c) => {
+  const { slug } = companySlugParamSchema.parse({ slug: c.req.param("slug") });
+  const parsed = roleActivityQuerySchema.parse(c.req.query());
+  const client = createD1Client(c.env.DB);
+  const company = await getCompanyBySlug(client, slug);
+
+  if (!company) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Company ${slug} not found.`,
+          requestId: c.get("requestId"),
+        },
+      },
+      404,
+    );
+  }
+
+  const buckets = await getCompanyRoleActivity(client, {
+    companyId: company.id,
+    roleCategory: parsed.role,
+  });
+
+  return c.json({
+    data: { company: { slug: company.slug, displayName: company.displayName }, role: parsed.role, buckets },
+    meta: { requestId: c.get("requestId"), appliedFilters: parsed },
   });
 });

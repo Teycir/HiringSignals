@@ -1325,6 +1325,13 @@ async function processNormalizedJob(
       score: scoreResult.score,
       scoreVersion: scoreResult.formulaVersion,
       lastDetectedAt: observedAt,
+      scoreComponents: {
+        freshness: scoreResult.components.freshness,
+        volume: scoreResult.components.volume,
+        acceleration: scoreResult.components.acceleration,
+        breadth: scoreResult.components.breadth,
+        confidence: scoreResult.components.quality,
+      },
     });
     chargeSubrequests(budget, 1);
     if (refreshResult.changes === 0) {
@@ -1369,6 +1376,13 @@ async function processNormalizedJob(
         detectedAt: observedAt,
         headline: buildHeadline(lifecycle.candidateSignal, job.title),
         summary: buildSummary(lifecycle.candidateSignal, job.title),
+        scoreComponents: {
+          freshness: scoreResult.components.freshness,
+          volume: scoreResult.components.volume,
+          acceleration: scoreResult.components.acceleration,
+          breadth: scoreResult.components.breadth,
+          confidence: scoreResult.components.quality,
+        },
       });
       chargeSubrequests(budget, 1);
       createdNewSignal = 1;
@@ -1394,6 +1408,13 @@ async function processNormalizedJob(
         score: scoreResult.score,
         scoreVersion: scoreResult.formulaVersion,
         lastDetectedAt: observedAt,
+        scoreComponents: {
+          freshness: scoreResult.components.freshness,
+          volume: scoreResult.components.volume,
+          acceleration: scoreResult.components.acceleration,
+          breadth: scoreResult.components.breadth,
+          confidence: scoreResult.components.quality,
+        },
       });
       chargeSubrequests(budget, 1);
       if (refreshResult.changes === 0) {

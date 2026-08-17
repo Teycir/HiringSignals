@@ -1,40 +1,96 @@
+"use client";
 // Trend block (spec 10.5: "Trend block: active matching roles over 7,
-// 30, and 90 days").
+// 30, and 90 days"). ROADMAP V.4: now fetches real role-scoped new/active
+// job counts from GET /api/v1/companies/:slug/role-activity for the three
+// windows and renders them inline, rather than linking out to the full
+// company timeline as a workaround. The company timeline link is kept as
+// secondary context below the inline table.
 //
-// PARTIALLY RESOLVED by Milestone O.1 (added 2026-08-08, after this
-// component was first written): GET /api/v1/companies/:slug/timeline
-// now returns real time-bucketed new/closed/active job counts. That
-// data is company-wide across all roles, not scoped to this specific
-// signal's (company, role) pair the way spec 10.5's literal wording
-// asks for -- getCompanyRoleActivityStats (the per-role point-in-time
-// query that feeds the score's V/A/B components) still isn't exposed as
-// a bucketed series via the API. Rather than fetch and mislabel the
-// company-wide timeline as if it were role-scoped, this links out to
-// the real timeline view (/companies/[slug], Milestone O.2) with an
-// honest caption about the scope difference, instead of inlining
-// possibly-misleading numbers here.
+// Fetches on mount using the same resolvedForKey pattern as other detail
+// components (signal-detail-page, company-page) -- no useSearchParams,
+// so no Suspense boundary needed here; this is a pure prop-driven client
+// component mounted by signal-detail.tsx.
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import type { RoleCategory } from "@hiring-signals/domain";
+import { fetchCompanyRoleActivity, isAbortError, ApiClientError, type CompanyRoleActivityBucket } from "@/lib/api-client";
+import { DataLabel } from "./ui/data-label";
 
 interface TrendBlockProps {
   companyDisplayName: string;
   companySlug: string;
+  /** The signal's roleCategory -- passed through from SignalDetail so
+   * this component can scope the activity query to the matching role. */
+  roleCategory: RoleCategory;
 }
 
-export function TrendBlock({ companyDisplayName, companySlug }: TrendBlockProps) {
+type LoadState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "ready"; buckets: CompanyRoleActivityBucket[] };
+
+export function TrendBlock({ companyDisplayName, companySlug, roleCategory }: TrendBlockProps) {
+  const [state, setState] = useState<LoadState>({ status: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchCompanyRoleActivity(companySlug, roleCategory, { signal: controller.signal })
+      .then((res) => {
+        setState({ status: "ready", buckets: res.data.buckets });
+      })
+      .catch((err) => {
+        if (isAbortError(err)) return;
+        console.error("[TrendBlock] Failed to load role activity:", err);
+        setState({ status: "error" });
+      });
+    return () => controller.abort();
+  }, [companySlug, roleCategory]);
+
   return (
-    <section aria-labelledby="trend-heading" className="border-2 border-ink p-4 flex flex-col gap-2">
+    <section aria-labelledby="trend-heading" className="border-2 border-ink p-4 flex flex-col gap-3">
       <h2 id="trend-heading" className="font-display text-sm font-bold uppercase tracking-wide">
         Trend
       </h2>
-      <p className="font-display text-sm text-soft-ink">
-        A role-specific 7/30/90-day trend for this signal isn&apos;t available yet, but
-        {" "}{companyDisplayName}&apos;s full hiring timeline (all roles) is.
-      </p>
+
+      {state.status === "loading" && (
+        <div className="h-12 bg-muted animate-pulse" aria-busy="true" aria-label="Loading trend data" />
+      )}
+
+      {state.status === "error" && (
+        <p className="font-display text-sm text-soft-ink">
+          Trend data unavailable right now.
+        </p>
+      )}
+
+      {state.status === "ready" && (
+        <table className="w-full text-left border-collapse">
+          <caption className="sr-only">
+            New and active jobs for this role at {companyDisplayName} over three windows.
+          </caption>
+          <thead>
+            <tr className="border-b border-ink">
+              <th scope="col" className="pb-1 pr-6 font-display text-xs font-bold uppercase tracking-wide">Window</th>
+              <th scope="col" className="pb-1 pr-6 font-display text-xs font-bold uppercase tracking-wide">New</th>
+              <th scope="col" className="pb-1 font-display text-xs font-bold uppercase tracking-wide">Active</th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.buckets.map((b) => (
+              <tr key={b.window} className="border-b border-ink last:border-b-0">
+                <td className="py-1 pr-6"><DataLabel>{b.window}</DataLabel></td>
+                <td className="py-1 pr-6 font-display text-sm font-bold">{b.newJobsCount}</td>
+                <td className="py-1 font-display text-sm">{b.activeJobsCount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
       <Link
         href={`/companies/${companySlug}`}
-        className="font-display text-sm font-bold uppercase tracking-wide underline self-start"
+        className="font-display text-xs text-soft-ink underline self-start"
       >
-        View company timeline &rarr;
+        View full company timeline &rarr;
       </Link>
     </section>
   );

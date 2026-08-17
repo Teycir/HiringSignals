@@ -30,6 +30,9 @@ below.
    Two are real user-facing bugs (T.1, T.2); the rest are consistency/
    robustness gaps found in the same pass. See below.
 
+V.1–V.4 (`apps/web` UI wiring gaps) — all four completed 2026-08-17.
+See "Shipped milestones" and below for detail.
+
 S.1–S.3 (2026-08-16 code-review findings) fixed and verified
 2026-08-17 — see "Shipped milestones" below and CHANGELOG.md.
 
@@ -376,3 +379,86 @@ coverage didn't reach, not regressions.
       script/agent-driven process (no human is expected to be watching
       the terminal for a friendly message) and close this without a
       code change.
+
+### V — `apps/web` UI wiring gaps (identified 2026-08-17)
+
+Four gaps found during a thorough audit of the web UI's backend
+integration. The API client (`src/lib/api-client.ts`) is fully wired
+to every deployed endpoint — all pages fetch real data. These are
+design deferrals and one UX omission, not broken wiring.
+
+- [x] **V.1 — Root `/` page shows a text link instead of redirecting.**
+      `apps/web/src/app/page.tsx` renders a plain `<Link>` directing
+      users to `/signals` rather than automatically redirecting there.
+      A user (or search engine) landing on `/` sees a bare paragraph
+      with a link instead of the signal feed.
+      Fix: replace the page body with a `<meta http-equiv="refresh">`
+      or, better, a Next.js `redirect()` call from the server component
+      (`import { redirect } from "next/navigation"; redirect("/signals");`).
+      No UI component changes needed. Verification: `next build` clean,
+      navigating to `/` in dev drops the user at `/signals`.
+
+- [x] **V.2 — Signal feed has no "sources haven't run yet" / "all
+      sources are stale" status state (ROADMAP F.6).** `signal-feed.tsx`
+      has loading/error/empty states but no way to distinguish "empty
+      because no ingestion has ever run" from "empty because no roles
+      match your filters." `masthead.tsx` already calls `GET /api/v1/sources`
+      to derive a "last sync" label — that same data can drive a
+      contextual note in the feed's empty state.
+      Fix: when `state.items.length === 0` and no filters are active,
+      call `GET /api/v1/sources` (already implemented as
+      `fetchSources` — add it to `api-client.ts` if missing, or reuse
+      `masthead.tsx`'s inline fetch). If all sources have
+      `last_success_at = null`, show "No ingestion has run yet —
+      check back after the first scheduled sync." If the most recent
+      `last_success_at` is >2 hours old, show "Sources may be stale
+      (last sync: Xh ago)." Otherwise show the existing "No signals
+      match this query" + Reset filters CTA. Verification: typecheck
+      clean; manual test with an empty-filter state in dev against a
+      running API.
+
+- [x] **V.3 — `ScoreBreakdown` shows a generic formula description
+      instead of real per-signal component values (spec §10.5).**
+      `score-breakdown.tsx` renders a static list of formula weights
+      because `GET /api/v1/signals/:id` does not return the R/V/A/B/Q
+      score components. The components are computed in
+      `computeNewJobScore` (`packages/domain/src/signal-score.ts`) at
+      write time but never persisted to the `signals` table or included
+      in `SignalDetail`.
+      Fix (three-part):
+      1. Add `score_freshness`, `score_volume`, `score_acceleration`,
+         `score_breadth`, `score_confidence` columns to the `signals`
+         table (new D1 migration, nullable for existing rows).
+      2. Persist them in `signals-write-repo.ts` at upsert time
+         alongside `score`.
+      3. Expose them on `SignalDetail` (`packages/db/src/types.ts`) and
+         include them in the `GET /api/v1/signals/:id` response.
+      4. Update `score-breakdown.tsx` to render the real per-signal
+         values when present, falling back to the existing generic
+         description for older rows where the columns are null.
+      Verification: `pnpm -r typecheck` clean; a `GET /signals/:id`
+      on a freshly-ingested signal returns the five component fields;
+      `score-breakdown.tsx` renders them instead of the generic text.
+
+- [x] **V.4 — `TrendBlock` on signal detail links out instead of
+      showing role-scoped 7/30/90-day activity (spec §10.5).** The
+      spec asks for "active matching roles over 7, 30, and 90 days"
+      scoped to the signal's (company, role) pair. Today `trend-block.tsx`
+      links to the company's full timeline page (`/companies/[slug]`)
+      because `GET /api/v1/companies/:slug/timeline` is company-wide,
+      not role-scoped, and `getCompanyRoleActivityStats` (the
+      per-role point-in-time query) isn't exposed as a time series.
+      Fix (two-part):
+      1. Add a `GET /api/v1/companies/:slug/role-activity` route (or
+         extend `/timeline` with a `role=` filter) that returns
+         new/active job counts for a single (company, role) pair
+         bucketed at 7, 30, and 90 days. Backed by a new or extended
+         repo query over the existing `job_observations` table — no
+         schema change required, only a new read query.
+      2. Wire `trend-block.tsx` to call this endpoint (add to
+         `api-client.ts`) and render the three bucket values inline
+         instead of the current link-out. Keep the link to the company
+         timeline page as secondary context below the inline numbers.
+      Verification: `pnpm -r typecheck` clean; `GET /companies/:slug/
+      role-activity?role=software_engineering` returns three buckets;
+      `trend-block.tsx` renders them on a real signal detail page in dev.

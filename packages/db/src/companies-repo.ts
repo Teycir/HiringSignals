@@ -431,3 +431,77 @@ export async function updateCompanyVelocityScore(
   );
 }
 
+
+/**
+ * Role-scoped activity for a single (company, role) pair, bucketed at
+ * exactly 7, 30, and 90 days back from `now` (ROADMAP V.4, spec §10.5
+ * TrendBlock: "active matching roles over 7, 30, and 90 days"). Each
+ * bucket is independent (not cumulative) — "new in last 7 days" vs
+ * "new in last 30 days" vs "new in last 90 days" — matching the spec's
+ * "over X days" framing.
+ *
+ * Pure read over the `jobs` table; no schema change needed (first_seen_at
+ * and role_primary are already indexed via idx_jobs_company_role_status,
+ * migration 0001 line 110). Returns three counts: new jobs first seen
+ * within each window, and active jobs (status IN 'active'/'possibly_closed')
+ * with last_seen_at within each window.
+ */
+export interface CompanyRoleActivityBucket {
+  /** Label for display: "7d" | "30d" | "90d". */
+  window: "7d" | "30d" | "90d";
+  /** Jobs whose first_seen_at falls within this window. */
+  newJobsCount: number;
+  /** Jobs whose status is active/possibly_closed and last_seen_at is within this window. */
+  activeJobsCount: number;
+}
+
+export async function getCompanyRoleActivity(
+  client: D1Client,
+  params: {
+    companyId: string;
+    roleCategory: RoleCategory;
+    now?: string;
+  },
+): Promise<CompanyRoleActivityBucket[]> {
+  const now = params.now ?? new Date().toISOString();
+
+  // Compute window cutoffs as ISO strings in JS rather than using
+  // SQLite's datetime() to avoid the T/Z vs space-separated comparison
+  // bug documented in signals-write-repo.ts's listStillActiveCandidates.
+  const nowMs = new Date(now).getTime();
+  const cutoff7d  = new Date(nowMs -  7 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff30d = new Date(nowMs - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff90d = new Date(nowMs - 90 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Three pairs of (new_count, active_count) in one batch — one query per
+  // window would cost 3 D1 round trips; this collapses to 1 via
+  // conditional aggregation.
+  const row = await client.first<{
+    new_7d: number;
+    active_7d: number;
+    new_30d: number;
+    active_30d: number;
+    new_90d: number;
+    active_90d: number;
+  }>(
+    `SELECT
+       SUM(CASE WHEN first_seen_at >= ? THEN 1 ELSE 0 END)                                                         AS new_7d,
+       SUM(CASE WHEN status IN ('active','possibly_closed') AND last_seen_at >= ? THEN 1 ELSE 0 END)               AS active_7d,
+       SUM(CASE WHEN first_seen_at >= ? THEN 1 ELSE 0 END)                                                         AS new_30d,
+       SUM(CASE WHEN status IN ('active','possibly_closed') AND last_seen_at >= ? THEN 1 ELSE 0 END)               AS active_30d,
+       SUM(CASE WHEN first_seen_at >= ? THEN 1 ELSE 0 END)                                                         AS new_90d,
+       SUM(CASE WHEN status IN ('active','possibly_closed') AND last_seen_at >= ? THEN 1 ELSE 0 END)               AS active_90d
+     FROM jobs
+     WHERE company_id = ? AND role_primary = ?`,
+    [cutoff7d, cutoff7d, cutoff30d, cutoff30d, cutoff90d, cutoff90d, params.companyId, params.roleCategory],
+  );
+
+  // SUM over zero rows returns NULL in SQLite; treat as 0.
+  const r = row ?? { new_7d: 0, active_7d: 0, new_30d: 0, active_30d: 0, new_90d: 0, active_90d: 0 };
+
+  return [
+    { window: "7d",  newJobsCount: r.new_7d  ?? 0, activeJobsCount: r.active_7d  ?? 0 },
+    { window: "30d", newJobsCount: r.new_30d ?? 0, activeJobsCount: r.active_30d ?? 0 },
+    { window: "90d", newJobsCount: r.new_90d ?? 0, activeJobsCount: r.active_90d ?? 0 },
+  ];
+}

@@ -795,6 +795,13 @@ describe("toListItem", () => {
       country_code: null,
       source_platform: null,
       source_id: null,
+      // Score components (migration 0010, ROADMAP V.3): null by default
+      // since most test rows predate the migration.
+      score_freshness: null,
+      score_volume: null,
+      score_acceleration: null,
+      score_breadth: null,
+      score_confidence: null,
       ...overrides,
     };
   }

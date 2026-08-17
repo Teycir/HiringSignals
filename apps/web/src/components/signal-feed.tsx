@@ -10,14 +10,14 @@
 //
 // Loading/empty/error states here are functional, not final: spec
 // 10.6's exact copy is used for the states this component can support
-// today (first load, no-filters-match, API error+retry). "No data yet"
-// and "source stale" need server-side context (source_runs timing)
-// that ROADMAP's F.6 notes as still unconfirmed/unbuilt -- those two
-// rows, plus the polished empty-state.tsx/status-line.tsx components
-// themselves, are still open F.6 work, not covered by this file.
+// today (first load, no-filters-match, API error+retry). The
+// "no data yet" / "source stale" states (ROADMAP V.2) are now covered:
+// when the feed is empty and no filters are active, fetchSources()
+// determines whether the feed is empty because no ingestion has run,
+// because sources are stale, or because there genuinely are no signals.
 import { useEffect, useRef, useState } from "react";
 import type { SignalListItem } from "@hiring-signals/db/src/types";
-import { fetchSignals, isAbortError, ApiClientError } from "@/lib/api-client";
+import { fetchSignals, fetchSources, isAbortError, ApiClientError } from "@/lib/api-client";
 import { toApiParams, type FilterState } from "@/lib/searchParams";
 import { SignalCard } from "./signal-card";
 import { Button } from "./ui/button";
@@ -30,6 +30,31 @@ interface SignalFeedProps {
 type FeedState =
   | { status: "error"; error: ApiClientError | Error }
   | { status: "ready"; items: SignalListItem[]; nextCursor: string | null; loadingMore: boolean };
+
+/** Returns the most recent last_success_at across all sources, or null if
+ * none have ever run. Used to render an honest "no data yet" / "stale"
+ * note when the feed is empty and no filters are active (ROADMAP V.2). */
+function latestSuccessAt(sources: { last_success_at: string | null }[]): string | null {
+  const times = sources.map((s) => s.last_success_at).filter(Boolean) as string[];
+  return times.length > 0 ? times.sort().at(-1) ?? null : null;
+}
+
+/** Returns true if no filter that would narrow results is set -- used to
+ * decide whether an empty feed means "no data at all" vs "filters too
+ * narrow." */
+function hasActiveFilters(filters: FilterState): boolean {
+  return Boolean(
+    filters.roles.length > 0 ||
+    filters.company ||
+    filters.q ||
+    filters.locationMode ||
+    filters.country ||
+    filters.source ||
+    filters.signalType ||
+    filters.minScore !== undefined ||
+    filters.since,
+  );
+}
 
 export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
   // No "loading" member in FeedState itself: isLoading is derived below
@@ -47,6 +72,15 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
   const [resolvedForKey, setResolvedForKey] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Source staleness state (ROADMAP V.2): fetched once when the feed
+  // resolves empty with no active filters. null = not yet fetched.
+  const [sourceStatus, setSourceStatus] = useState<
+    | null
+    | { kind: "never_synced" }
+    | { kind: "stale"; lastSyncLabel: string }
+    | { kind: "ok" }
+  >(null);
+
   // Base filters (no cursor) as a stable dependency key -- JSON.stringify
   // rather than the FilterState object reference, since a new object
   // with equal contents is created every render by the /signals page
@@ -62,6 +96,10 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+
+    // Reset source status whenever the filter key changes so a stale
+    // note from a previous empty state doesn't linger after filters change.
+    setSourceStatus(null);
 
     fetchSignals(toApiParams(filters), { signal: controller.signal })
       .then((res) => {
@@ -81,6 +119,44 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
 
     return () => controller.abort();
   }, [filterKey, resolvedForKey, filters]);
+
+  // When the feed resolves empty with no active filters, check source
+  // staleness once (sourceStatus === null guard prevents re-fetching).
+  useEffect(() => {
+    if (
+      isLoading ||
+      state.status !== "ready" ||
+      state.items.length !== 0 ||
+      hasActiveFilters(filters) ||
+      sourceStatus !== null
+    ) {
+      return;
+    }
+
+    fetchSources()
+      .then((res) => {
+        const latest = latestSuccessAt(res.data);
+        if (!latest) {
+          setSourceStatus({ kind: "never_synced" });
+          return;
+        }
+        const ageMs = Date.now() - new Date(latest).getTime();
+        const ageMinutes = Math.floor(ageMs / 60_000);
+        if (ageMinutes > 120) {
+          const label =
+            ageMinutes < 60
+              ? `${ageMinutes}m ago`
+              : `${Math.floor(ageMinutes / 60)}h ago`;
+          setSourceStatus({ kind: "stale", lastSyncLabel: label });
+        } else {
+          setSourceStatus({ kind: "ok" });
+        }
+      })
+      .catch((e) => {
+        console.error("[SignalFeed] Failed to fetch sources for staleness check:", e);
+        setSourceStatus({ kind: "ok" }); // fail open: show plain empty state
+      });
+  }, [isLoading, state, filters, sourceStatus]);
 
   function loadMore() {
     if (state.status !== "ready" || state.nextCursor === null || state.loadingMore) return;
@@ -149,6 +225,44 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
   }
 
   if (state.items.length === 0) {
+    // ROADMAP V.2: distinguish "no signals ever" / "sources stale" /
+    // "filters too narrow" rather than showing the same message for all
+    // three. sourceStatus is null while the staleness check is in flight
+    // (immediately after the feed resolves empty) -- show nothing extra
+    // until it resolves to avoid a flash of the wrong message.
+    if (!hasActiveFilters(filters)) {
+      if (sourceStatus === null) {
+        // Staleness check still in flight -- show a minimal waiting state.
+        return (
+          <div className="border-2 border-ink p-6 flex flex-col items-center gap-2 text-center">
+            <p className="font-display text-sm font-bold uppercase">No signals yet.</p>
+          </div>
+        );
+      }
+
+      if (sourceStatus.kind === "never_synced") {
+        return (
+          <div className="border-2 border-ink p-6 flex flex-col items-center gap-2 text-center">
+            <p className="font-display text-sm font-bold uppercase">No signals yet.</p>
+            <p className="font-display text-sm text-soft-ink">
+              No ingestion has run yet — check back after the first scheduled sync.
+            </p>
+          </div>
+        );
+      }
+
+      if (sourceStatus.kind === "stale") {
+        return (
+          <div className="border-2 border-ink p-6 flex flex-col items-center gap-2 text-center">
+            <p className="font-display text-sm font-bold uppercase">No signals yet.</p>
+            <p className="font-display text-sm text-soft-ink">
+              Sources may be stale (last sync: {sourceStatus.lastSyncLabel}). Try again shortly.
+            </p>
+          </div>
+        );
+      }
+    }
+
     // Spec 10.6: "NO SIGNALS MATCH THIS QUERY." + RESET FILTERS CTA
     // that clears URL params -- onResetFilters is owned by the /signals
     // page (it knows how to clear the URL), this component just calls it.

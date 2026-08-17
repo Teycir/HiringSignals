@@ -293,6 +293,17 @@ export interface CreateSignalInput {
   detectedAt: string;
   headline: string;
   summary: string;
+  /** ScoreComponents (ROADMAP V.3, migration 0010): persisted alongside
+   * the final score so GET /signals/:id can surface them on the detail
+   * page. Optional -- old callers that don't supply them produce null
+   * columns, which the UI degrades to the generic formula description. */
+  scoreComponents?: {
+    freshness: number;
+    volume: number;
+    acceleration: number;
+    breadth: number;
+    confidence: number;
+  };
 }
 
 /**
@@ -313,13 +324,15 @@ export interface CreateSignalInput {
 export async function createSignal(client: D1Client, input: CreateSignalInput): Promise<string> {
   assertValidScore(input.score);
   const id = crypto.randomUUID();
+  const c = input.scoreComponents;
   try {
     await client.run(
       `INSERT INTO signals (
          id, company_id, role_category, signal_type, status, score,
          score_version, first_detected_at, last_detected_at, expires_at,
-         headline, summary
-       ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, ?, ?)`,
+         headline, summary,
+         score_freshness, score_volume, score_acceleration, score_breadth, score_confidence
+       ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.companyId,
@@ -331,6 +344,11 @@ export async function createSignal(client: D1Client, input: CreateSignalInput): 
         input.detectedAt,
         input.headline,
         input.summary,
+        c?.freshness ?? null,
+        c?.volume ?? null,
+        c?.acceleration ?? null,
+        c?.breadth ?? null,
+        c?.confidence ?? null,
       ],
     );
   } catch (err) {
@@ -346,6 +364,16 @@ export interface RefreshSignalInput {
   score: number;
   scoreVersion: string;
   lastDetectedAt: string;
+  /** ScoreComponents (ROADMAP V.3, migration 0010): updated alongside
+   * the score on every refresh so the detail page always reflects the
+   * most recent computation. Optional for backward compat. */
+  scoreComponents?: {
+    freshness: number;
+    volume: number;
+    acceleration: number;
+    breadth: number;
+    confidence: number;
+  };
 }
 
 /**
@@ -389,15 +417,40 @@ export async function refreshSignal(
   input: RefreshSignalInput,
 ): Promise<{ changes: number }> {
   assertValidScore(input.score);
+  const c = input.scoreComponents;
   return client.run(
-    `UPDATE signals SET score = ?, score_version = ?, last_detected_at = ? WHERE id = ? AND company_id = ? AND status = 'active'`,
-    [input.score, input.scoreVersion, input.lastDetectedAt, signalId, companyId],
+    `UPDATE signals
+     SET score = ?, score_version = ?, last_detected_at = ?,
+         score_freshness = ?, score_volume = ?, score_acceleration = ?,
+         score_breadth = ?, score_confidence = ?
+     WHERE id = ? AND company_id = ? AND status = 'active'`,
+    [
+      input.score,
+      input.scoreVersion,
+      input.lastDetectedAt,
+      c?.freshness ?? null,
+      c?.volume ?? null,
+      c?.acceleration ?? null,
+      c?.breadth ?? null,
+      c?.confidence ?? null,
+      signalId,
+      companyId,
+    ],
   );
 }
 
 export interface UpdateSignalScoreInput {
   score: number;
   scoreVersion: string;
+  /** ScoreComponents (ROADMAP V.3, migration 0010): updated at reconciliation
+   * time so the detail page always shows the latest computation. Optional. */
+  scoreComponents?: {
+    freshness: number;
+    volume: number;
+    acceleration: number;
+    breadth: number;
+    confidence: number;
+  };
 }
 
 /**
@@ -418,9 +471,24 @@ export async function updateSignalScore(
   input: UpdateSignalScoreInput,
 ): Promise<{ changes: number }> {
   assertValidScore(input.score);
+  const c = input.scoreComponents;
   return client.run(
-    `UPDATE signals SET score = ?, score_version = ? WHERE id = ? AND company_id = ? AND status = 'active'`,
-    [input.score, input.scoreVersion, signalId, companyId],
+    `UPDATE signals
+     SET score = ?, score_version = ?,
+         score_freshness = ?, score_volume = ?, score_acceleration = ?,
+         score_breadth = ?, score_confidence = ?
+     WHERE id = ? AND company_id = ? AND status = 'active'`,
+    [
+      input.score,
+      input.scoreVersion,
+      c?.freshness ?? null,
+      c?.volume ?? null,
+      c?.acceleration ?? null,
+      c?.breadth ?? null,
+      c?.confidence ?? null,
+      signalId,
+      companyId,
+    ],
   );
 }
 

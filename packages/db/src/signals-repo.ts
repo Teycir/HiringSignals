@@ -67,6 +67,15 @@ export interface SignalRow {
   // look up the source's most recent successful run -- never surfaced
   // on SignalListItem/toListItem, deliberately dropped for list rows.
   source_id: string | null;
+  // Score components (ROADMAP V.3, migration 0010): persisted at write
+  // time, returned by getSignalDetail only (not list rows -- the feed
+  // doesn't need per-component values). Null for rows written before
+  // migration 0010.
+  score_freshness: number | null;
+  score_volume: number | null;
+  score_acceleration: number | null;
+  score_breadth: number | null;
+  score_confidence: number | null;
   // Only populated by findSignalsByJobIds (I.3 semantic-hit resolution) --
   // one job_id, out of the caller's queried jobIds set, that actually
   // backs this signal via signal_evidence. Lets apps/api's
@@ -644,8 +653,27 @@ export async function getSignalDetail(
   client: D1Client,
   signalId: string,
 ): Promise<SignalDetail | null> {
+  // Extends BASE_SELECT with the five score-component columns added in
+  // migration 0010 (ROADMAP V.3). They aren't in BASE_SELECT itself
+  // because listSignals/findSignalsByJobIds don't need them (per-component
+  // values are a detail-page concern, not a feed concern). Rows written
+  // before migration 0010 return null for all five -- SignalDetail.scoreComponents
+  // is null when all five are null, handled below.
   const row = await client.first<SignalRow>(
-    `${BASE_SELECT} WHERE s.id = ? AND s.status = 'active'`,
+    `SELECT s.id, s.company_id, c.slug AS company_slug, c.display_name AS company_display_name,
+            s.role_category, s.signal_type, s.status, s.score, s.score_version,
+            s.first_detected_at, s.last_detected_at, s.expires_at, s.headline, s.summary,
+            rj.canonical_url AS canonical_url,
+            rj.location_mode AS location_mode,
+            rj.country_code AS country_code,
+            src.provider AS source_platform,
+            src.id AS source_id,
+            s.score_freshness, s.score_volume, s.score_acceleration,
+            s.score_breadth, s.score_confidence
+     FROM signals s
+     JOIN companies c ON c.id = s.company_id
+     ${REPRESENTATIVE_JOB_JOIN}
+     WHERE s.id = ? AND s.status = 'active'`,
     [signalId],
   );
   if (!row) return null;
@@ -729,6 +757,24 @@ export async function getSignalDetail(
   return {
     ...header,
     lastSourceRunAt,
+    // ROADMAP V.3: expose the five 0-1 score components from migration
+    // 0010. All five must be non-null for the object to be non-null --
+    // rows written before the migration have all five as null, in which
+    // case score-breakdown.tsx falls back to the generic description.
+    scoreComponents:
+      row.score_freshness !== null &&
+      row.score_volume !== null &&
+      row.score_acceleration !== null &&
+      row.score_breadth !== null &&
+      row.score_confidence !== null
+        ? {
+            freshness: row.score_freshness,
+            volume: row.score_volume,
+            acceleration: row.score_acceleration,
+            breadth: row.score_breadth,
+            confidence: row.score_confidence,
+          }
+        : null,
     evidence: evidenceRows.map((e) => {
       // A single truncated/corrupt payload_json (partial write, old schema
       // version, manual edit) must not 500 the whole detail endpoint --

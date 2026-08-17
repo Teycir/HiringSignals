@@ -60,6 +60,17 @@ export interface SignalDetail extends SignalListItem {
   // yet, or sourcePlatform itself is null (company-level signal with
   // no representative job/source).
   lastSourceRunAt: string | null;
+  // Score components (ROADMAP V.3, migration 0010): the five 0-1
+  // fractional inputs to the spec §7.2 formula, persisted at write time.
+  // Null for signals written before migration 0010 -- score-breakdown.tsx
+  // degrades to the generic formula description when these are all null.
+  scoreComponents: {
+    freshness: number;
+    volume: number;
+    acceleration: number;
+    breadth: number;
+    confidence: number;
+  } | null;
 }
 
 export interface CompanySummary {

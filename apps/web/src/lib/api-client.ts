@@ -232,6 +232,55 @@ export interface TrendsParams {
   limit?: number;
 }
 
+/**
+ * GET /api/v1/companies/:slug/role-activity (ROADMAP V.4, spec §10.5
+ * TrendBlock). Returns new/active job counts for one (company, role)
+ * pair bucketed at 7, 30, and 90 days.
+ */
+export interface CompanyRoleActivityBucket {
+  window: "7d" | "30d" | "90d";
+  newJobsCount: number;
+  activeJobsCount: number;
+}
+
+export async function fetchCompanyRoleActivity(
+  slug: string,
+  role: RoleCategory,
+  init?: RequestInit,
+): Promise<{
+  data: {
+    company: { slug: string; displayName: string };
+    role: RoleCategory;
+    buckets: CompanyRoleActivityBucket[];
+  };
+  meta: { requestId: string; appliedFilters: Record<string, unknown> };
+}> {
+  const query = new URLSearchParams({ role });
+  return request(
+    `/api/v1/companies/${encodeURIComponent(slug)}/role-activity?${query.toString()}`,
+    init,
+  );
+}
+
+/**
+ * Minimal source shape for the UI's staleness check. The full SourceRow
+ * (packages/db/src/sources-repo.ts) has more fields; this only declares
+ * the ones signal-feed.tsx actually reads so apps/web's bundle doesn't
+ * pull in the full DB type graph.
+ */
+export interface SourceSummary {
+  id: string;
+  last_success_at: string | null;
+}
+
+/** GET /api/v1/sources (spec 9.2). Used by signal-feed.tsx to detect
+ * "never synced" / "stale" states for the empty-feed message. */
+export async function fetchSources(
+  init?: RequestInit,
+): Promise<{ data: SourceSummary[]; meta: { requestId: string } }> {
+  return request("/api/v1/sources", init);
+}
+
 export async function fetchTrends(
   params: TrendsParams,
   init?: RequestInit,
