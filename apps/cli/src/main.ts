@@ -9,6 +9,7 @@ import { feedUrlCommand } from "./commands/feed-url";
 import { trendsCommand } from "./commands/trends";
 import { ApiClientError } from "./api-client";
 import { setOutputFormat, type OutputFormat } from "./output";
+import packageJson from "../package.json" with { type: "json" };
 
 /**
  * apps/cli entrypoint (ROADMAP.md Milestone F.1.1). Structured output by
@@ -27,7 +28,7 @@ import { setOutputFormat, type OutputFormat } from "./output";
 const rootCommand = defineCommand({
   meta: {
     name: "hs",
-    version: "0.0.0",
+    version: packageJson.version,
     description: "HiringSignals CLI -- thin client over apps/api, JSON by default.",
   },
   subCommands: {
@@ -92,7 +93,18 @@ function extractFormatFlag(argv: string[]): { format: OutputFormat; rest: string
 }
 
 async function main(): Promise<void> {
-  const { format, rest } = extractFormatFlag(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  // `--version`/`-v` handled here rather than left to citty's builtin
+  // support, since that only fires inside runMain() (see header comment
+  // above for why this file uses runCommand() instead) -- runCommand()
+  // never checks these flags on its own. Only recognized as the sole
+  // argument (matching citty's own runMain behavior) so it doesn't
+  // shadow a subcommand's own use of -v/--version-like flags.
+  if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
+    process.stdout.write(packageJson.version + "\n");
+    return;
+  }
+  const { format, rest } = extractFormatFlag(argv);
   setOutputFormat(format);
   try {
     await runCommand(rootCommand, { rawArgs: rest });

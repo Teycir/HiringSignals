@@ -181,6 +181,15 @@ CHANGELOG.md.
   (including 22 live-network api-client tests) passing unchanged.
   Deployed the same day (`apps/web` Worker version `56084565`).
 
+- **`hs --version`/`-v`.** Landed 2026-08-17. `apps/cli`'s
+  `meta.version` was a stale hardcoded `"0.0.0"` and, separately, was
+  never actually wired to a flag (`runCommand()` doesn't check citty's
+  builtin `--version`; only `runMain()` does — see CHANGELOG.md for
+  detail). Fixed with a hand-checked flag in `main()` reading live from
+  `apps/cli/package.json`. 3 new subprocess tests in
+  `cli-process.test.ts`; `pnpm --filter @hiring-signals/cli typecheck`
+  and `lint` clean; full 16/16 `cli-process.test.ts` suite passing.
+
 ---
 
 ## Open work

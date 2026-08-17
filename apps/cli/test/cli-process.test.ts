@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import packageJson from "../package.json" with { type: "json" };
 
 /**
  * F.1.5 (ROADMAP.md): "exit-code and stderr-shape assertions for the
@@ -234,5 +235,45 @@ describe("hs CLI error paths (real subprocess)", () => {
     const parsed = JSON.parse(result.stderr.trim());
     expect(parsed.error.code).toBe("NETWORK_ERROR");
     expect(parsed.error.requestId).toBe("req_none");
+  });
+});
+
+describe("hs --version / -v", () => {
+  // main.ts hand-rolls this rather than relying on citty's builtin
+  // --version handling: this file uses runCommand(), not runMain(),
+  // for the JSON-error-shape contract every other test in this suite
+  // exercises (see main.ts's header comment) -- but only runMain()
+  // wires up citty's own --version/-v flags. Asserts against the live
+  // apps/cli/package.json value rather than a hardcoded string so this
+  // test can't silently pass against a stale version the way the old
+  // hardcoded meta.version: "0.0.0" did.
+  it("--version prints the real package.json version to stdout, exit 0, no stderr", () => {
+    const result = runCli(["--version"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe(packageJson.version);
+  });
+
+  it("-v prints the same version as --version", () => {
+    const result = runCli(["-v"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe(packageJson.version);
+  });
+
+  it("does not treat -v as the version flag when other arguments are present", () => {
+    // Matches citty's own runMain semantics (only fires when it's the
+    // SOLE argument) -- confirms `hs signals list -v` isn't silently
+    // swallowed into a version print instead of reaching signals list's
+    // own arg parsing.
+    const result = runCli(["signals", "list", "-v"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.stdout).toBe("");
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error).toBeDefined();
   });
 });

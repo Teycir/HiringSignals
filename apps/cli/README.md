@@ -35,6 +35,17 @@ stderr note so you don't lose data — they have no honest single-row flattening
 `--format=table` (equals syntax) also works; unrecognized values fall back to `json` silently
 rather than failing.
 
+### `--version` / `-v`
+
+Prints the installed `apps/cli` version (read live from `package.json`) to stdout and exits 0.
+Only recognized when it's the sole argument, e.g. `hs --version` or `hs -v` — not
+`hs signals list -v`, which passes `-v` through to `signals list` unchanged.
+
+```
+$ hs --version
+1.0.0
+```
+
 ## Error shape
 
 Every non-zero exit prints exactly this to stderr, nothing else:

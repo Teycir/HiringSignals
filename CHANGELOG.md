@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-08-17)
+
+- **`hs --version` / `hs -v`.** `apps/cli`'s root `citty` command declared
+  a `meta.version`, but this file uses `runCommand()` (not `runMain()`)
+  for its JSON-error-shape contract, and only `runMain()` wires up
+  citty's builtin `--version`/`-v` handling — so the flag was silently
+  inert, and `meta.version` itself had been hardcoded `"0.0.0"` all
+  along (never matched `apps/cli/package.json`, made worse by the
+  v1.0.0 release below). Fixed by hand-checking `--version`/`-v` as the
+  sole argument in `main()` (mirroring the existing `--format`
+  extraction pattern) and reading the version live from
+  `apps/cli/package.json` via a `with { type: "json" }` import instead
+  of a literal, so it can't drift out of sync again. 3 new subprocess
+  tests in `cli-process.test.ts` assert against the live `package.json`
+  value rather than a hardcoded string, and confirm `-v` doesn't
+  shadow a subcommand's own flags when other arguments are present.
+
 ## [1.0.0] — 2026-08-17
 
 ### Fixed (2026-08-17)
