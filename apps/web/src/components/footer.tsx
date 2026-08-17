@@ -1,4 +1,5 @@
 import Link from "next/link";
+import packageJson from "../../package.json";
 
 // Ported from ArxivExplorer's app/components/Footer.tsx (same author's
 // own code) and restyled to this repo's brutalist tokens (globals.css):
@@ -11,6 +12,7 @@ import Link from "next/link";
 // Deploy target per apps/web/wrangler.jsonc; used for share URLs.
 const SITE_URL = "https://hiring-signals-web.teycircoder14.workers.dev";
 const REPO_URL = "https://github.com/Teycir/HiringSignals";
+const APP_VERSION = packageJson.version;
 
 export function Footer() {
   return (
@@ -48,6 +50,15 @@ export function Footer() {
               className="underline transition-colors hover:text-ink"
             >
               GitHub
+            </a>
+            <span aria-hidden="true">•</span>
+            <a
+              href={`${REPO_URL}/releases/tag/v${APP_VERSION}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline transition-colors hover:text-ink"
+            >
+              v{APP_VERSION}
             </a>
           </div>
         </div>
