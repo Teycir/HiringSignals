@@ -47,6 +47,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Existing live-KV integration suite (`apps/api/test/middleware/
   admin-auth.test.ts`, 14/14) passes unmodified, including the 3-strike
   lockout test.
+- **U.1–U.2 — CLI/domain query-schema gaps (spec §9.4, hybrid search
+  filter contract).** Added missing regression coverage for the
+  already-fixed `trends.ts` CLI bug (invalid/missing/trailing-comma
+  `--role`, `cli-process.test.ts` 12/12). Found and fixed
+  `signalsQuerySchema.roles` (`packages/domain/src/signals-query.ts`)
+  silently dropping a provided-but-empty `--role` value to `roles: []`
+  (= "no filter") instead of erroring, unlike its `trendsQuerySchema`
+  sibling — affected `hs signals list`, `hs export signals`,
+  `hs feed-url`. Fixed with `.min(1)`, matching `trends-query.ts`.
+- **U.3 — same bug duplicated, unfixed, on the public HTTP API.**
+  `exportQuerySchema` (`apps/api/src/routes/export.ts`) and
+  `feedQuerySchema` (`apps/api/src/routes/feed.ts`) are independent
+  hand-copied schemas that never inherited U.2's fix — a direct HTTP
+  call bypassing the CLI (`?roles=,` or `?roles=`) silently returned
+  an unfiltered CSV export or RSS feed. Fixed both identically; the
+  CLI's own `export`/`feed-url` commands were confirmed never
+  vulnerable (already routed through the fixed domain schema).
+- **U.4 — semantic search ranking bug (spec §9.4).**
+  `apps/api/src/services/semantic-search.ts`'s
+  `findSemanticSignalMatches` computed
+  `bestSimilarity = Math.max(...byJobId.values())` identically on
+  every loop iteration regardless of which job backed the current
+  signal, so every hybrid-search result got the same similarity score
+  whenever more than one signal was returned — silently erasing
+  semantic ranking. Root-fixed (not score-capped): `findSignalsByJobIds`
+  (`packages/db/src/signals-repo.ts`) now returns a new
+  `SignalRow.matched_job_id` field via a correlated subquery scoped to
+  the caller's own `jobIds` set, no second D1 round trip;
+  `semantic-search.ts` looks up that job's real Vectorize score
+  instead of the global max. New live-D1 regression test in
+  `packages/db/test/signals-repo.test.ts` proves correct per-signal
+  attribution. Verified: `packages/domain` 93/93, `apps/cli` 101/101,
+  `apps/api` routes/lib 57/57, full live-D1 `findSignalsByJobIds`
+  block 5/5; lint/typecheck clean across `db`/`domain`/`api`/`cli`.
 
 ### Added (2026-08-16 → 2026-08-17)
 
