@@ -13,8 +13,7 @@ import type { AppEnv } from "../bindings";
 // ALLOWED_ORIGINS instead.
 const ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3000",
-  // "https://hiring-signals.pages.dev",
-  // "https://<production-domain>",
+  "https://hiring-signals-web.teycircoder14.workers.dev",
 ]);
 const ALLOW_ALL_ORIGINS = true;
 
