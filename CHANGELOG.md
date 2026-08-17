@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (2026-08-17)
 
+- **W.1 — CSP nonce blocked hydration/data fetch on every page (production).**
+  Production `script-src 'self'` had no `unsafe-inline`, hash, or nonce, but
+  the App Router embeds inline `<script>` tags on every response for RSC
+  hydration — those were silently blocked, React never mounted, and
+  `/signals`' client-side data fetch never fired (visible as a permanently
+  empty page). Fixed with the officially documented Next.js pattern:
+  `apps/web/src/middleware.ts` mints a fresh nonce per request and threads
+  it through the CSP header; `apps/web/src/app/layout.tsx` adds
+  `export const dynamic = "force-dynamic"` so the nonce reaches every
+  route's scripts, not just the ones that happened to already be
+  server-rendered (a purely static page still ships and needs to hydrate
+  React, so it needed the nonce too). The static CSP header was removed
+  from `next.config.ts` entirely, since a nonce is inherently per-request
+  and can't be expressed there. Kept the deprecated `middleware.ts`
+  filename rather than Next 16's `proxy.ts` rename: `@opennextjs/cloudflare`
+  (this repo's deploy adapter) does not yet build `proxy.ts` correctly —
+  confirmed via an actual failed `opennextjs-cloudflare build`, matching
+  open upstream issues (`cloudflare/workers-sdk#13937`, `#13755`,
+  `opennextjs-cloudflare#962`). Documented in-file as a deliberate,
+  temporary compatibility shim with a concrete migration trigger (revisit
+  once OpenNext ships Node.js middleware/Proxy support), not a permanent
+  choice. Verified end-to-end: `opennextjs-cloudflare build` + local
+  Workers-runtime preview served a 200 with a matching nonce on every
+  `<script>` tag, and a live browser check showed zero console errors,
+  zero CSP violations, and real signal data (OpenAI/Acme Corp/Globo Labs
+  entries with facet counts) rendering where the page was previously a
+  dead empty shell.
+- **W.2 — Masthead "last sync" and `SignalFeed`'s staleness check permanently
+  stuck on "pending" (snake_case/camelCase field mismatch).**
+  `apps/web/src/lib/api-client.ts` declared its own local `SourceSummary`
+  interface with a snake_case field (`last_success_at`) that never matched
+  the real API response shape — `packages/db/src/sources-repo.ts`'s
+  `toSummary()` (the function that actually builds `GET /api/v1/sources`'
+  JSON body) has always returned camelCase (`lastSuccessAt`). Because the
+  two interfaces lived in different packages, `tsc` had no way to catch
+  the drift — apps/web's own (wrong) type was internally consistent, it
+  just didn't describe what the server actually sends. Every
+  `.map((s) => s.last_success_at).filter(Boolean)` therefore dropped every
+  source unconditionally, so `masthead.tsx`'s `useLastSync` hook and
+  `signal-feed.tsx`'s empty-feed staleness check (added by V.2, see
+  "Added" below) both silently no-opped regardless of real sync activity.
+  Fixed by correcting
+  `SourceSummary` to `lastSuccessAt` in `api-client.ts` (with a comment
+  pointing at `sources-repo.ts` as the source of truth) and updating both
+  call sites. Verified live: local Workers-runtime preview of `/signals`
+  now shows `last sync: 26m ago` instead of being stuck on "pending".
 - **T.1–T.6 — CLI `--watch` and company-watchlist code-review findings.** All six issues from the 2026-08-17 review are resolved: T.1 (watch mode transient error handling), T.2 (watchlist partial failure handling), T.3 (config file error wrapping), T.4 (type casting cleanup), T.5 (watch mode replay design verified), T.6 (SIGINT/SIGTERM handling). Five were already fixed in the original feature implementation; T.5 was verified as acceptable design (current order prevents silent signal drops, replay window is negligible).
 
 - **S.1 — CSV export formula-injection (spec §11.1).** `lib/text/csv.ts`'s
@@ -85,6 +131,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block 5/5; lint/typecheck clean across `db`/`domain`/`api`/`cli`.
 
 ### Added (2026-08-16 → 2026-08-17)
+
+- **V.1–V.4 — `apps/web` UI wiring gaps closed (2026-08-17, commits
+  `a44e09d`, `f78ed4f`, `9ab7be1`).** Four design deferrals/UX omissions
+  found during a backend-integration audit of the web UI (ROADMAP.md
+  Section V), all closed the same day:
+  - **V.1 — root `/` redirects to `/signals`** instead of showing a plain
+    text link (`f78ed4f`).
+  - **V.2 — `SignalFeed` shows real "no data yet" / "sources may be
+    stale" states** when the feed resolves empty with no active filters,
+    instead of a generic empty-state message for all three cases
+    (never-synced vs. stale vs. genuinely-filtered-to-nothing). Backed by
+    a new `fetchSources()` call and `latestSuccessAt` staleness check
+    (`f78ed4f`).
+  - **V.3 — `ScoreBreakdown` renders real per-signal component values**
+    (freshness/volume/acceleration/breadth/confidence) instead of a
+    generic formula description. Backed by a new D1 migration
+    (`0010_signal_score_components.sql`) persisting the five components
+    at signal creation/refresh/score-update time, and `getSignalDetail`
+    extended to return them (`f78ed4f`).
+  - **V.4 — `TrendBlock` on the signal detail page shows real role-scoped
+    7/30/90-day activity** (new/active job counts) instead of linking out
+    to the company page. Backed by a new
+    `GET /api/v1/companies/:slug/role-activity` endpoint and
+    `getCompanyRoleActivity` in `companies-repo.ts` (`f78ed4f`).
+  - **Masthead "last sync" fetch fix (`9ab7be1`, same day):** a narrower
+    follow-up specifically for the masthead's own last-sync display,
+    switching it to the centralized `fetchSources()` API client call
+    (superseded the same day it landed — see W.2 above, a field-name
+    mismatch this commit didn't happen to trigger but which still broke
+    the same label under different conditions).
+
+  Verified: `pnpm -r typecheck` clean; production build passes with
+  every route dynamic per the W.1 CSP fix; live Playwright check showed
+  real signal cards, facet counts, and score breakdowns rendering.
 
 - **`apps/web` restored + brought up to current API contract (2026-08-16, commit `1bc7a97`):** Reverts the 2026-08-07 deletion of the Next.js dashboard and closes the gap against everything the API gained since (Milestones O, P, Q). Restored: signals list/detail, filter rail, search bar, company combobox, export button, score breakdown, evidence table, more-like-this, scroll progress, animated tagline, outreach prompt, role/source/signal-type/score/since/work-mode filters, search history (`lib/searchHistory.ts`), URL search-param sync (`lib/searchParams.ts`). New pages and components added to match the current API surface:
   - `/companies/[slug]` — company detail page with `CompanyTimeline` component rendering time-bucketed new/closed/active job counts with role/location breakdown (Milestone O).

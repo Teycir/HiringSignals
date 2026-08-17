@@ -13,7 +13,7 @@ function useLastSync() {
     fetchSources()
       .then((body) => {
         const latest = body.data
-          .map((s) => s.last_success_at)
+          .map((s) => s.lastSuccessAt)
           .filter(Boolean)
           .sort()
           .at(-1);

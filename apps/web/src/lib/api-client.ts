@@ -263,14 +263,19 @@ export async function fetchCompanyRoleActivity(
 }
 
 /**
- * Minimal source shape for the UI's staleness check. The full SourceRow
- * (packages/db/src/sources-repo.ts) has more fields; this only declares
- * the ones signal-feed.tsx actually reads so apps/web's bundle doesn't
- * pull in the full DB type graph.
+ * Minimal source shape for the UI's staleness check. Field names are
+ * camelCase to match packages/db/src/sources-repo.ts's `SourceSummary`
+ * (the DTO shape `toSummary()` actually serializes over the wire) --
+ * NOT the raw D1 `SourceRow` (snake_case), which never reaches the
+ * client. This only declares the fields signal-feed.tsx/masthead.tsx
+ * actually read so apps/web's bundle doesn't pull in the full DB type
+ * graph. (Previously snake_case here silently diverged from the real
+ * API response, causing `.filter(Boolean)` to drop every entry and the
+ * "last sync" label to be permanently stuck on "pending" -- 2026-08-17.)
  */
 export interface SourceSummary {
   id: string;
-  last_success_at: string | null;
+  lastSuccessAt: string | null;
 }
 
 /** GET /api/v1/sources (spec 9.2). Used by signal-feed.tsx to detect

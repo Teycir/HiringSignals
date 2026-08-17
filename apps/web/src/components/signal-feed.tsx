@@ -31,11 +31,14 @@ type FeedState =
   | { status: "error"; error: ApiClientError | Error }
   | { status: "ready"; items: SignalListItem[]; nextCursor: string | null; loadingMore: boolean };
 
-/** Returns the most recent last_success_at across all sources, or null if
+/** Returns the most recent lastSuccessAt across all sources, or null if
  * none have ever run. Used to render an honest "no data yet" / "stale"
- * note when the feed is empty and no filters are active (ROADMAP V.2). */
-function latestSuccessAt(sources: { last_success_at: string | null }[]): string | null {
-  const times = sources.map((s) => s.last_success_at).filter(Boolean) as string[];
+ * note when the feed is empty and no filters are active (ROADMAP V.2).
+ * Field is camelCase to match api-client.ts's SourceSummary (see that
+ * file's comment -- this used to read snake_case last_success_at, which
+ * never matched the real API response and silently broke this check). */
+function latestSuccessAt(sources: { lastSuccessAt: string | null }[]): string | null {
+  const times = sources.map((s) => s.lastSuccessAt).filter(Boolean) as string[];
   return times.length > 0 ? times.sort().at(-1) ?? null : null;
 }
 

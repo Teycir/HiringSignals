@@ -10,9 +10,9 @@ every task cites the spec section it implements. If a task and the
 spec disagree, the spec wins and this file gets corrected.
 
 **Status summary (last updated 2026-08-17):** All originally scoped
-milestones (Phase 0 → R, G.1–G.5) plus two later code-review/bug-hunt
-passes (S, U) are shipped and verified. Full narrative/evidence for
-completed work lives in git history and `CHANGELOG.md` — this file
+milestones (Phase 0 → R, G.1–G.5) plus five later code-review/bug-hunt
+passes (S, T, U, V, W) are shipped and verified. Full narrative/evidence
+for completed work lives in git history and `CHANGELOG.md` — this file
 keeps only short landed-summaries plus the items still genuinely open
 below.
 
@@ -32,13 +32,25 @@ T.5 verified as acceptable design (current order prevents silent
 signal drops, replay window is negligible).
 
 V.1–V.4 (`apps/web` UI wiring gaps) — all four completed 2026-08-17.
-See "Shipped milestones" and below for detail.
+See "Shipped milestones" and below for detail. A same-day follow-up
+commit (`9ab7be1`) fixed the masthead's last-sync fetch but didn't
+catch a `snake_case`/`camelCase` field-name mismatch between
+`apps/web`'s local `SourceSummary` type and the real API response
+(`packages/db`'s `toSummary()` has always returned camelCase); that
+mismatch silently broke both the masthead's "last sync" label and
+V.2's own staleness check. Fixed and verified live as W.2 —
+see CHANGELOG.md.
 
 S.1–S.3 (2026-08-16 code-review findings) fixed and verified
 2026-08-17 — see "Shipped milestones" below and CHANGELOG.md.
 
 U.1–U.4 (2026-08-17 hybrid-search/query-schema bug hunt) fixed and
 verified 2026-08-17 — see "Shipped milestones" below and CHANGELOG.md.
+
+W.1–W.2 (2026-08-17 web UI bug hunt: CSP nonce blocking hydration on
+every page, masthead/staleness-check field-name mismatch) fixed and
+verified live 2026-08-17 — see "Shipped milestones" below and
+CHANGELOG.md.
 
 ---
 
@@ -255,3 +267,30 @@ design deferrals and one UX omission, not broken wiring. All completed
 - [x] **V.2 — Signal feed has no "sources haven't run yet" / "all sources are stale" status state.**
 - [x] **V.3 — `ScoreBreakdown` shows a generic formula description instead of real per-signal component values.**
 - [x] **V.4 — `TrendBlock` on signal detail links out instead of showing role-scoped 7/30/90-day activity.**
+
+Note: V.2's staleness check and the masthead's own last-sync label
+(added by a same-day follow-up commit) both silently no-opped due to a
+field-name mismatch discovered afterward — see Section W below.
+
+### W — `apps/web` production bugs found verifying V (found + fixed 2026-08-17)
+
+Two bugs surfaced while manually verifying the day's other web work end
+to end in a real browser against the live Workers runtime — neither was
+caught by `tsc`, lint, or the existing test suite, because both were
+either a CSP policy interacting with framework-internal behavior, or a
+type that was internally consistent within `apps/web` but didn't
+describe what the server actually sends.
+
+- [x] **W.1 — Production CSP blocked Next.js's own hydration scripts on
+  every page**, leaving `/signals` (and every other route) rendering a
+  dead, unhydrated shell. Fixed via per-request nonce middleware +
+  forcing every route dynamic so the nonce reaches every page's scripts.
+  See CHANGELOG.md for the full root-cause chain, including the
+  `middleware.ts`-vs-`proxy.ts` OpenNext compatibility finding.
+- [x] **W.2 — Masthead "last sync" and `SignalFeed`'s V.2 staleness
+  check were permanently stuck on "pending"/never-fired** because
+  `apps/web/src/lib/api-client.ts`'s local `SourceSummary` type used
+  snake_case (`last_success_at`) while the real API response (from
+  `packages/db`'s `toSummary()`) has always been camelCase
+  (`lastSuccessAt`). Fixed by correcting the type and both call sites.
+  Verified live: preview now shows `last sync: 26m ago`.
