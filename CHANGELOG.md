@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (2026-08-17)
 
+- **T.1–T.6 — CLI `--watch` and company-watchlist code-review findings.** All six issues from the 2026-08-17 review are resolved: T.1 (watch mode transient error handling), T.2 (watchlist partial failure handling), T.3 (config file error wrapping), T.4 (type casting cleanup), T.5 (watch mode replay design verified), T.6 (SIGINT/SIGTERM handling). Five were already fixed in the original feature implementation; T.5 was verified as acceptable design (current order prevents silent signal drops, replay window is negligible).
+
 - **S.1 — CSV export formula-injection (spec §11.1).** `lib/text/csv.ts`'s
   `escapeCsvField` now prefixes any field whose first character is `=`,
   `+`, `-`, `@`, tab, or CR with a literal `'` before RFC-4180 quoting
