@@ -8,6 +8,7 @@ import {
   hasAnyFilter,
   loadLastCheckedAt,
   recordLastCheckedAt,
+  loadWatchedCompanies,
   type SavedFilterFlags,
 } from "../config-store";
 import { printResult, renderTable, truncate, type TableColumn } from "../output";
@@ -58,6 +59,100 @@ function renderSignalListTable(result: SignalListResponse): string {
     ? `\n(more results -- pass --cursor ${result.meta.nextCursor} for the next page)`
     : "";
   return table + cursorNote;
+}
+
+/** Client-side comparator matching signalsQuerySchema's `sort` enum
+ * (score_desc/newest/company_asc) -- used only by --watched's merge
+ * step below, since the server's own ORDER BY only applies within a
+ * single company's request, not across the fanned-out set. Mirrors the
+ * exact ORDER BY clauses in packages/db/src/signals-repo.ts's
+ * listSignals: `s.last_detected_at DESC, s.id DESC` for newest;
+ * `c.display_name ASC, s.id DESC` for company_asc (NOT score -- id is
+ * the real tiebreaker there); `s.score DESC, s.last_detected_at DESC,
+ * s.id DESC` for score_desc (the default). `id` is a UUID string, so
+ * `DESC` there is a plain reverse-lexicographic compare, same as SQL's
+ * own text ordering -- not numeric or chronological, just a stable
+ * arbitrary tiebreaker matching what the server would do. */
+function compareSignals(sort: string, a: SignalListItem, b: SignalListItem): number {
+  if (sort === "newest") {
+    const byDate = b.lastDetectedAt.localeCompare(a.lastDetectedAt);
+    return byDate !== 0 ? byDate : b.id.localeCompare(a.id);
+  }
+  if (sort === "company_asc") {
+    const byName = a.companyDisplayName.localeCompare(b.companyDisplayName);
+    return byName !== 0 ? byName : b.id.localeCompare(a.id);
+  }
+  // score_desc (default)
+  const byScore = b.score - a.score;
+  if (byScore !== 0) return byScore;
+  const byDate = b.lastDetectedAt.localeCompare(a.lastDetectedAt);
+  return byDate !== 0 ? byDate : b.id.localeCompare(a.id);
+}
+
+/**
+ * `--watched` (feature request, complements the company watchlist
+ * config-store.ts already provides for `hs companies list --watched`):
+ * fans out one GET /api/v1/signals request per watched slug -- applying
+ * every OTHER filter flag to each -- then merges, re-sorts, and caps to
+ * `limit` client-side. Necessary because signalsQuerySchema.company is a
+ * single string (server-side WHERE clause, not an array param), so
+ * there is no single request that means "any of these N companies."
+ *
+ * Per-slug failures are isolated with Promise.allSettled, same pattern
+ * companies.ts's `list --watched` already uses: one bad/renamed/deleted
+ * watched slug must not take down the view for every other company that
+ * would have succeeded. Reported in `meta.failures` rather than
+ * silently dropped.
+ *
+ * `nextCursor` is always null on the merged result -- a server-side
+ * cursor from any one company's request is meaningless against a
+ * client-merged, re-sorted set spanning N companies, so pagination is
+ * not offered here; re-run with a higher --limit instead.
+ */
+async function fetchWatchedSignals(
+  query: Omit<Awaited<ReturnType<typeof signalsQuerySchema.parse>>, "company" | "cursor">,
+): Promise<SignalListResponse & { meta: SignalListResponse["meta"] & { failures: { slug: string; code: string; message: string }[] } }> {
+  const slugs = await loadWatchedCompanies();
+  const config = resolveConfig();
+  const perCompanyLimit = query.limit;
+
+  const settled = await Promise.allSettled(
+    slugs.map((slug) => fetchSignals(config, { ...query, company: slug, limit: perCompanyLimit })),
+  );
+
+  const data: SignalListItem[] = [];
+  const failures: { slug: string; code: string; message: string }[] = [];
+  let searchMode: SignalListResponse["meta"]["searchMode"] = "keyword";
+
+  settled.forEach((outcome, i) => {
+    const slug = slugs[i] as string;
+    if (outcome.status === "fulfilled") {
+      data.push(...outcome.value.data);
+      if (outcome.value.meta.searchMode === "hybrid") searchMode = "hybrid";
+    } else {
+      const err = outcome.reason;
+      if (err instanceof ApiClientError) {
+        failures.push({ slug, code: err.code, message: err.message });
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        failures.push({ slug, code: "UNKNOWN_ERROR", message });
+      }
+    }
+  });
+
+  data.sort((a, b) => compareSignals(query.sort, a, b));
+  const truncated = data.slice(0, query.limit);
+
+  return {
+    data: truncated,
+    meta: {
+      requestId: "req_local",
+      appliedFilters: { ...query, watched: true },
+      nextCursor: null,
+      searchMode,
+      failures,
+    },
+  };
 }
 
 /**
@@ -149,6 +244,10 @@ const list = defineCommand({
     save: { type: "boolean", description: "Save the given filter flags as the default profile" },
     clearSaved: { type: "boolean", description: "Remove the saved filter profile" },
     watch: { type: "string", description: "Poll every N seconds, printing only newly-observed signals each tick" },
+    watched: {
+      type: "boolean",
+      description: "Only companies on the local watchlist (overrides --company; ignores --cursor)",
+    },
   },
   async run({ args }) {
     if (args.clearSaved) {
@@ -158,6 +257,16 @@ const list = defineCommand({
     }
 
     let filterFlags = pickFilterFlags(args);
+    // --watched scopes the company set from the local watchlist, not a
+    // single --company value -- same precedence companies.ts's `list
+    // --watched` already establishes for --q ("the two are different
+    // data sources, not composable filters over one list"). Dropped
+    // before hasAnyFilter/save/saved-profile logic runs so a stray
+    // --company doesn't get persisted into a saved profile alongside
+    // --watched, and doesn't count toward "no flags supplied" below.
+    if (args.watched && filterFlags.company !== undefined) {
+      delete filterFlags.company;
+    }
     const explicitObservedSince = typeof filterFlags.observedSince === "string" && filterFlags.observedSince !== "";
     let usedSavedProfile = false;
 
@@ -200,9 +309,28 @@ const list = defineCommand({
         minScore: filterFlags.minScore,
         observedSince: overrideObservedSince ?? filterFlags.observedSince,
         sort: args.sort,
-        cursor: args.cursor,
+        // A server-side cursor is meaningless once --watched merges N
+        // per-company requests client-side (see fetchWatchedSignals's
+        // own doc comment) -- silently dropped rather than erroring,
+        // matching this flag's existing "additive, never the reason a
+        // command fails" posture (extractFormatFlag in main.ts, and
+        // --format's own unrecognized-value fallback).
+        cursor: args.watched ? undefined : args.cursor,
         limit: args.limit,
       });
+
+    // Dispatches to the real API for a normal fetch, or fans out across
+    // the local watchlist and merges client-side under --watched (see
+    // fetchWatchedSignals's own doc comment for why company can't just
+    // be a comma-separated value the way --role is).
+    const runFetch = (overrideObservedSince?: string) => {
+      const query = buildQuery(overrideObservedSince);
+      if (args.watched) {
+        const { company: _company, cursor: _cursor, ...rest } = query;
+        return fetchWatchedSignals(rest);
+      }
+      return fetchSignals(resolveConfig(), query);
+    };
 
     const watchSeconds = args.watch ? Number(args.watch) : undefined;
     if (watchSeconds !== undefined && (!Number.isFinite(watchSeconds) || watchSeconds <= 0)) {
@@ -210,7 +338,7 @@ const list = defineCommand({
     }
 
     if (watchSeconds === undefined) {
-      const result = await fetchSignals(resolveConfig(), buildQuery());
+      const result = await runFetch();
       printResult(result, renderSignalListTable);
       if (usedSavedProfile) await recordLastCheckedAt(new Date().toISOString());
       return;
@@ -248,7 +376,7 @@ const list = defineCommand({
       while (!stopRequested) {
         const tickStartedAt = new Date().toISOString();
         try {
-          const result = await fetchSignals(resolveConfig(), buildQuery(tickObservedSince));
+          const result = await runFetch(tickObservedSince);
           printResult(result, renderSignalListTable);
           if (usedSavedProfile) await recordLastCheckedAt(tickStartedAt);
           tickObservedSince = tickStartedAt;

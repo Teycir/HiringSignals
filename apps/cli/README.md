@@ -75,7 +75,8 @@ $ hs facets
 Flags: `--role` (singular flag name; comma-separated values, e.g.
 `--role software_engineering,ai_machine_learning`), `--company`, `--q`,
 `--location-mode`, `--country`, `--source`, `--signal-type`,
-`--min-score`, `--observed-since`, `--sort`, `--cursor`, `--limit`.
+`--min-score`, `--observed-since`, `--sort`, `--cursor`, `--limit`,
+`--watched` (see below), `--watch` (polling), `--save`/`--clear-saved`.
 
 ```
 $ hs signals list --role software_engineering --limit 2
@@ -119,6 +120,42 @@ $ hs signals list --clear-saved
 If the saved file is missing, corrupt, or fails validation, it's
 silently discarded and the command proceeds unfiltered -- no error, no
 prompt.
+
+### Watchlist filter (`--watched`)
+
+`--watched` scopes results to the companies in your local watchlist
+(the same `~/.hiring-signals/config.json` list `hs companies watch
+<slug>` / `hs companies unwatch <slug>` manage). Because `--company`
+is a single server-side value, `--watched` fans out one API request
+per watched slug (applying every other filter flag to each) and
+merges the results client-side, re-sorting the merged set by the same
+`--sort` and truncating to `--limit`.
+
+```
+$ hs companies watch gitlab
+$ hs companies watch stripe
+$ hs signals list --watched --min-score 50
+{"data":[...],"meta":{...,"appliedFilters":{"watched":true,...},"failures":[]}}
+```
+
+Notes:
+- **`--watched` overrides `--company`** if both are given (matches
+  `hs companies list --watched`'s existing precedent for `--q`) --
+  the company scope can't come from two places at once.
+- **`--cursor` is silently ignored** under `--watched`: a single
+  server-side page token is meaningless once N per-company requests
+  are merged client-side. `--limit` still applies, as a per-company
+  cap before the merge.
+- **Per-slug failures are isolated**, not fatal -- one unreachable or
+  renamed watched company is reported in `meta.failures` (each entry:
+  `slug`, `code`, `message`) rather than failing the whole command.
+- **Empty watchlist succeeds trivially** with an empty result set and
+  no API call, same as `hs companies list --watched`.
+- **Composes with `--watch` (polling)** -- each tick re-fans-out
+  across the current watchlist.
+- **Not saveable** -- `--watched` is a data-source selector, not a
+  filter value, so `--save` never persists it (same reasoning as
+  `--q` under `companies list --watched`).
 
 ## `hs signals get <signalId>`
 

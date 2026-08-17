@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (2026-08-17)
 
+- **`hs signals list --watched`.** Filters signals to the local
+  watchlist companies (`hs companies watch <slug>`), mirroring the
+  pattern `hs companies list --watched` already established.
+  `signalsQuerySchema.company` is a single server-side value (not a
+  comma-separated list like `--role`), so `--watched` fans out one
+  `GET /api/v1/signals` request per watched slug -- applying every
+  other filter flag (`--role`, `--q`, `--min-score`, etc.) to each --
+  and merges/sorts/caps the results client-side. Design decisions,
+  each matching an existing precedent in this codebase: `--watched`
+  overrides `--company` when both are given (same as `companies list
+  --watched` overriding `--q`); `--cursor` is silently dropped under
+  `--watched` since a single server-side page token is meaningless
+  once N per-slug requests are merged (`--limit` still applies, as a
+  per-slug cap before the merge); per-slug failures are isolated via
+  `Promise.allSettled` into `meta.failures` rather than failing the
+  whole command; an empty watchlist succeeds trivially with no API
+  call; `--watched` composes with `--watch` (polling) by re-fanning-out
+  every tick; `--watched` is excluded from `FILTER_FLAG_KEYS`/`--save`
+  since it's a data-source selector, not a filter value. The
+  client-side sort comparator was written to exactly match
+  `packages/db`'s real `ORDER BY` for all three sort modes, including
+  `company_asc`'s `id DESC` tiebreaker (not `score DESC`, which the
+  first draft assumed). Verified end-to-end against a live local
+  `wrangler dev` API with real data (GitLab/Robinhood/Stripe) --
+  merging, sorting, table rendering, and `--watch` polling all
+  confirmed working. 7 new tests in
+  `apps/cli/test/signals-list-watched.test.ts`, mirroring
+  `companies-watchlist.test.ts`'s structure; full `apps/cli` suite
+  (111 tests, 8 files) passing with no regressions.
+
 - **`hs --version` / `hs -v`.** `apps/cli`'s root `citty` command declared
   a `meta.version`, but this file uses `runCommand()` (not `runMain()`)
   for its JSON-error-shape contract, and only `runMain()` wires up

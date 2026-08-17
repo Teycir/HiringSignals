@@ -190,6 +190,17 @@ CHANGELOG.md.
   `cli-process.test.ts`; `pnpm --filter @hiring-signals/cli typecheck`
   and `lint` clean; full 16/16 `cli-process.test.ts` suite passing.
 
+- **`hs signals list --watched`.** Landed 2026-08-17. Fans out one
+  `GET /api/v1/signals` request per watchlisted company (`company` is
+  a single server-side value, unlike `--role`) and merges/sorts/caps
+  client-side, mirroring `hs companies list --watched`'s existing
+  fan-out/`Promise.allSettled` pattern. Overrides `--company`, drops
+  `--cursor`, composes with `--watch` polling, excluded from
+  `--save`. Verified live against `wrangler dev` with real data. Full
+  detail in CHANGELOG.md. 7 new tests
+  (`signals-list-watched.test.ts`); full `apps/cli` suite 111/111
+  passing across 8 test files, no regressions.
+
 ---
 
 ## Open work
