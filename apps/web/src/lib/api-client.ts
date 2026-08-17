@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type {
   CompanyHiringTimelineBucket,
   CompanyRecentSignal,
@@ -8,13 +7,34 @@ import type {
   SignalDetail,
   SignalListItem,
 } from "@hiring-signals/db/src/types";
-import type { AtsProvider, RoleCategory, SignalType } from "@hiring-signals/domain";
+import {
+  apiRequest,
+  queryFromRecord,
+  ApiClientError,
+  type ApiFetchFn,
+  type CompanyTimelineQuery,
+  type SignalsQuery,
+  type TrendsQuery,
+} from "@hiring-signals/domain";
 
 /**
  * Single place the browser talks to the Worker API (spec 12.1). Never call
  * ATS providers directly from a client component -- everything goes through
  * this file, which only ever hits NEXT_PUBLIC_API_BASE_URL (public by
  * design, spec 4.4 -- it's a URL, not a secret).
+ *
+ * The request/error-envelope/query-string plumbing lives in
+ * @hiring-signals/domain's api-client-core.ts (shared with apps/cli's
+ * api-client.ts, ROADMAP.md refactor 2026-08-17) -- this file only adds
+ * what's genuinely apps/web-specific: the server-side service-binding
+ * fetch path (serverFetch), isAbortError, and the per-route fetchers'
+ * response-shape typings. Query param types (SignalsQuery, TrendsQuery,
+ * CompanyTimelineQuery) are imported from @hiring-signals/domain rather
+ * than hand-declared here, so they can never drift from what
+ * apps/cli validates against or what the live route actually accepts --
+ * this file used to hand-roll its own SignalListParams/TrendsParams/
+ * CompanyTimelineParams that were never checked against the route's
+ * real zod schemas.
  *
  * Types are imported from "@hiring-signals/db/src/types", NOT the package
  * root ("@hiring-signals/db"). The root barrel also re-exports
@@ -31,24 +51,7 @@ import type { AtsProvider, RoleCategory, SignalType } from "@hiring-signals/doma
  */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8787";
 
-const apiErrorSchema = z.object({
-  error: z.object({
-    code: z.string(),
-    message: z.string(),
-    requestId: z.string(),
-  }),
-});
-
-export class ApiClientError extends Error {
-  code: string;
-  requestId: string;
-
-  constructor(code: string, message: string, requestId: string) {
-    super(message);
-    this.code = code;
-    this.requestId = requestId;
-  }
-}
+export { ApiClientError };
 
 /**
  * A cancelled `fetch` (AbortController.abort()) rejects with a DOMException
@@ -78,30 +81,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // signal for "am I running server-side," same check every other
   // server/client-shared branch in this codebase uses, since this file
   // has no "use client" directive and is imported into both bundles.
-  const res =
-    typeof window === "undefined" ? await serverFetch(path, init) : await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...init?.headers,
-      },
-    });
+  const fetchImpl = typeof window === "undefined" ? serverFetch : browserFetch;
+  return apiRequest<T>(fetchImpl as ApiFetchFn, path, init);
+}
 
-  const body = await res.json();
-
-  if (!res.ok) {
-    const parsed = apiErrorSchema.safeParse(body);
-    if (parsed.success) {
-      throw new ApiClientError(
-        parsed.data.error.code,
-        parsed.data.error.message,
-        parsed.data.error.requestId,
-      );
-    }
-    throw new ApiClientError("UNKNOWN_ERROR", "Request failed.", "req_unknown");
-  }
-
-  return body as T;
+async function browserFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
 }
 
 /**
@@ -141,23 +132,11 @@ async function serverFetch(path: string, init?: RequestInit): Promise<Response> 
 
 /**
  * Mirrors apps/api/src/routes/signals.ts's signalsQuerySchema exactly --
- * same field names, same optionality -- so URL/filter state built against
- * this type never drifts from what the live route actually accepts.
+ * imported directly from @hiring-signals/domain (not hand-copied here,
+ * see this file's header comment) so URL/filter state built against
+ * this type can never drift from what the live route actually accepts.
  */
-export interface SignalListParams {
-  roles?: RoleCategory[];
-  company?: string;
-  q?: string;
-  locationMode?: "remote" | "hybrid" | "onsite" | "unknown";
-  country?: string;
-  source?: AtsProvider;
-  signalType?: SignalType;
-  minScore?: number;
-  observedSince?: string;
-  sort?: "score_desc" | "newest" | "company_asc";
-  cursor?: string;
-  limit?: number;
-}
+export type SignalListParams = Partial<SignalsQuery>;
 
 export interface SignalListResponse {
   data: SignalListItem[];
@@ -174,21 +153,8 @@ export async function fetchSignals(
   params: SignalListParams = {},
   init?: RequestInit,
 ): Promise<SignalListResponse> {
-  const query = new URLSearchParams();
-  if (params.roles?.length) query.set("roles", params.roles.join(","));
-  if (params.company) query.set("company", params.company);
-  if (params.q) query.set("q", params.q);
-  if (params.locationMode) query.set("locationMode", params.locationMode);
-  if (params.country) query.set("country", params.country);
-  if (params.source) query.set("source", params.source);
-  if (params.signalType) query.set("signalType", params.signalType);
-  if (params.minScore !== undefined) query.set("minScore", String(params.minScore));
-  if (params.observedSince) query.set("observedSince", params.observedSince);
-  if (params.sort) query.set("sort", params.sort);
-  if (params.cursor) query.set("cursor", params.cursor);
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-
-  return request<SignalListResponse>(`/api/v1/signals?${query.toString()}`, init);
+  const qs = queryFromRecord(params);
+  return request<SignalListResponse>(`/api/v1/signals?${qs}`, init);
 }
 
 /** GET /api/v1/signals/:signalId (spec 9.2, 10.5). */
@@ -211,11 +177,8 @@ export async function fetchCompanies(
   params: { q?: string; limit?: number } = {},
   init?: RequestInit,
 ): Promise<{ data: CompanySummary[]; meta: { requestId: string } }> {
-  const query = new URLSearchParams();
-  if (params.q) query.set("q", params.q);
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-
-  return request(`/api/v1/companies?${query.toString()}`, init);
+  const qs = queryFromRecord(params);
+  return request(`/api/v1/companies?${qs}`, init);
 }
 
 /**
@@ -239,15 +202,12 @@ export async function fetchCompanyDetail(
  * GET /api/v1/companies/:slug/timeline (ROADMAP.md Milestone O.1, spec
  * §1.4/§10.1). Time-bucketed hiring activity for one company. `since`/
  * `until` default server-side (90d-ago/now) when omitted; `bucketDays`
- * must be one of 7/14/30 (server defaults to 14). Mirrors
- * companyTimelineQuerySchema's param names exactly.
+ * must be one of 7/14/30 (server defaults to 14). Imported from
+ * @hiring-signals/domain (see this file's header comment) rather than
+ * hand-declared, so it mirrors companyTimelineQuerySchema's param names
+ * exactly by construction.
  */
-export interface CompanyTimelineParams {
-  roles?: RoleCategory;
-  since?: string;
-  until?: string;
-  bucketDays?: 7 | 14 | 30;
-}
+export type CompanyTimelineParams = Partial<CompanyTimelineQuery>;
 
 export async function fetchCompanyTimeline(
   slug: string,
@@ -257,13 +217,8 @@ export async function fetchCompanyTimeline(
   data: { company: CompanySummary; buckets: CompanyHiringTimelineBucket[] };
   meta: { requestId: string; appliedFilters: Record<string, unknown> };
 }> {
-  const query = new URLSearchParams();
-  if (params.roles) query.set("roles", params.roles);
-  if (params.since) query.set("since", params.since);
-  if (params.until) query.set("until", params.until);
-  if (params.bucketDays !== undefined) query.set("bucketDays", String(params.bucketDays));
-
-  return request(`/api/v1/companies/${encodeURIComponent(slug)}/timeline?${query.toString()}`, init);
+  const qs = queryFromRecord(params);
+  return request(`/api/v1/companies/${encodeURIComponent(slug)}/timeline?${qs}`, init);
 }
 
 /**
@@ -273,16 +228,13 @@ export async function fetchCompanyTimeline(
  * above). `roles` is required server-side (>=1 role, comma-delimited);
  * `since` defaults server-side (30d-ago) when omitted. Response rows
  * carry each company's hiringVelocityScore (Milestone Q.3) alongside
- * the trend metrics.
+ * the trend metrics. Imported from @hiring-signals/domain (see this
+ * file's header comment) rather than hand-declared. `roles` stays
+ * required (unlike the other Partial<...Query> aliases in this file)
+ * since the route itself requires >=1 role -- every other field has a
+ * server-side default and is genuinely optional from a caller's view.
  */
-export interface TrendsParams {
-  roles: RoleCategory[];
-  industry?: string;
-  country?: string;
-  since?: string;
-  sort?: "acceleration_desc" | "volume_desc" | "newest_signal" | "velocity_desc";
-  limit?: number;
-}
+export type TrendsParams = Partial<TrendsQuery> & Pick<TrendsQuery, "roles">;
 
 /**
  * GET /api/v1/companies/:slug/role-activity (ROADMAP V.4, spec §10.5
@@ -297,21 +249,18 @@ export interface CompanyRoleActivityBucket {
 
 export async function fetchCompanyRoleActivity(
   slug: string,
-  role: RoleCategory,
+  role: string,
   init?: RequestInit,
 ): Promise<{
   data: {
     company: { slug: string; displayName: string };
-    role: RoleCategory;
+    role: string;
     buckets: CompanyRoleActivityBucket[];
   };
   meta: { requestId: string; appliedFilters: Record<string, unknown> };
 }> {
-  const query = new URLSearchParams({ role });
-  return request(
-    `/api/v1/companies/${encodeURIComponent(slug)}/role-activity?${query.toString()}`,
-    init,
-  );
+  const qs = queryFromRecord({ role });
+  return request(`/api/v1/companies/${encodeURIComponent(slug)}/role-activity?${qs}`, init);
 }
 
 /**
@@ -350,14 +299,6 @@ export async function fetchTrends(
     hiringVelocityDisclaimer: string;
   };
 }> {
-  const query = new URLSearchParams();
-  query.set("roles", params.roles.join(","));
-  if (params.industry) query.set("industry", params.industry);
-  if (params.country) query.set("country", params.country);
-  if (params.since) query.set("since", params.since);
-  if (params.sort) query.set("sort", params.sort);
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-
-  return request(`/api/v1/trends/hiring?${query.toString()}`, init);
+  const qs = queryFromRecord(params);
+  return request(`/api/v1/trends/hiring?${qs}`, init);
 }
-

@@ -8,6 +8,10 @@ import type {
 } from "@hiring-signals/db/src/types";
 import {
   apiErrorSchema,
+  apiRequest,
+  queryFromRecord,
+  ApiClientError,
+  type ApiFetchFn,
   type CompanyTimelineQuery,
   type SignalsQuery,
   type TrendsQuery,
@@ -18,16 +22,12 @@ import {
  * Milestone F.1.1). Thin client only -- no D1 access, no bypassing the
  * API's validation/rate-limiting/auth (F.1's design principle 5).
  *
- * Pattern and header-comment reasoning are carried over from the deleted
- * apps/web/src/lib/api-client.ts (git history at commit e102eeb, read
- * before writing this file per ROADMAP.md F.1's note) with two fixes
- * that file's own header called out as things it should have done:
- *  1. Imports apiErrorSchema from @hiring-signals/domain instead of
- *     hand-rolling a duplicate inline schema.
- *  2. Imports SignalsQuery from @hiring-signals/domain's signals-query.ts
- *     (moved there in this same milestone) instead of hand-maintaining a
- *     parallel SignalListParams interface that could drift from the
- *     route's actual accepted fields.
+ * The request/error-envelope/query-string plumbing lives in
+ * @hiring-signals/domain's api-client-core.ts (shared with apps/web's
+ * api-client.ts, ROADMAP.md refactor 2026-08-17) -- this file only adds
+ * what's genuinely apps/cli-specific: env-var config resolution,
+ * HS_ADMIN_SECRET-bearing admin POSTs, and the per-route fetchers'
+ * response-shape typings.
  *
  * Types come from "@hiring-signals/db/src/types", NOT the package root
  * ("@hiring-signals/db") -- same reasoning as apps/web's version: the
@@ -60,74 +60,16 @@ export function resolveConfig(env: NodeJS.ProcessEnv = process.env): CliClientCo
   };
 }
 
-export class ApiClientError extends Error {
-  code: string;
-  requestId: string;
+export { ApiClientError };
 
-  constructor(code: string, message: string, requestId: string) {
-    super(message);
-    this.name = "ApiClientError";
-    this.code = code;
-    this.requestId = requestId;
-  }
-}
-
-async function request<T>(config: CliClientConfig, path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${config.baseUrl}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...init?.headers,
-      },
-    });
-  } catch (err) {
-    // Network failure (DNS, connection refused, etc.) never reached the
-    // API at all -- no requestId exists to report. "req_none" makes that
-    // explicit rather than fabricating one, per F.1 principle 2 (machine
-    // -readable errors an agent can branch on via the `code` field).
-    const message = err instanceof Error ? err.message : String(err);
-    throw new ApiClientError("NETWORK_ERROR", message, "req_none");
-  }
-
-  let body: unknown;
-  try {
-    body = await res.json();
-  } catch {
-    throw new ApiClientError(
-      "INVALID_RESPONSE",
-      "Response body was not valid JSON.",
-      "req_none",
-    );
-  }
-
-  if (!res.ok) {
-    const parsed = apiErrorSchema.safeParse(body);
-    if (parsed.success) {
-      throw new ApiClientError(
-        parsed.data.error.code,
-        parsed.data.error.message,
-        parsed.data.error.requestId,
-      );
-    }
-    throw new ApiClientError("UNKNOWN_ERROR", "Request failed.", "req_unknown");
-  }
-
-  return body as T;
-}
-
-function queryFromRecord(params: Record<string, unknown>): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
-    if (Array.isArray(value)) {
-      if (value.length > 0) query.set(key, value.join(","));
-      continue;
-    }
-    query.set(key, String(value));
-  }
-  return query.toString();
+function request<T>(config: CliClientConfig, path: string, init?: RequestInit): Promise<T> {
+  return apiRequest<T>(fetch as ApiFetchFn, `${config.baseUrl}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
 }
 
 /** GET /api/v1/signals (spec 9.2, 9.3). Params validated by SignalsQuery
@@ -294,7 +236,10 @@ export async function fetchSources(
  * GET /api/v1/export/signals.csv -- returns the raw CSV text, not JSON
  * (this is the one route that doesn't use the data/meta envelope). The
  * CLI command layer (F.1.3) is responsible for writing it to --out or
- * stdout as-is.
+ * stdout as-is. Not routed through the shared apiRequest/request helper
+ * above since those always parse the body as JSON -- this is the one
+ * fetcher across both apps/web and apps/cli that isn't, so it keeps its
+ * own small fetch+error-unwrap directly.
  */
 export async function fetchSignalsCsv(
   config: CliClientConfig,

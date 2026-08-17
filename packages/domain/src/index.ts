@@ -4,6 +4,7 @@ export * from "./job";
 export * from "./signal";
 export * from "./ingest-message";
 export * from "./api-envelope";
+export * from "./api-client-core";
 export * from "./title-normalize";
 export * from "./role-rules";
 export * from "./classification";
