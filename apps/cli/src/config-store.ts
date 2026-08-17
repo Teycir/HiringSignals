@@ -173,7 +173,7 @@ export async function clearSavedFilters(env: NodeJS.ProcessEnv = process.env): P
   if (Object.keys(rest).length === 0) {
     await rm(path, { force: true });
   } else {
-    await writeFile(path, JSON.stringify(rest, null, 2) + "\n", "utf8");
+    await writeConfigFile(path, rest);
   }
 }
 

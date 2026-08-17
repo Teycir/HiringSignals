@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { signalsQuerySchema } from "@hiring-signals/domain";
-import { fetchSignals, fetchSignalDetail, resolveConfig, type SignalListResponse } from "../api-client";
+import { ApiClientError, fetchSignals, fetchSignalDetail, resolveConfig, type SignalListResponse } from "../api-client";
 import {
   loadSavedFilters,
   saveFilters,
@@ -103,10 +103,33 @@ function renderSignalListTable(result: SignalListResponse): string {
  * were resolved normally (including the lastCheckedAt default above);
  * every subsequent tick narrows to `observedSince = <end of the previous
  * tick>`, so a long-running watch only ever reports genuinely new
- * signals, never repeats. Runs until the process is killed (Ctrl-C /
- * SIGINT) -- no built-in max-iterations, since an agent supervising this
- * process is expected to manage its own lifecycle, matching this CLI's
- * "no interactive prompts, the caller drives lifecycle" design principle.
+ * signals, never repeats. Runs until the process receives Ctrl-C
+ * (SIGINT) or SIGTERM -- no built-in max-iterations, since an agent
+ * supervising this process is expected to manage its own lifecycle,
+ * matching this CLI's "no interactive prompts, the caller drives
+ * lifecycle" design principle.
+ *
+ * A single tick's failure (network hiccup, momentary 500, DNS blip)
+ * does NOT end the watch session -- it's caught, printed as a
+ * `{ tickError: {...} }` line to stderr, and the loop continues at the
+ * same interval. Ending the whole session on one transient error would
+ * defeat this feature's entire premise of running unattended for a long
+ * time; see the loop's own comment for how observedSince is preserved
+ * across a failed tick.
+ *
+ * SIGINT/SIGTERM shutdown: a listener registered only for the duration
+ * of the watch loop sets a `stopRequested` flag rather than letting
+ * Node's default handler tear the process down mid-tick. The loop
+ * checks that flag right after each tick completes (fetch printed,
+ * lastCheckedAt recorded) and right after the inter-tick sleep, so a
+ * signal never lands in the middle of a fetch-then-record sequence --
+ * closing the "killed after fetchSignals succeeds but before
+ * recordLastCheckedAt" window the N.1 incremental-default interaction
+ * relies on. On a clean stop, a final single-line `{ stopped: true,
+ * signal }` JSON envelope is printed to stdout (same "one JSON value
+ * per line" contract every tick already follows) before exiting 0 --
+ * an agent piping this to `| jq` sees an explicit end-of-stream marker
+ * instead of the stream just silently going quiet.
  */
 const list = defineCommand({
   meta: { name: "list", description: "List signals matching filters." },
@@ -134,7 +157,7 @@ const list = defineCommand({
       return;
     }
 
-    let filterFlags = pickFilterFlags(args as unknown as Record<string, unknown>);
+    let filterFlags = pickFilterFlags(args);
     const explicitObservedSince = typeof filterFlags.observedSince === "string" && filterFlags.observedSince !== "";
     let usedSavedProfile = false;
 
@@ -197,16 +220,83 @@ const list = defineCommand({
     // accumulated), and every tick after the first narrows to
     // observedSince = the previous tick's fetch time so results are
     // never repeated across ticks.
+    //
+    // Per-tick errors (network hiccup, momentary 500, DNS blip) are
+    // caught here and printed as a `{ tickError: {...} }` single-line
+    // JSON envelope to stderr rather than propagating up through
+    // main.ts's top-level catch, which would kill the whole watch
+    // session on the very first transient failure -- the opposite of
+    // what "run unattended for a long time" implies. On a failed tick,
+    // tickObservedSince is deliberately NOT advanced, so the next
+    // successful tick still queries from the last successful fetch time
+    // and no signals observed during the failed window are silently
+    // dropped.
     let tickObservedSince = filterFlags.observedSince;
-    // Runs until the process is killed (Ctrl-C / SIGINT), by design -- see docstring.
-    while (true) {
-      const tickStartedAt = new Date().toISOString();
-      const result = await fetchSignals(resolveConfig(), buildQuery(tickObservedSince));
-      printResult(result, renderSignalListTable);
-      if (usedSavedProfile) await recordLastCheckedAt(tickStartedAt);
-      tickObservedSince = tickStartedAt;
-      await new Promise((resolve) => setTimeout(resolve, watchSeconds * 1000));
+
+    // SIGINT/SIGTERM: set a flag and let the loop notice it at a safe
+    // point (right after a tick finishes, and right after the sleep)
+    // rather than letting Node's default handler tear the process down
+    // mid-fetch-or-write. See this command's own docstring for why.
+    let stopRequested: NodeJS.Signals | undefined;
+    const requestStop = (signal: NodeJS.Signals) => {
+      stopRequested = signal;
+    };
+    process.on("SIGINT", requestStop);
+    process.on("SIGTERM", requestStop);
+
+    try {
+      while (!stopRequested) {
+        const tickStartedAt = new Date().toISOString();
+        try {
+          const result = await fetchSignals(resolveConfig(), buildQuery(tickObservedSince));
+          printResult(result, renderSignalListTable);
+          if (usedSavedProfile) await recordLastCheckedAt(tickStartedAt);
+          tickObservedSince = tickStartedAt;
+        } catch (err) {
+          if (err instanceof ApiClientError) {
+            process.stderr.write(
+              JSON.stringify({ tickError: { code: err.code, message: err.message, requestId: err.requestId } }) + "\n",
+            );
+          } else {
+            const message = err instanceof Error ? err.message : String(err);
+            process.stderr.write(JSON.stringify({ tickError: { code: "CLI_ERROR", message, requestId: "req_none" } }) + "\n");
+          }
+        }
+        if (stopRequested) break;
+
+        // Interruptible sleep: a signal arriving mid-sleep resolves this
+        // immediately instead of waiting out the full --watch interval,
+        // so shutdown is prompt even with a long poll interval. Both
+        // `once` listeners are explicitly removed once the promise
+        // settles regardless of which branch won -- Node only
+        // auto-removes a `once` listener when IT fires, so leaving the
+        // non-winning one attached would leak one SIGINT + one SIGTERM
+        // listener per tick over a long-running watch, eventually
+        // tripping Node's MaxListenersExceededWarning.
+        await new Promise<void>((resolve) => {
+          const cleanup = () => {
+            process.off("SIGINT", onSignal);
+            process.off("SIGTERM", onSignal);
+          };
+          const timer = setTimeout(() => {
+            cleanup();
+            resolve();
+          }, watchSeconds * 1000);
+          const onSignal = () => {
+            clearTimeout(timer);
+            cleanup();
+            resolve();
+          };
+          process.once("SIGINT", onSignal);
+          process.once("SIGTERM", onSignal);
+        });
+      }
+    } finally {
+      process.off("SIGINT", requestStop);
+      process.off("SIGTERM", requestStop);
     }
+
+    printResult({ stopped: true, signal: stopRequested });
   },
 });
 

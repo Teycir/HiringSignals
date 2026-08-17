@@ -13,9 +13,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
  * signals-list-saved-filters.test.ts already establishes: `watch`/
  * `unwatch` never call the API at all (pure local config-store.ts
  * state), so those assert success directly; `list --watched` DOES call
- * the API once per watched slug (fetchCompanyDetail), so it's asserted
- * against the unreachable-host NETWORK_ERROR path, same as every other
- * network-touching case in this file's sibling.
+ * the API once per watched slug (fetchCompanyDetail) via
+ * Promise.allSettled, so a failure against the unreachable host is
+ * asserted as an isolated entry in `meta.failures` (command still exits
+ * 0) rather than the top-level NETWORK_ERROR path every other
+ * network-touching case in this file's sibling uses -- bug found in
+ * review: this used to be Promise.all, so one bad slug took the whole
+ * list down.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -92,12 +96,35 @@ describe("hs companies unwatch <slug>", () => {
 });
 
 describe("hs companies list --watched", () => {
-  it("calls the API once per watched slug and fails with NETWORK_ERROR against an unreachable host", () => {
+  it("calls the API once per watched slug and isolates a NETWORK_ERROR to meta.failures instead of failing the whole command", () => {
     runCli(["companies", "watch", "gitlab"]);
     const result = runCli(["companies", "list", "--watched"]);
-    expect(result.status).not.toBe(0);
-    const err = JSON.parse(result.stderr.trim());
-    expect(err.error.code).toBe("NETWORK_ERROR");
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout.trim());
+    expect(parsed.data).toEqual([]);
+    expect(parsed.meta.failures).toEqual([
+      expect.objectContaining({ slug: "gitlab", code: "NETWORK_ERROR" }),
+    ]);
+  });
+
+  it("returns successful watched companies even when a different watched slug fails", () => {
+    // Bug found in review: Promise.all previously made one bad slug
+    // (404/network error) take down the entire --watched list, even
+    // for slugs that would have succeeded. This can't easily assert a
+    // *mixed* success/failure result against a single unreachable host
+    // (every slug fails the same way here), but it locks in that
+    // multiple watched slugs each get their own isolated outcome in
+    // meta.failures rather than one shared top-level error.
+    runCli(["companies", "watch", "gitlab"]);
+    runCli(["companies", "watch", "acme-fintech"]);
+    const result = runCli(["companies", "list", "--watched"]);
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout.trim());
+    expect(parsed.meta.failures).toHaveLength(2);
+    expect(parsed.meta.failures.map((f: { slug: string }) => f.slug).sort()).toEqual([
+      "acme-fintech",
+      "gitlab",
+    ]);
   });
 
   it("makes no API call and succeeds trivially when the watchlist is empty", () => {

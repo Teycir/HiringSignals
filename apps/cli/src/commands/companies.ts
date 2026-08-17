@@ -1,5 +1,5 @@
 import { defineCommand } from "citty";
-import { fetchCompanies, fetchCompanyDetail, fetchCompanyTimeline, resolveConfig, type CompanyListResponse } from "../api-client";
+import { ApiClientError, fetchCompanies, fetchCompanyDetail, fetchCompanyTimeline, resolveConfig, type CompanyListResponse } from "../api-client";
 import type { RoleCategory } from "@hiring-signals/domain";
 import { printResult, renderTable, type TableColumn } from "../output";
 import type { CompanySummary } from "@hiring-signals/db/src/types";
@@ -27,6 +27,17 @@ function renderCompanyListTable(result: CompanyListResponse): string {
  * ignored when `--watched` is set (the two are different data sources,
  * not composable filters over one list) -- fine given `--q` has no
  * meaning against a fixed local slug list.
+ *
+ * Per-slug failures (stale/renamed/deleted watched slug -> NOT_FOUND)
+ * are isolated with Promise.allSettled rather than Promise.all: one bad
+ * slug in the watchlist must not take down the view for every other
+ * company that would have succeeded. Successful lookups go in `data` as
+ * before; failures are reported alongside in `meta.failures` (slug +
+ * error code/message) rather than silently dropped, so a scripted agent
+ * can still see and act on a stale watchlist entry -- this is the
+ * per-item failure behavior `watch`'s own doc comment already describes
+ * ("will simply surface a NOT_FOUND error at read time"), now actually
+ * scoped to the one slug instead of the whole list.
  */
 const list = defineCommand({
   meta: { name: "list", description: "Search/list companies." },
@@ -39,14 +50,33 @@ const list = defineCommand({
     if (args.watched) {
       const slugs = await loadWatchedCompanies();
       const config = resolveConfig();
-      const companies = await Promise.all(slugs.map((slug) => fetchCompanyDetail(config, slug)));
-      const result: CompanyListResponse = {
-        data: companies.map((c) => c.data),
+      const settled = await Promise.allSettled(slugs.map((slug) => fetchCompanyDetail(config, slug)));
+
+      const data: CompanySummary[] = [];
+      const failures: { slug: string; code: string; message: string }[] = [];
+      settled.forEach((outcome, i) => {
+        const slug = slugs[i] as string;
+        if (outcome.status === "fulfilled") {
+          data.push(outcome.value.data);
+        } else {
+          const err = outcome.reason;
+          if (err instanceof ApiClientError) {
+            failures.push({ slug, code: err.code, message: err.message });
+          } else {
+            const message = err instanceof Error ? err.message : String(err);
+            failures.push({ slug, code: "UNKNOWN_ERROR", message });
+          }
+        }
+      });
+
+      const result: CompanyListResponse & { meta: { failures: typeof failures } } = {
+        data,
         meta: {
           requestId: "req_local",
           appliedFilters: { watched: true },
           hiringVelocityDisclaimer:
             "Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget.",
+          failures,
         },
       };
       printResult(result, renderCompanyListTable);
@@ -69,7 +99,8 @@ const list = defineCommand({
  * (no network call at all here) -- `hs companies list --watched` will
  * simply surface a NOT_FOUND error at read time for a bad slug, same
  * as `hs companies get` would, rather than this command needing its
- * own duplicate validation round trip. */
+ * own duplicate validation round trip -- see `list`'s own comment above
+ * for how that NOT_FOUND is now scoped to just this slug. */
 const watch = defineCommand({
   meta: { name: "watch", description: "Add a company to the local watchlist." },
   args: {
