@@ -226,8 +226,8 @@ export async function recordLastCheckedAt(
     const existing = (await readConfigFile(path)) ?? {};
     const next: ConfigFileShape = { ...existing, lastCheckedAt: timestamp };
     await writeFile(path, JSON.stringify(next, null, 2) + "\n", "utf8");
-  } catch {
-    // Best-effort only -- see docstring.
+  } catch (err) {
+    console.error("[config-store] Failed to record lastCheckedAt:", err);
   }
 }
 

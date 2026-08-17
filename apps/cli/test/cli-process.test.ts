@@ -39,6 +39,33 @@ describe("hs CLI error paths (real subprocess)", () => {
     expect(String(parsed.error.message)).toContain("invalid_enum_value");
   });
 
+  // Regression coverage for a bug found while auditing trends.ts's fix:
+  // signalsQuerySchema.roles is (correctly) .optional() -- omitting
+  // --role entirely means "no role filter," a legitimate query -- but
+  // the piped array had no .min(1), so a *provided* value that reduces
+  // to nothing after split/trim/filter(Boolean) (a bare comma, or an
+  // empty string) silently parsed as roles=[], which listSignals'
+  // buildCommonFilters (`params.roles?.length`) treats identically to
+  // "no filter given." A caller who typed --role by mistake got every
+  // role back with no error explaining why. Fixed by adding .min(1) to
+  // the piped array (same as trends-query.ts's required `roles` field),
+  // which rejects an empty *string* value while an *omitted* key still
+  // short-circuits past validation via .optional(). This exercises
+  // `signals list`; `export signals` and `feed-url` share the exact
+  // same schema instance so aren't re-tested here.
+  it("signals list exits non-zero locally (CLI_ERROR) when --role is a bare comma (empty after split)", () => {
+    const result = runCli(["signals", "list", "--role", ","], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("CLI_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
+
   it("exits non-zero with NETWORK_ERROR/req_none when the API host is unreachable", () => {
     const result = runCli(["facets"], { HS_API_BASE_URL: "http://127.0.0.1:1" });
 
@@ -103,6 +130,68 @@ describe("hs CLI error paths (real subprocess)", () => {
     // api-client.ts request() error path, not a special-cased
     // success-shape assumption.
     const result = runCli(["trends", "hiring", "--role", "ai_machine_learning"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("NETWORK_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
+
+  // Regression coverage for the bug fixed by routing trends.ts's run()
+  // through trendsQuerySchema.parse() (previously it hand-split
+  // args.role client-side and skipped validation entirely -- see
+  // trends.ts's docstring). The first two cases mirror the "signals
+  // list --role backend" CLI_ERROR/invalid_enum_value case above: they
+  // must fail LOCALLY (no network call), matching the same contract
+  // every sibling command already documents. HS_API_BASE_URL is
+  // deliberately set to an unreachable host in each case -- if either
+  // of these ever regresses back to a NETWORK_ERROR instead of
+  // CLI_ERROR, that proves the bad value silently round-tripped to the
+  // network again. The third case (trailing comma) is the inverse
+  // check: it confirms the empty segment gets filtered out rather than
+  // erroring OR leaking through as a literal empty value.
+  it("trends hiring exits non-zero locally (CLI_ERROR/invalid_enum_value) on an invalid --role value", () => {
+    const result = runCli(["trends", "hiring", "--role", "not_a_real_role"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("CLI_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+    expect(String(parsed.error.message)).toContain("invalid_enum_value");
+  });
+
+  it("trends hiring exits non-zero locally (CLI_ERROR) when --role is omitted entirely", () => {
+    const result = runCli(["trends", "hiring"], {
+      HS_API_BASE_URL: "http://127.0.0.1:1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.error.code).toBe("CLI_ERROR");
+    expect(parsed.error.requestId).toBe("req_none");
+  });
+
+  it("trends hiring treats a trailing-comma empty role segment as filtered-out, not an error", () => {
+    // NOT a bug: trendsQuerySchema's .filter(Boolean) step (matching
+    // signals-query.ts's identical transform) already drops the empty
+    // "" segment produced by a trailing comma, leaving a valid single-
+    // role array (["ai_machine_learning"]) that passes .min(1). So this
+    // still reaches the network -- NETWORK_ERROR here is the CORRECT
+    // outcome, confirming the empty segment never leaks into the
+    // querystring as a literal empty role value (the actual bug
+    // scenario was the OLD hand-rolled split that skipped this filter
+    // entirely).
+    const result = runCli(["trends", "hiring", "--role", "ai_machine_learning,"], {
       HS_API_BASE_URL: "http://127.0.0.1:1",
     });
 

@@ -26,6 +26,16 @@ import { freeReadTier } from "../middleware/anti-abuse";
  * does, not the prose sketch.
  */
 const feedQuerySchema = z.object({
+  // `.min(1)` bug fix -- same hand-copy-didn't-inherit-the-fix issue as
+  // export.ts's exportQuerySchema (see that file's identical comment
+  // and signals-query.ts's signalsQuerySchema.roles for the original
+  // fix). Without this, `?roles=` or `?roles=,` on this route silently
+  // parsed as `[]` (== "no filter" to listSignalsForFeed's shared
+  // buildCommonFilters), AND buildChannelTitle's `parsed.roles.length >
+  // 0` guard below would silently omit the role from the feed's own
+  // <title> too -- a caller who mistyped --role would get an unfiltered
+  // feed titled as if no role was ever requested, with no error either
+  // place to explain why.
   roles: z
     .string()
     .transform((value) =>
@@ -34,7 +44,7 @@ const feedQuerySchema = z.object({
         .map((r) => r.trim())
         .filter(Boolean),
     )
-    .pipe(z.array(roleCategorySchema))
+    .pipe(z.array(roleCategorySchema).min(1))
     .optional(),
   company: z.string().optional(),
   q: z.string().min(2).optional(),

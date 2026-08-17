@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { fetchHiringTrends, resolveConfig, type HiringTrendsResponse } from "../api-client";
-import type { RoleCategory } from "@hiring-signals/domain";
+import { trendsQuerySchema } from "@hiring-signals/domain";
 import { printResult, renderTable, type TableColumn } from "../output";
 import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
 
@@ -32,6 +32,23 @@ function renderTrendsTable(result: HiringTrendsResponse): string {
  * "role" for CLI-surface consistency with that sibling command, even
  * though the wire param is plural `roles`.
  *
+ * Bug found in review: this command used to hand-roll its own
+ * `args.role.split(",")` instead of validating through
+ * trendsQuerySchema (@hiring-signals/domain) the way every sibling
+ * command (signals list, export, feed-url, companies timeline) routes
+ * its flags through the one real schema before ever calling the API.
+ * That meant an invalid role category, a missing `--role` (this
+ * endpoint's own schema marks `roles` required, >=1 -- see
+ * trends-query.ts's header comment), a trailing-comma empty segment
+ * (`--role backend,`), an out-of-range `--limit`, or a malformed
+ * `--since` all silently reached the network instead of failing
+ * locally with a clear Zod error -- exactly the "bad value fails
+ * locally instead of round-tripping to the API first" contract this
+ * CLI's own signals.ts docstring describes. Now parses through
+ * trendsQuerySchema.parse() like every other command, so a bad value
+ * here behaves identically to `hs signals list --role backend` (an
+ * invalid role) already does.
+ *
  * `--format table` (spec §16.2) is now implemented CLI-wide (this
  * comment previously said F.1.1 dropped it; that scope note has been
  * corrected in ROADMAP.md's G.5 section -- it was an undocumented gap,
@@ -53,21 +70,15 @@ const hiring = defineCommand({
     limit: { type: "string", description: "Max results, 1-50 (default 20)" },
   },
   async run({ args }) {
-    const result = await fetchHiringTrends(resolveConfig(), {
-      roles: args.role
-        ? (args.role.split(",").map((r) => r.trim()) as RoleCategory[])
-        : undefined,
+    const parsed = trendsQuerySchema.parse({
+      roles: args.role,
       industry: args.industry,
       country: args.country,
       since: args.since,
-      sort: args.sort as
-        | "acceleration_desc"
-        | "volume_desc"
-        | "newest_signal"
-        | "velocity_desc"
-        | undefined,
-      limit: args.limit ? Number(args.limit) : undefined,
+      sort: args.sort,
+      limit: args.limit,
     });
+    const result = await fetchHiringTrends(resolveConfig(), parsed);
     printResult(result, renderTrendsTable);
   },
 });

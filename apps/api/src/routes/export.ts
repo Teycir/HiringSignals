@@ -24,6 +24,16 @@ import { freeReadTier } from "../middleware/anti-abuse";
  * actually accepted.
  */
 const exportQuerySchema = z.object({
+  // `.min(1)` bug fix (see signals-query.ts's signalsQuerySchema.roles
+  // for the original fix + full rationale): this schema is a deliberate
+  // hand-copy of that one (see this const's own header comment on why),
+  // which meant it did NOT inherit the fix when signalsQuerySchema was
+  // patched -- a provided-but-empty `?roles=` or `?roles=,` on this
+  // route silently parsed as `[]`, which listSignalsForExport's shared
+  // buildCommonFilters (`params.roles?.length`) treats identically to
+  // "no filter," dumping every role instead of erroring on the caller's
+  // malformed input. Same fix, same reasoning, applied here since this
+  // schema is a separate object, not an import.
   roles: z
     .string()
     .transform((value) =>
@@ -32,7 +42,7 @@ const exportQuerySchema = z.object({
         .map((r) => r.trim())
         .filter(Boolean),
     )
-    .pipe(z.array(roleCategorySchema))
+    .pipe(z.array(roleCategorySchema).min(1))
     .optional(),
   company: z.string().optional(),
   q: z.string().min(2).optional(),

@@ -516,6 +516,110 @@ describe("findSignalsByJobIds", () => {
       await cleanupCompany(company.id);
     }
   });
+
+  // Explicit 180_000ms override, above the file's 90_000ms default -- this
+  // test does more live D1 round trips (3 jobs + 2 signals + 3 evidence
+  // rows) than any sibling test in this describe block, same reasoning as
+  // other slow live-D1 tests in this repo (see hiringsignals memory notes
+  // on reconciliation.test.ts's per-test overrides).
+  it(
+    "matched_job_id identifies which queried job actually backs each signal (apps/api semantic-search.ts ranking fix, 2026-08-17)",
+    async () => {
+    const company = await seedCompany("matched-job-id", "Matched Job Id Co");
+    try {
+      const source = await createSource(client, {
+        companyId: company.id,
+        provider: "greenhouse",
+        boardToken: company.slug,
+        publicUrl: `https://example.invalid/${company.slug}`,
+      });
+      const now = new Date().toISOString();
+      const jobA = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-a",
+        canonicalUrl: "https://example.invalid/jobs/job-a",
+        title: "Security Engineer A",
+        titleNormalized: "security engineer a",
+        contentHash: "hash-job-a",
+        observedAt: now,
+      });
+      const jobB = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-b",
+        canonicalUrl: "https://example.invalid/jobs/job-b",
+        title: "Security Engineer B",
+        titleNormalized: "security engineer b",
+        contentHash: "hash-job-b",
+        observedAt: now,
+      });
+      // jobC is never passed to findSignalsByJobIds -- proves
+      // matched_job_id is scoped to the caller's own jobIds set, not
+      // just "any evidence job this signal has".
+      const jobC = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-c",
+        canonicalUrl: "https://example.invalid/jobs/job-c",
+        title: "Security Engineer C",
+        titleNormalized: "security engineer c",
+        contentHash: "hash-job-c",
+        observedAt: now,
+      });
+      // Different signal_type per signal -- createSignal enforces at most
+      // one active signal per (company_id, role_category, signal_type).
+      const signalForA = await seedSignal({
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "new_job",
+        detectedAt: now,
+      });
+      const signalForBC = await seedSignal({
+        companyId: company.id,
+        roleCategory: "cybersecurity",
+        signalType: "hiring_burst",
+        detectedAt: now,
+      });
+      await appendSignalEvidence(client, {
+        signalId: signalForA,
+        jobId: jobA.id,
+        evidenceType: "new_job_posting",
+        observedAt: now,
+        payload: {},
+      });
+      await appendSignalEvidence(client, {
+        signalId: signalForBC,
+        jobId: jobB.id,
+        evidenceType: "new_job_posting",
+        observedAt: now,
+        payload: {},
+      });
+      await appendSignalEvidence(client, {
+        signalId: signalForBC,
+        jobId: jobC.id,
+        evidenceType: "new_job_posting",
+        observedAt: now,
+        payload: {},
+      });
+
+      // Query with jobA and jobB only -- jobC deliberately excluded.
+      const result = await findSignalsByJobIds(client, [jobA.id, jobB.id], { minScore: 0 });
+      const byId = new Map(result.map((r) => [r.id, r]));
+
+      // signalForA is backed only by jobA within the queried set.
+      expect(byId.get(signalForA)?.matched_job_id).toBe(jobA.id);
+      // signalForBC is backed by jobB within the queried set (jobC is
+      // real evidence for this signal too, but wasn't in jobIds, so it
+      // must never be returned as matched_job_id).
+      expect(byId.get(signalForBC)?.matched_job_id).toBe(jobB.id);
+      expect(byId.get(signalForBC)?.matched_job_id).not.toBe(jobC.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+    },
+    180_000,
+  );
 });
 
 describe("getSignalDetail", () => {

@@ -18,6 +18,18 @@ import { atsProviderSchema } from "./providers";
  * type or ATS provider only has to be declared in one place.
  */
 export const signalsQuerySchema = z.object({
+  // `.min(1)` on the piped array (not on the raw string) mirrors
+  // trends-query.ts's identical roles field: it rejects a *provided but
+  // empty* value (`?roles=` or `?roles=,`, which split/trim/filter would
+  // otherwise silently collapse to []) with a clear Zod error, while an
+  // *omitted* `roles` key still means "no role filter" -- `.optional()`
+  // wraps the whole chain, so it short-circuits before this ever runs
+  // when the key is absent entirely. Bug fix: before this, roles=","
+  // (or roles="") passed validation as `[]`, which listSignals'
+  // buildCommonFilters (`params.roles?.length`) treats identically to
+  // "no filter" -- so a caller who *meant* to filter by role instead
+  // silently got every role back, with no error to say why. `hs signals
+  // list --role ','` demonstrated this before the fix.
   roles: z
     .string()
     .transform((value) =>
@@ -26,7 +38,7 @@ export const signalsQuerySchema = z.object({
         .map((r) => r.trim())
         .filter(Boolean),
     )
-    .pipe(z.array(roleCategorySchema))
+    .pipe(z.array(roleCategorySchema).min(1))
     .optional(),
   company: z.string().optional(),
   q: z.string().min(2).optional(),

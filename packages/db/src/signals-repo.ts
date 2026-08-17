@@ -67,6 +67,15 @@ export interface SignalRow {
   // look up the source's most recent successful run -- never surfaced
   // on SignalListItem/toListItem, deliberately dropped for list rows.
   source_id: string | null;
+  // Only populated by findSignalsByJobIds (I.3 semantic-hit resolution) --
+  // one job_id, out of the caller's queried jobIds set, that actually
+  // backs this signal via signal_evidence. Lets apps/api's
+  // semantic-search.ts attribute each signal's Vectorize similarity score
+  // to the specific job that earned it, instead of the best score across
+  // every matched job (see semantic-search.ts's own history for why that
+  // was wrong). undefined/null for every other caller (listSignals,
+  // getSignalDetail, exports, feed) -- not part of BASE_SELECT.
+  matched_job_id?: string | null;
 }
 
 // SignalListItem/SignalDetail moved to ./types.ts (see that file's header
@@ -454,16 +463,31 @@ export async function findSignalsByJobIds(
   if (jobIds.length === 0) return [];
 
   const { where, args } = buildCommonFilters(filters);
+  const jobIdPlaceholders = jobIds.map(() => "?").join(",");
   where.push(
     `s.id IN (
        SELECT DISTINCT se.signal_id FROM signal_evidence se
-       WHERE se.job_id IN (${jobIds.map(() => "?").join(",")})
+       WHERE se.job_id IN (${jobIdPlaceholders})
      )`,
   );
   args.push(...jobIds);
 
-  const sql = `${BASE_SELECT} WHERE ${where.join(" AND ")}`;
-  return client.all<SignalRow>(sql, args);
+  // matched_job_id: one job_id (out of the caller's jobIds set) that
+  // actually backs this signal, so the caller can attribute the right
+  // Vectorize similarity score to each signal instead of guessing. A
+  // signal can have multiple evidence rows within jobIds (rare, but
+  // possible for e.g. a hiring_burst signal citing several matched
+  // jobs) -- MIN() picks one deterministically rather than an arbitrary
+  // row order; any one of them is a valid, real match for this signal,
+  // so which specific one is picked doesn't matter for correctness.
+  const sql = `${BASE_SELECT.replace(
+    "SELECT s.id,",
+    `SELECT s.id, (
+         SELECT MIN(se3.job_id) FROM signal_evidence se3
+         WHERE se3.signal_id = s.id AND se3.job_id IN (${jobIdPlaceholders})
+       ) AS matched_job_id,`,
+  )} WHERE ${where.join(" AND ")}`;
+  return client.all<SignalRow>(sql, [...jobIds, ...args]);
 }
 
 /**

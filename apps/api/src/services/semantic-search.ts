@@ -82,22 +82,23 @@ export async function findSemanticSignalMatches(
     // similarity score. If more than one matched job maps to the SAME
     // signal (multiple evidence rows), keep the best (highest) similarity
     // -- mirrors the job-id dedup above, same "best evidence wins" logic.
+    //
+    // findSignalsByJobIds now returns row.matched_job_id -- one job_id
+    // (from our own jobIds set) that actually backs this specific signal
+    // -- so we look up THAT job's real Vectorize score in byJobId, rather
+    // than the previous (buggy) Math.max(...byJobId.values()), which
+    // ignored `row` entirely and gave every returned signal the same
+    // global-best score regardless of which job actually matched it.
+    // Fallback to 0 only defends against a missing/unmapped
+    // matched_job_id (shouldn't happen given findSignalsByJobIds's own
+    // WHERE-IN scoping, but never crash the semantic leg over it -- see
+    // this file's header on the never-throw contract).
     const bestBySignalId = new Map<string, { signal: SignalRow; similarity: number }>();
     for (const row of signalRows) {
-      // We don't have a direct row->jobId mapping from findSignalsByJobIds
-      // (it returns signal rows, not the evidence join) -- so we can't
-      // attribute a specific job's score to a specific signal exactly.
-      // Conservative choice: use the single BEST similarity across all
-      // matched jobs for every returned signal. This slightly over-scores
-      // a signal that only weakly matched one of several evidence jobs,
-      // but never under-scores a genuinely strong semantic match, and
-      // avoids a second D1 round trip (evidence -> job -> score mapping)
-      // for what's already a best-effort ranking signal, not the
-      // persisted spec §7.2 score.
-      const bestSimilarity = Math.max(...byJobId.values());
+      const similarity = row.matched_job_id ? (byJobId.get(row.matched_job_id) ?? 0) : 0;
       const existing = bestBySignalId.get(row.id);
-      if (!existing || bestSimilarity > existing.similarity) {
-        bestBySignalId.set(row.id, { signal: row, similarity: bestSimilarity });
+      if (!existing || similarity > existing.similarity) {
+        bestBySignalId.set(row.id, { signal: row, similarity });
       }
     }
 
