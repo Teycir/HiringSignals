@@ -14,9 +14,15 @@ export function AnimatedTagline({ text, className = "" }: { text: string; classN
   const chars = text.split("");
   const reducedMotion = useReducedMotion();
 
+  // cursor-default is the base/standalone-usage default; a caller that
+  // wraps this in a link (e.g. masthead.tsx's home link) passes its own
+  // cursor-* class via `className`, which must win -- so cursor-default
+  // only applies when the caller didn't already specify a cursor.
+  const hasCursorOverride = /\bcursor-\S+/.test(className);
+
   return (
     <p
-      className={`font-display text-sm font-bold uppercase tracking-wide text-ink cursor-default ${className}`.trim()}
+      className={`font-display text-sm font-bold uppercase tracking-wide text-ink ${hasCursorOverride ? "" : "cursor-default"} ${className}`.trim()}
     >
       {chars.map((char, i) => (
         <motion.span

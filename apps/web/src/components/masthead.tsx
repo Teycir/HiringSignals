@@ -33,7 +33,9 @@ export function Masthead() {
   return (
     <header className="border-b-2 border-ink px-6 py-4 flex flex-wrap items-center justify-between gap-4">
       <div className="flex items-center gap-4">
-        <AnimatedTagline text="HIRING//SIGNALS" className="whitespace-nowrap" />
+        <Link href="/" aria-label="HIRING//SIGNALS home">
+          <AnimatedTagline text="HIRING//SIGNALS" className="whitespace-nowrap cursor-pointer" />
+        </Link>
         <Link
           href="/trends"
           className="font-display text-sm font-bold uppercase tracking-wide underline whitespace-nowrap"
