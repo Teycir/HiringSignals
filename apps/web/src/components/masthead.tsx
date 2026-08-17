@@ -4,16 +4,16 @@ import Link from "next/link";
 import { AnimatedTagline } from "@/components/animated-tagline";
 import { DataLabel } from "@/components/ui/data-label";
 import { ExportButton } from "@/components/export-button";
+import { fetchSources } from "@/lib/api-client";
 
 function useLastSync() {
   const [label, setLabel] = useState("pending");
 
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8787"}/api/v1/sources`)
-      .then((r) => r.json())
-      .then((body: { data: { lastSuccessAt: string | null }[] }) => {
+    fetchSources()
+      .then((body) => {
         const latest = body.data
-          .map((s) => s.lastSuccessAt)
+          .map((s) => s.last_success_at)
           .filter(Boolean)
           .sort()
           .at(-1);
