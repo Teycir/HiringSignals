@@ -272,14 +272,17 @@ Note: V.2's staleness check and the masthead's own last-sync label
 (added by a same-day follow-up commit) both silently no-opped due to a
 field-name mismatch discovered afterward — see Section W below.
 
-### W — `apps/web` production bugs found verifying V (found + fixed 2026-08-17)
+### W — `apps/web`/API production bugs found verifying V (found + fixed 2026-08-17)
 
-Two bugs surfaced while manually verifying the day's other web work end
-to end in a real browser against the live Workers runtime — neither was
-caught by `tsc`, lint, or the existing test suite, because both were
-either a CSP policy interacting with framework-internal behavior, or a
-type that was internally consistent within `apps/web` but didn't
-describe what the server actually sends.
+Four bugs surfaced while manually verifying the day's other web work end
+to end in a real browser against the live Workers runtime — none was
+caught by `tsc`, lint, or the existing test suite, because each was
+either a CSP policy interacting with framework-internal behavior, a type
+that was internally consistent within `apps/web` but didn't describe
+what the server actually sends, a migration that had only ever been run
+locally and was never applied to the remote database (W.3), or (W.4) a
+Cloudflare Worker-to-Worker fetch restriction plus a bare catch block
+that hid it.
 
 - [x] **W.1 — Production CSP blocked Next.js's own hydration scripts on
   every page**, leaving `/signals` (and every other route) rendering a
@@ -294,3 +297,30 @@ describe what the server actually sends.
   `packages/db`'s `toSummary()`) has always been camelCase
   (`lastSuccessAt`). Fixed by correcting the type and both call sites.
   Verified live: preview now shows `last sync: 26m ago`.
+- [x] **W.3 — `GET /api/v1/signals/:signalId` 500ing in production**
+  because migration `0010_signal_score_components.sql` (V.3's score
+  components) had only ever been applied locally —
+  `wrangler d1 migrations list hiring-signals --remote` showed it still
+  pending, so `getSignalDetail`'s query threw `D1_ERROR: no such column:
+  s.score_freshness` on every request (confirmed via `wrangler tail`).
+  Discovered while verifying the SEO `generateMetadata` fix for
+  `/signals/[signalId]`, not by this section's own original bug hunt.
+  Fixed by running `wrangler d1 migrations apply hiring-signals --remote`.
+  See CHANGELOG.md for the full root-cause chain.
+- [x] **W.4 — `generateMetadata` for companies/[slug] and
+  signals/[signalId] silently served the generic fallback title in
+  production**, via two stacked causes. First,
+  `NEXT_PUBLIC_API_BASE_URL` never reached the deployed Worker's runtime
+  `process.env` (it's only inlined into client bundles at build time) —
+  fixed with a `vars` entry in `wrangler.jsonc`. That surfaced a deeper
+  issue: server-side fetches to the API Worker's public
+  `*.workers.dev` hostname hit Cloudflare error 1042
+  ("Worker-to-Worker fetch on the same account over a public hostname is
+  disallowed"). Both `generateMetadata` catch blocks had a bare,
+  unlogged catch-all masking this — fixed those to `console.error` any
+  non-NOT_FOUND failure first (which is what actually surfaced the 1042
+  message via `wrangler tail`), then fixed the root cause with a proper
+  Cloudflare service binding (`wrangler.jsonc`'s `services`) so
+  server-side API calls route Worker-to-Worker directly instead of over
+  the public internet. See CHANGELOG.md for the full root-cause chain
+  and code details.

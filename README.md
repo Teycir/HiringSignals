@@ -2,7 +2,7 @@
 
 # Hiring Signals Intelligence
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-orange?logo=cloudflare)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-Manager-red?logo=pnpm)](https://pnpm.io/)
@@ -226,10 +226,11 @@ For human-readable documentation, refer to [`hiring-signals-spec.md`](hiring-sig
 
 ## License
 
-This project is licensed under the **MIT License**.
+This project is licensed under the **Business Source License 1.1 (BSL)**.
 
-- ✅ Free for personal, commercial, and open-source use
-- ✅ Modify and distribute freely
+- ✅ Free for non-production and internal use
+- ❌ Production use requires a commercial license
+- 🔄 Converts to an open-source license after the change date
 - ✅ No warranty — use at your own risk
 
 See [LICENSE](LICENSE) for full terms.

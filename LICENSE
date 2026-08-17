@@ -1,21 +1,61 @@
-MIT License
+Business Source License 1.1
 
-Copyright (c) 2026 Teycir Ben Soltane
+License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+-----------------------------------------------------------------------------
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Parameters
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Licensor:             Teycir Ben Soltane
+Licensed Work:        Hiring Signals Intelligence
+Additional Use Grant: You may make use of the Licensed Work, provided that
+                      you may not use the Licensed Work for production use.
+Change Date:          2030-08-17
+Change License:       Apache License, Version 2.0
+
+For information about alternative licensing arrangements for the Licensed Work,
+please contact teycirbensoltane.tn.
+
+-----------------------------------------------------------------------------
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited
+production use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work, whichever
+comes first, the Licensor hereby grants you rights under the terms of the
+Change License, and the rights granted in the paragraph above terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work. You must indicate any
+modifications that you make to the Licensed Work in a manner that retains
+the copyright notice of the Licensor.
+
+Except as expressly stated in this License, the Licensor provides the
+Licensed Work on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied, including, without limitation, any
+warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or
+FITNESS FOR A PARTICULAR PURPOSE. You are solely responsible for determining
+the appropriateness of using or redistributing the Licensed Work and assume
+any risks associated with Your exercise of permissions under this License.
+
+The Licensor shall not be liable for any damages arising from or related to
+the use or inability to use the Licensed Work, including but not limited to
+direct, indirect, incidental, special, exemplary, or consequential damages,
+loss of profits, loss of data, or loss of goodwill, even if the Licensor has
+been advised of the possibility of such damages. In no event shall the
+Licensor's total liability to You for all damages, losses, and causes of
+action (whether in contract, tort, or otherwise) exceed the amount of fifty
+thousand dollars ($50,000.00). The foregoing limitations shall apply even if
+the remedy stated above fails of its essential purpose.

@@ -29,9 +29,19 @@ import "./globals.css";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "HIRING//SIGNALS",
+  // `title.template` lets every route's own `metadata.title` (or
+  // `generateMetadata`'s returned title) slot into "%s | HIRING//SIGNALS"
+  // automatically -- individual pages only need to set a short, specific
+  // title (e.g. "FAQ", a company's display name), not repeat the site
+  // name every time. `default` is what renders here at the root and for
+  // any route that doesn't set its own title at all.
+  title: {
+    template: "%s | HIRING//SIGNALS",
+    default: "HIRING//SIGNALS",
+  },
   description:
     "Public hiring-signal feed derived from job-board postings. Not a candidate database.",
+  metadataBase: new URL("https://hiring-signals-web.teycircoder14.workers.dev"),
 };
 
 // AppShell is NOT rendered here (changed from F.3): each route now wraps

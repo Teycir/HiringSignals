@@ -62,13 +62,30 @@ export function isAbortError(err: unknown): boolean {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  // Server-side callers (generateMetadata in companies/[slug] and
+  // signals/[signalId]) route through the API service binding, not a
+  // public fetch(`${API_BASE_URL}${path}`) (W.4, 2026-08-17): Cloudflare
+  // returns error 1042 for any Worker-to-Worker fetch to another Worker
+  // on the same account over its public workers.dev hostname
+  // ("disallowed for security reasons" -- prevents fetch loops between
+  // same-account Workers). A service binding bypasses that restriction
+  // entirely by routing the call directly between Workers, and is the
+  // architecture Cloudflare's own docs recommend for exactly this case
+  // (also faster than the public round-trip it replaces). The browser
+  // has no such restriction and no access to a service binding, so
+  // client-side calls keep using the public API_BASE_URL exactly as
+  // before -- `typeof window === "undefined"` is this file's existing
+  // signal for "am I running server-side," same check every other
+  // server/client-shared branch in this codebase uses, since this file
+  // has no "use client" directive and is imported into both bundles.
+  const res =
+    typeof window === "undefined" ? await serverFetch(path, init) : await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
 
   const body = await res.json();
 
@@ -85,6 +102,41 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return body as T;
+}
+
+/**
+ * Server-side-only request path (W.4): resolves the Cloudflare service
+ * binding via getCloudflareContext() (OpenNext's documented way to reach
+ * bindings from server code, see cloudflare-env.d.ts's generated `API:
+ * Fetcher`) and forwards through env.API.fetch() -- a service binding's
+ * exposed Fetcher, not a public URL, so no hostname/1042 concerns apply.
+ * Dynamically imported so "@opennextjs/cloudflare" (a server-only
+ * package) is never pulled into the client bundle that this same
+ * request() function also serves -- a static top-level import would
+ * fail the browser build the moment any client component imports this
+ * file (every existing caller of fetchSignals/fetchFacets/etc. does).
+ * Falls back to the public URL if the binding is somehow absent (e.g. a
+ * local `next build` context without wrangler.jsonc's services wired
+ * up) rather than throwing outright, so this never becomes a harder
+ * failure mode than the public-fetch path it replaces.
+ */
+async function serverFetch(path: string, init?: RequestInit): Promise<Response> {
+  const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+  const { env } = getCloudflareContext();
+
+  const headers = { "Content-Type": "application/json", ...init?.headers };
+
+  if (!env.API) {
+    return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+  }
+
+  // A service binding's Fetcher.fetch() needs an absolute URL even
+  // though the host portion is never actually used for routing (the
+  // binding itself determines the destination Worker) -- Workers'
+  // fetch() implementation still validates/parses the URL. API_BASE_URL
+  // is the real production hostname, so this stays a valid, meaningful
+  // URL even though the request never touches the public internet.
+  return env.API.fetch(`${API_BASE_URL}${path}`, { ...init, headers });
 }
 
 /**

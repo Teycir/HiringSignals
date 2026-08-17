@@ -3,7 +3,7 @@
   "description": "CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, scored, filterable IT hiring signals from 8 ATS providers via official documented APIs (no scraping). Signals detect: new roles, reopened roles, hiring bursts, role acceleration, multi-location expansion, persistent demand.",
   "version": "0.1.0",
   "author": "Teycir Ben Soltane",
-  "license": "MIT",
+  "license": "BSL-1.1",
   "type": "monorepo",
   "packageManager": "pnpm@11.17.0",
   "nodeVersion": ">=24.18.0",

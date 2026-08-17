@@ -55,6 +55,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointing at `sources-repo.ts` as the source of truth) and updating both
   call sites. Verified live: local Workers-runtime preview of `/signals`
   now shows `last sync: 26m ago` instead of being stuck on "pending".
+- **W.3 — `GET /api/v1/signals/:signalId` 500ing in production: migration
+  0010 never applied to the remote D1 database.** Discovered while
+  verifying the `/signals/[signalId]` `generateMetadata` fix below (V's
+  server/client split surfaced a live bug that had been silently broken
+  independently of today's work). `packages/db/src/signals-repo.ts`'s
+  `getSignalDetail` query selects `score_freshness`/`score_volume`/
+  `score_acceleration`/`score_breadth`/`score_confidence` — the five
+  columns added by `infrastructure/d1/migrations/0010_signal_score_
+  components.sql` (ROADMAP V.3) — but that migration file had only ever
+  been run locally; `wrangler d1 migrations list hiring-signals --remote`
+  showed it still pending against production. Every single-signal detail
+  request therefore threw `D1_ERROR: no such column: s.score_freshness`
+  (confirmed via `wrangler tail`) and the API returned a generic 500 with
+  no indication of the missing-column cause. `listSignals` and every
+  other reader were unaffected — they use `BASE_SELECT`, which never
+  references the score-component columns. Fixed by running
+  `wrangler d1 migrations apply hiring-signals --remote` (5 nullable
+  `ALTER TABLE ADD COLUMN` statements, no data loss, no downtime observed).
+  Verified live: `GET /api/v1/signals/:signalId` now returns `200` with
+  `scoreComponents: null` for pre-migration rows exactly as
+  `signals-repo.ts`'s own null-until-migrated convention documents.
+- **W.4 — `apps/web`'s `generateMetadata` (companies/[slug],
+  signals/[signalId]) silently served the generic fallback title in
+  production, root-caused via two stacked issues.** First: deploying
+  `apps/web` after adding `generateMetadata` still showed the generic
+  title live, despite working in local preview. Cause:
+  `NEXT_PUBLIC_API_BASE_URL` (from `.env.production`) only gets inlined
+  into *client*-side bundles at `next build` time; server-side code
+  (`generateMetadata`, any Server Component) reads `process.env` at
+  *request* time inside the deployed Worker, and nothing wired
+  `.env.production`'s value into that runtime `process.env` -- confirmed
+  via `grep` on the built `worker.js` bundle (the URL string was absent
+  entirely). Fixed by adding a `vars` entry to `apps/web/wrangler.jsonc`
+  (the mechanism that actually populates a deployed Worker's runtime
+  `process.env`). That fix surfaced a second, more fundamental problem:
+  every server-side fetch to the API Worker's public
+  `hiring-signals-api.teycircoder14.workers.dev` hostname returned
+  Cloudflare error 1042 ("Worker tried to fetch from another Worker on
+  the same account over a public workers.dev hostname, disallowed for
+  security/loop-prevention reasons") -- confirmed via `wrangler tail`
+  showing the raw non-JSON `"error code: 1042"` response body, which
+  `api-client.ts`'s `res.json()` then failed to parse. Both
+  `generateMetadata` catch blocks had a bare, unlogged catch-all that
+  masked this entirely -- fixed those first to log any non-NOT_FOUND
+  error via `console.error` (reaches Cloudflare Workers Logs, this
+  Worker has `observability.enabled`), which is what actually surfaced
+  the 1042 message. Root fix: added a Cloudflare service binding
+  (`apps/web/wrangler.jsonc`'s `services: [{ binding: "API", service:
+  "hiring-signals-api" }]`) -- Cloudflare's documented, architecturally
+  correct answer for Worker-to-Worker calls on the same account (routes
+  directly between Workers, no public-internet round-trip, no 1042
+  check, also faster). `api-client.ts`'s `request()` now branches on
+  `typeof window === "undefined"`: server-side calls resolve the binding
+  via `getCloudflareContext().env.API.fetch()` (dynamically imported so
+  `@opennextjs/cloudflare`, a server-only package, never reaches the
+  client bundle), falling back to the public URL if the binding is ever
+  absent; browser calls are unchanged and still use
+  `NEXT_PUBLIC_API_BASE_URL` directly. Verified live:
+  `GET /companies/openai` and `GET /signals/894a1174-...` both now serve
+  real, fetched `<title>`/`<meta description>` in the initial HTML
+  (`OpenAI | HIRING//SIGNALS`; `OpenAI: New role: Machine Learning
+  Engineer, Integrity | HIRING//SIGNALS`), and the existing client-fetch
+  rendering (browser -> API) was re-checked and is unaffected.
 - **T.1–T.6 — CLI `--watch` and company-watchlist code-review findings.** All six issues from the 2026-08-17 review are resolved: T.1 (watch mode transient error handling), T.2 (watchlist partial failure handling), T.3 (config file error wrapping), T.4 (type casting cleanup), T.5 (watch mode replay design verified), T.6 (SIGINT/SIGTERM handling). Five were already fixed in the original feature implementation; T.5 was verified as acceptable design (current order prevents silent signal drops, replay window is negligible).
 
 - **S.1 — CSV export formula-injection (spec §11.1).** `lib/text/csv.ts`'s
@@ -200,6 +263,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **License changed from MIT to Business Source License 1.1 (BSL-1.1) (2026-08-17):** `LICENSE` replaced with the full BSL 1.1 text (Licensor: Teycir Ben Soltane; Licensed Work: Hiring Signals Intelligence; Additional Use Grant: non-production use only; Change Date: 2030-08-17; Change License: Apache License 2.0). `project-metadata.json` `license` field updated from `MIT` to `BSL-1.1`; `llm.txt` License section updated to match. README's License section and BSL 1.1 badge were already correct and required no change.
 - **README accuracy pass (2026-08-13):** Corrected stale claims across the Layout table, Tech Stack, Key Features, and Local dev sections: migration count updated from 0001-0004 to 0001-0009 (all 9 landed); `apps/api` description now lists company timeline route, trends route, RSS feed route, and API metrics middleware; CLI commands now include `hs companies timeline`, `hs feed-url`, and `hs trends hiring`; `lib/` description corrected (RSS serializer added to text utilities); ops scripts list now includes `update-company.mjs` and `ingestion-metrics.mjs`; semantic search status corrected from "write path only" to fully live (both write and query paths wired, Milestone I.3 complete); hiring velocity score surfaced in trends/companies descriptions.
 - **Test organization:** All `*.test.ts` files moved from `src/` into sibling `test/` directories across all packages (apps/api, packages/adapters, packages/db, packages/domain). Import paths updated to relative `../src/*` references. Each package's tsconfig includes `test/**/*.ts` for typecheck coverage.
 - **Error handling centralization:** `isUniqueConstraintError` helper moved from internal package location to `lib/d1/unique-constraint.ts`. All three call sites now import from single source. Deleted empty `packages/db/src/internal/` module.

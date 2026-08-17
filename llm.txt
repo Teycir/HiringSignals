@@ -193,7 +193,7 @@ CI (.github/workflows/ci.yml) runs on every push/PR to main: typecheck + lint + 
 Full build specification available in `hiring-signals-spec.md` at repo root. Task-by-task status lives in `ROADMAP.md`; policy and agent instructions in `AGENTS.md`; per-release change log in `CHANGELOG.md` (Keep a Changelog format).
 
 ## License
-MIT License - Copyright (c) 2026 Teycir Ben Soltane
+Business Source License 1.1 (BSL-1.1) - Copyright (c) 2026 Teycir Ben Soltane
 
 ## Related Projects
 - **Butler**: Persistent coordination and memory layer for AI coding agents

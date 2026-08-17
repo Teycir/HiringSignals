@@ -1,174 +1,61 @@
-"use client";
-// /companies/[slug] (ROADMAP.md Milestone O.2, spec §1.4/§10.1). Company
-// hiring timeline view -- the page this app was missing when apps/web was
-// restored from git history (Milestone O landed 2026-08-08, after the
-// 2026-08-07 deletion this dashboard's code otherwise predates).
-//
-// Fetches company detail (fetchCompanyDetail) and timeline
-// (fetchCompanyTimeline) in parallel, not sequentially -- both requests
-// are independent (neither needs the other's result to start), so
-// Promise.all avoids a needless waterfall. Same client-fetch +
-// resolvedForKey pattern as signals/[signalId]/page.tsx; see that file's
-// header comment for why (mirrors signals-view.tsx's established
-// pattern rather than introducing a second fetch strategy).
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
-import type { CompanyHiringTimelineBucket, CompanyRecentSignal, CompanySummary } from "@hiring-signals/db/src/types";
-import { AppShell } from "@/components/app-shell";
-import { VelocityBadge } from "@/components/velocity-badge";
-import { CompanyTimeline } from "@/components/company-timeline";
-import { Button } from "@/components/ui/button";
-import { DataLabel } from "@/components/ui/data-label";
-import { ROLE_LABELS } from "@/lib/labels";
-import { fetchCompanyDetail, fetchCompanyTimeline, ApiClientError, isAbortError } from "@/lib/api-client";
+// /companies/[slug] (ROADMAP.md Milestone O.2, spec §1.4/§10.1): thin
+// server wrapper, split from what used to be a single "use client" file
+// (SEO fix, 2026-08-17) so this route can export generateMetadata -- a
+// company's real name/industry in <title>/<meta description>, instead
+// of every crawler previously seeing the root layout's generic
+// fallback. See components/company-page-view.tsx's header comment for
+// why the fetch-on-mount rendering logic itself still lives client-side
+// there, unchanged.
+import type { Metadata } from "next";
+import { CompanyPageView } from "@/components/company-page-view";
+import { fetchCompanyDetail, ApiClientError } from "@/lib/api-client";
 
-interface CompanyPageData {
-  company: CompanySummary;
-  recentSignals: CompanyRecentSignal[];
-  buckets: CompanyHiringTimelineBucket[];
-  hiringVelocityDisclaimer: string;
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await params;
+
+  try {
+    const { data: company } = await fetchCompanyDetail(slug);
+    const descriptionParts = [company.industry, company.employeeBand].filter(Boolean);
+    return {
+      title: company.displayName,
+      description:
+        descriptionParts.length > 0
+          ? `Hiring activity at ${company.displayName} -- ${descriptionParts.join(", ")}.`
+          : `Hiring activity and recent signals at ${company.displayName}.`,
+    };
+  } catch (err) {
+    // NOT_FOUND is an expected, unlogged outcome -- a bad slug is a user
+    // input, not a bug. Anything else IS a bug and must be logged, not
+    // silently swallowed: a bare catch here previously hid the fact that
+    // NEXT_PUBLIC_API_BASE_URL wasn't reaching the deployed Worker's
+    // runtime process.env at all (W.4, 2026-08-17) -- every request fell
+    // back to this generic title with zero visible signal anywhere,
+    // including `wrangler tail`, until that was found by manually
+    // instrumenting this exact catch block. console.error here reaches
+    // Cloudflare's Workers Logs (this Worker has observability.enabled
+    // in wrangler.jsonc), so a recurrence is actually visible instead of
+    // presenting as "SEO metadata just isn't working" with no trail.
+    if (err instanceof ApiClientError && err.code === "NOT_FOUND") {
+      return { title: "Company not found" };
+    }
+    console.error("company_metadata_fetch_failed", {
+      slug,
+      code: err instanceof ApiClientError ? err.code : "NON_API_ERROR",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return { title: "Company" };
+  }
 }
 
-type PageState =
-  | { status: "error"; error: ApiClientError | Error }
-  | { status: "not_found" }
-  | { status: "ready"; data: CompanyPageData };
-
-function formatSignalTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
-
-export default function CompanyPage() {
-  const params = useParams<{ slug: string }>();
-  const slug = params.slug;
-  const [state, setState] = useState<PageState>({ status: "not_found" });
-  const [resolvedForKey, setResolvedForKey] = useState<string | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
-  const fetchKey = `${slug}:${retryCount}`;
-  const isLoading = resolvedForKey !== fetchKey;
-
-  useEffect(() => {
-    if (resolvedForKey === fetchKey) return;
-
-    const controller = new AbortController();
-
-    Promise.all([
-      fetchCompanyDetail(slug, { signal: controller.signal }),
-      fetchCompanyTimeline(slug, {}, { signal: controller.signal }),
-    ])
-      .then(([detailRes, timelineRes]) => {
-        setState({
-          status: "ready",
-          data: {
-            company: detailRes.data,
-            recentSignals: detailRes.data.recentSignals,
-            buckets: timelineRes.data.buckets,
-            hiringVelocityDisclaimer: detailRes.meta.hiringVelocityDisclaimer,
-          },
-        });
-        setResolvedForKey(fetchKey);
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        if (err instanceof ApiClientError && err.code === "NOT_FOUND") {
-          setState({ status: "not_found" });
-        } else {
-          setState({ status: "error", error: err instanceof Error ? err : new Error(String(err)) });
-        }
-        setResolvedForKey(fetchKey);
-      });
-
-    return () => controller.abort();
-  }, [fetchKey, resolvedForKey, slug]);
-
-  if (isLoading) {
-    return (
-      <AppShell>
-        <div className="p-4 md:p-6 max-w-3xl flex flex-col gap-3" aria-busy="true" aria-label="Loading company">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="border-2 border-ink p-4 h-20 bg-muted animate-pulse" />
-          ))}
-        </div>
-      </AppShell>
-    );
-  }
-
-  if (state.status === "not_found") {
-    return (
-      <AppShell>
-        <div className="p-4 md:p-6 max-w-3xl border-2 border-ink p-6 flex flex-col items-center gap-3 text-center">
-          <p className="font-display text-sm font-bold uppercase">Company not found.</p>
-          <p className="font-display text-sm text-soft-ink">The slug may be incorrect.</p>
-        </div>
-      </AppShell>
-    );
-  }
-
-  if (state.status === "error") {
-    const message =
-      state.error instanceof ApiClientError ? state.error.message : "Couldn't load this company.";
-    return (
-      <AppShell>
-        <div className="p-4 md:p-6 max-w-3xl border-2 border-ink p-4 flex flex-col gap-3">
-          <p className="font-display text-sm font-bold">{message}</p>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setRetryCount((c) => c + 1)}
-            className="self-start"
-          >
-            Retry
-          </Button>
-        </div>
-      </AppShell>
-    );
-  }
-
-  const { company, recentSignals, buckets, hiringVelocityDisclaimer } = state.data;
-
-  return (
-    <AppShell>
-      <div className="flex flex-col gap-4 p-4 md:p-6 max-w-3xl">
-        <header className="flex flex-col gap-1 border-b-2 border-ink pb-4">
-          <h1 className="font-display text-xl font-bold">{company.displayName}</h1>
-          <DataLabel className="text-soft-ink">
-            {[company.domain, company.industry, company.employeeBand].filter(Boolean).join(" \u00B7 ") || "\u2014"}
-          </DataLabel>
-        </header>
-
-        <VelocityBadge
-          score={company.hiringVelocityScore}
-          computedAt={company.velocityComputedAt}
-          disclaimer={hiringVelocityDisclaimer}
-        />
-
-        <CompanyTimeline buckets={buckets} />
-
-        <section aria-labelledby="recent-signals-heading" className="border-2 border-ink p-4 flex flex-col gap-3">
-          <h2 id="recent-signals-heading" className="font-display text-sm font-bold uppercase tracking-wide">
-            Recent signals
-          </h2>
-          {recentSignals.length === 0 ? (
-            <p className="font-display text-sm text-soft-ink">No active signals for this company right now.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {recentSignals.map((signal) => (
-                <li key={signal.id} className="flex items-start justify-between gap-3 border-b border-ink pb-2 last:border-b-0">
-                  <div className="flex flex-col">
-                    <span className="font-display text-sm font-bold">{signal.headline}</span>
-                    <DataLabel className="text-soft-ink">
-                      {(ROLE_LABELS as Record<string, string>)[signal.roleCategory] ?? signal.roleCategory}
-                      {" \u00B7 "}
-                      {formatSignalTime(signal.lastDetectedAt)}
-                    </DataLabel>
-                  </div>
-                  <DataLabel className="shrink-0 font-bold">{signal.score}</DataLabel>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
-    </AppShell>
-  );
+export default async function CompanyPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  const { slug } = await params;
+  return <CompanyPageView slug={slug} />;
 }

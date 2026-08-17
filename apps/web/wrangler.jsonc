@@ -29,5 +29,51 @@
 	"workers_dev": true,
 	"observability": {
 		"enabled": true
-	}
+	},
+	// Runtime env var for the deployed Worker (W.4, 2026-08-17): .env.production's
+	// NEXT_PUBLIC_API_BASE_URL only gets inlined into CLIENT-side bundles at
+	// `next build` time -- server-side code (generateMetadata, any Server
+	// Component) reads process.env at REQUEST time in the actual Workers
+	// runtime, and nothing wires .env.production's value into that
+	// runtime's process.env by itself. Without this, server-side
+	// fetchCompanyDetail/fetchSignalDetail silently read
+	// api-client.ts's "http://localhost:8787" fallback in production,
+	// which fails from inside a Worker with no localhost -- generateMetadata's
+	// catch block swallowed the failure and served the generic fallback
+	// title/description on every /companies/[slug] and /signals/[signalId]
+	// request. `vars` here is how Cloudflare actually populates a
+	// deployed Worker's process.env; confirmed missing via `grep` on the
+	// built worker.js bundle (the URL string wasn't present anywhere in
+	// it) before this fix. Public URL, not a secret -- see api-client.ts's
+	// own header comment -- so a plain `vars` entry (not a Secret) is
+	// correct and matches .env.production's own value exactly; keep the
+	// two in sync by hand if the API Worker is ever renamed/moved.
+	"vars": {
+		"NEXT_PUBLIC_API_BASE_URL": "https://hiring-signals-api.teycircoder14.workers.dev"
+	},
+	// Service binding to apps/api (W.4 follow-up, same day): fixing the
+	// `vars` entry above surfaced a SECOND, more fundamental problem --
+	// Cloudflare returns error 1042 ("Worker tried to fetch from another
+	// Worker on the same account over a public workers.dev hostname,
+	// disallowed for security/loop-prevention reasons") for any
+	// server-side fetch() from this Worker to
+	// hiring-signals-api.teycircoder14.workers.dev, confirmed via
+	// `wrangler tail`: "error code: 1042" as the raw (non-JSON) response
+	// body. The browser calling that same URL client-side is unaffected
+	// -- 1042 only applies to Worker-to-Worker fetches on the same
+	// account, not browser-to-Worker. A service binding is Cloudflare's
+	// documented fix for exactly this case: it routes the call directly
+	// between Workers (no public-internet round-trip, no 1042 check) and
+	// is also faster than the equivalent public fetch. lib/api-client.ts's
+	// server-side call sites (generateMetadata in companies/[slug] and
+	// signals/[signalId]) use this binding via getCloudflareContext();
+	// the client-side fetch() calls the rest of api-client.ts makes
+	// (browser -> API) are unaffected and keep using
+	// NEXT_PUBLIC_API_BASE_URL as before.
+	"services": [
+		{
+			"binding": "API",
+			"service": "hiring-signals-api"
+		}
+	]
 }
