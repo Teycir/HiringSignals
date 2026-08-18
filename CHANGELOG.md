@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-08-18)
+
+- **React best practices violations in web UI.** Removed unused
+  `eslint-disable` directives in `cloudflare-env.d.ts`, fixed
+  `setState-in-effect` warning in `signal-feed.tsx` by moving
+  `setSourceStatus` into async callbacks instead of the effect body,
+  and removed unused `ApiClientError` import in `trend-block.tsx`.
+
+### Changed (2026-08-18)
+
+- **Job pagination consistency and type safety.** Updated
+  `encodeJobsCursor` to use `title_normalized` instead of
+  `title_raw` for cursor-based pagination consistency with database
+  sort order. Refactored `listJobsForCompany` to use the `LocationMode`
+  type instead of raw strings. Improved `getJobById` error handling to
+  gracefully degrade when encountering corrupt rows that fall outside
+  domain enum constraints. Added integration tests for pagination using
+  `oldest` and `title_asc` sort modes.
+
 ### Added (2026-08-18)
 
 - **Raw job read surface: `GET /api/v1/companies/:slug/jobs`, `GET
@@ -38,6 +57,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `apps/api`, `apps/cli` all typecheck and lint clean.
 
 ### Added (2026-08-17)
+
+- **`hs --version` / `hs -v`.** `apps/cli`'s root `citty` command declared
+  a `meta.version`, but this file uses `runCommand()` (not `runMain()`)
+  for its JSON-error-shape contract, and only `runMain()` wires up
+  citty's builtin `--version`/`-v` handling — so the flag was silently
+  inert, and `meta.version` itself had been hardcoded `"0.0.0"` all
+  along (never matched `apps/cli/package.json`, made worse by the
+  v1.0.0 release below). Fixed by hand-checking `--version`/`-v` as the
+  sole argument in `main()` (mirroring the existing `--format`
+  extraction pattern) and reading the version live from
+  `apps/cli/package.json` via a `with { type: "json" }` import instead
+  of a literal, so it can't drift out of sync again. 3 new subprocess
+  tests in `cli-process.test.ts` assert against the live `package.json`
+  value rather than a hardcoded string, and confirm `-v` doesn't
+  shadow a subcommand's own flags when other arguments are present.
 
 - **`hs signals list --watched`.** Filters signals to the local
   watchlist companies (`hs companies watch <slug>`), mirroring the
