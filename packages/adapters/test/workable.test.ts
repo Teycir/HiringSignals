@@ -20,20 +20,17 @@ function at(jobs: NormalizedJob[], i: number): NormalizedJob {
 }
 
 describe("workableAdapter.normalize", () => {
-  it("maps every public fixture job without treating location-like state as listing status", () => {
+  it("maps every public fixture job", () => {
     const result = workableAdapter.normalize(boardFixture, source);
     expect(result).toHaveLength(4);
     expect(result.map((job) => job.title)).toContain("Security Analyst");
   });
 
-  it("prefers shortcode over numeric id for the stable external job id", () => {
+  it("uses shortcode as the external job id (the real payload has no top-level id)", () => {
     const first = at(workableAdapter.normalize(boardFixture, source), 0);
     expect(first.externalJobId).toBe("ABC123");
-  });
-
-  it("falls back to the provider id when shortcode is absent", () => {
     const second = at(workableAdapter.normalize(boardFixture, source), 1);
-    expect(second.externalJobId).toBe("job-202");
+    expect(second.externalJobId).toBe("DEF456");
   });
 
   it("prefers url over shortlink and application_url for public evidence", () => {
@@ -46,26 +43,30 @@ describe("workableAdapter.normalize", () => {
     expect(second.canonicalUrl).toBe("https://wrkbl.ink/def456");
   });
 
-  it("trusts nested workplace_type and telecommuting over contradictory top-level text", () => {
+  it("maps telecommuting=true to remote (the real payload has no workplace_type field)", () => {
     const first = at(workableAdapter.normalize(boardFixture, source), 0);
-    expect(first.locationRaw).toBe("Remote - United States");
     expect(first.locationMode).toBe("remote");
   });
 
-  it("trusts top-level workplace_type when nested location has no workplace_type", () => {
-    const second = at(workableAdapter.normalize(boardFixture, source), 1);
-    expect(second.locationMode).toBe("hybrid");
+  it("falls back to inferLocationMode from location text when telecommuting is false", () => {
+    const third = at(workableAdapter.normalize(boardFixture, source), 2);
+    expect(third.locationMode).toBe("onsite");
   });
 
-  it("builds a location string from the first visible additional location", () => {
+  it("builds a location string from the first visible locations[] entry over top-level fields", () => {
     const second = at(workableAdapter.normalize(boardFixture, source), 1);
     expect(second.locationRaw).toBe("Berlin, Berlin, Germany");
   });
 
-  it("maps provider timestamps to ISO-8601 UTC and falls updatedAt back to createdAt", () => {
+  it("falls back to flat top-level city/state/country when locations[] is absent or all hidden", () => {
+    const third = at(workableAdapter.normalize(boardFixture, source), 2);
+    expect(third.locationRaw).toBe("San Francisco, California, United States");
+  });
+
+  it("maps provider timestamps to ISO-8601 UTC, preferring published_on, falling updatedAt back to it", () => {
     const second = at(workableAdapter.normalize(boardFixture, source), 1);
-    expect(second.postedAt).toBe("2026-02-10T10:00:00.000Z");
-    expect(second.updatedAt).toBe("2026-02-10T10:00:00.000Z");
+    expect(second.postedAt).toBe("2026-02-10T00:00:00.000Z");
+    expect(second.updatedAt).toBe("2026-02-10T00:00:00.000Z");
   });
 
   it("omits invalid timestamps instead of persisting malformed date text", () => {
@@ -74,14 +75,25 @@ describe("workableAdapter.normalize", () => {
     expect(fourth.updatedAt).toBeUndefined();
   });
 
-  it("joins available description fields for classifier context", () => {
+  it("uses the single flat description field for classifier context", () => {
     const first = at(workableAdapter.normalize(boardFixture, source), 0);
     expect(first.descriptionText).toContain("Build reliable infrastructure.");
     expect(first.descriptionText).toContain("TypeScript and distributed systems.");
   });
 
-  it("throws WorkableSchemaError on a posting missing required fields", () => {
+  it("maps top-level country/city directly when locations[] is absent", () => {
+    const fourth = at(workableAdapter.normalize(boardFixture, source), 3);
+    expect(fourth.countryCode).toBeUndefined(); // no ISO code available at top level, only a free-text country name
+    expect(fourth.city).toBe("Austin");
+  });
+
+  it("throws WorkableSchemaError on a posting missing required fields (no title)", () => {
     expect(() => workableAdapter.normalize(malformedFixture, source)).toThrow(WorkableSchemaError);
+  });
+
+  it("throws WorkableSchemaError on a posting missing shortcode (no stable id available)", () => {
+    const noShortcode = { jobs: [{ title: "Ghost Job", url: "https://apply.workable.com/j/x" }] };
+    expect(() => workableAdapter.normalize(noShortcode, source)).toThrow(WorkableSchemaError);
   });
 
   it("throws on a payload missing the top-level jobs array", () => {

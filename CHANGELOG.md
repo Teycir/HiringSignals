@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workable adapter schema never matched the real public board payload.** The schema modeled a nested `location: { location_str, country_code, ... }` object and a required top-level `id`, neither of which the real endpoint returns; the adapter's own test fixture was hand-written to match those assumptions rather than captured from a live board, so `pnpm test` stayed green while every real Workable board silently failed Zod validation in production (`WorkableSchemaError` on every job → `config_error` → source disabled), or "succeeded" with zero jobs on an account whose board happened to be empty — indistinguishable from a working adapter without checking a real board directly. Re-verified live (`apply.workable.com/api/v1/widget/accounts/{account}?details=true`, confirmed byte-identical to the `www.workable.com/api/accounts/...` fetch target after its 302): no top-level `id` (shortcode is the only stable identifier), no nested `location` object (`country`/`city`/`state` are flat top-level strings; `locations[]` entries use camelCase `countryCode`), and a single `description` field (raw HTML) rather than the previously assumed four-field split. `packages/adapters/src/workable.ts` rewritten against the real shape; a job missing `shortcode` now throws `WorkableSchemaError` rather than silently falling back to a derived id. Fixture and all 16 `workable.test.ts` tests updated to match (113/113 adapters package tests passing).
+
 ## [1.1.0] — 2026-08-18
 
 ### Fixed (2026-08-18)

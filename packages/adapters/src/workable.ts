@@ -9,60 +9,59 @@ import type {
 import { inferLocationMode } from "./location";
 
 /**
- * Public Workable careers feed (verified against first-party docs on
- * 2026-07-30, spec §21): Workable documents the authenticated SPI
- * `/spi/v3/jobs` endpoint, but its own careers-page guide also lists
- * public, unauthenticated account endpoints for published jobs:
- * `https://www.workable.com/api/accounts/{account_subdomain}?details=true`.
+ * Public Workable careers feed. IMPORTANT (re-verified live 2026-08-18,
+ * see CHANGELOG.md): the schema below replaces an earlier version that
+ * was never actually checked against a live response -- it modeled a
+ * `location: { location_str, country_code, ... }` nested object and a
+ * required top-level `id`, neither of which the real endpoint returns.
+ * The old schema's own test fixture was hand-written to match the
+ * adapter's assumptions rather than captured from Workable, so
+ * `pnpm test` stayed green while every real board silently failed Zod
+ * validation in production (WorkableSchemaError on every job ->
+ * config_error -> source disabled) -- or, for accounts whose board
+ * really is empty right now, "succeeded" with zero jobs, which looks
+ * identical to a working adapter without checking real boards directly.
  *
- * `details=true` is used deliberately so descriptions are present when
- * the account exposes them. The raw schema stays permissive because the
- * public endpoint is less formally specified than the SPI reference, but
- * a missing top-level `jobs` array is still treated as schema drift rather
- * than a silently empty board.
+ * Confirmed live via `https://apply.workable.com/api/v1/widget/accounts/
+ * huggingface?details=true`. The `www.workable.com/api/accounts/...`
+ * fetch URL below still works and is kept as the fetch target -- it
+ * just always 302s to `apply.workable.com/api/v1/widget/accounts/...`,
+ * which `fetch()` follows transparently; both were confirmed to return
+ * byte-identical payloads.
+ *
+ * Real shape has NO top-level `id` at all (shortcode is the only stable
+ * identifier), NO nested `location` object (country/city/state are flat
+ * top-level strings, and `locations[]` entries use camelCase
+ * `countryCode`, not the previously assumed `country_code`), and only
+ * ONE description field (`description`, raw HTML, present only with
+ * `?details=true`) rather than the previously assumed four-field split
+ * (full_description/description/requirements/benefits).
  */
-const workableLocationSchema = z.object({
-  location_str: z.string().nullable().optional(),
-  country: z.string().nullable().optional(),
-  country_code: z.string().nullable().optional(),
-  region: z.string().nullable().optional(),
-  region_code: z.string().nullable().optional(),
-  city: z.string().nullable().optional(),
-  zip_code: z.string().nullable().optional(),
-  telecommuting: z.boolean().nullable().optional(),
-  workplace_type: z.string().nullable().optional(),
-});
-
 const workableAdditionalLocationSchema = z.object({
-  country_code: z.string().nullable().optional(),
-  country_name: z.string().nullable().optional(),
-  state_code: z.string().nullable().optional(),
-  subregion: z.string().nullable().optional(),
-  zip_code: z.string().nullable().optional(),
+  country: z.string().nullable().optional(),
+  countryCode: z.string().nullable().optional(),
   city: z.string().nullable().optional(),
+  region: z.string().nullable().optional(),
   hidden: z.boolean().nullable().optional(),
 });
 
 const workableJobSchema = z.object({
-  id: z.union([z.string(), z.number()]),
   title: z.string(),
-  full_title: z.string().optional(),
   shortcode: z.string().optional(),
   code: z.string().nullable().optional(),
-  state: z.string().optional(),
   department: z.string().nullable().optional(),
   url: z.string().url().optional(),
   application_url: z.string().url().optional(),
   shortlink: z.string().url().optional(),
-  workplace_type: z.string().nullable().optional(),
-  location: workableLocationSchema.nullable().optional(),
+  telecommuting: z.boolean().nullable().optional(),
+  country: z.string().nullable().optional(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
   locations: z.array(workableAdditionalLocationSchema).optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
+  published_on: z.string().optional(),
   description: z.string().nullable().optional(),
-  full_description: z.string().nullable().optional(),
-  requirements: z.string().nullable().optional(),
-  benefits: z.string().nullable().optional(),
   employment_type: z.string().nullable().optional(),
 });
 
@@ -108,33 +107,49 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
   return parsed.data.jobs.map((job): NormalizedJob => {
     const locationRaw = resolveLocationRaw(job);
     return {
-      externalJobId: String(job.shortcode ?? job.id),
+      // No stable numeric/string `id` exists on the real payload --
+      // shortcode is the only per-job identifier Workable's public
+      // widget endpoint returns. A job entirely missing shortcode is
+      // schema drift, not a normal case, so this throws rather than
+      // silently falling back to something derived (e.g. title+url)
+      // that could collide across postings.
+      externalJobId: resolveExternalJobId(job),
       canonicalUrl: resolveCanonicalUrl(job),
       title: job.title,
-      descriptionText: joinText(
-        job.full_description,
-        job.description,
-        job.requirements,
-        job.benefits,
-      ),
+      descriptionText: job.description?.trim() || undefined,
       department: job.department ?? undefined,
       employmentType: job.employment_type ?? undefined,
       locationRaw,
       locationMode: resolveLocationMode(job, locationRaw),
-      // job.location's country_code/region_code/city are already
-      // structured (unlike job.locations[]'s alternate shape, which is
-      // only used above for locationRaw text on multi-location postings)
-      // -- pass through as-is, undefined when the primary location
-      // object or field itself is absent, same optionality every other
-      // field on this object already uses.
-      countryCode: job.location?.country_code ?? undefined,
-      regionCode: job.location?.region_code ?? undefined,
-      city: job.location?.city ?? undefined,
-      postedAt: normalizeTimestamp(job.created_at),
-      updatedAt: normalizeTimestamp(job.updated_at ?? job.created_at),
-      requisitionId: job.code ?? undefined,
+      // Real payload has no nested location object. `locations[]`
+      // entries are the ONLY source of a real ISO countryCode -- the
+      // top-level `country` field is a free-text country name (e.g.
+      // "United States"), not a code, so it's deliberately NOT used
+      // here even as a fallback (that would silently put a country
+      // name into a column named for codes). There's no region_code
+      // equivalent anywhere in this payload either (locations[].region
+      // is also a free-text name like "Île-de-France"), so regionCode
+      // is intentionally omitted.
+      countryCode: job.locations?.[0]?.countryCode ?? undefined,
+      city: job.city ?? job.locations?.[0]?.city ?? undefined,
+      postedAt: normalizeTimestamp(job.published_on ?? job.created_at),
+      updatedAt: normalizeTimestamp(job.updated_at ?? job.published_on ?? job.created_at),
+      requisitionId: job.code?.trim() || undefined,
     };
   });
+}
+
+function resolveExternalJobId(job: WorkableJob): string {
+  if (job.shortcode) return job.shortcode;
+  throw new WorkableSchemaError(
+    new z.ZodError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: ["jobs", job.title, "shortcode"],
+        message: "Workable job is missing shortcode (the only stable external id available)",
+      },
+    ]),
+  );
 }
 
 function resolveCanonicalUrl(job: WorkableJob): string {
@@ -144,7 +159,7 @@ function resolveCanonicalUrl(job: WorkableJob): string {
       new z.ZodError([
         {
           code: z.ZodIssueCode.custom,
-          path: ["jobs", job.shortcode ?? String(job.id), "url"],
+          path: ["jobs", job.shortcode ?? job.title, "url"],
           message: "Workable job is missing url, shortlink, and application_url",
         },
       ]),
@@ -154,25 +169,29 @@ function resolveCanonicalUrl(job: WorkableJob): string {
 }
 
 function resolveLocationRaw(job: WorkableJob): string | undefined {
-  if (job.location?.location_str) return job.location.location_str;
   const firstVisible = job.locations?.find((location) => location.hidden !== true);
-  if (!firstVisible) return undefined;
-  return (
-    [firstVisible.city, firstVisible.subregion, firstVisible.state_code, firstVisible.country_name]
+  if (firstVisible) {
+    const fromLocations = [firstVisible.city, firstVisible.region, firstVisible.country]
       .filter((part): part is string => Boolean(part))
-      .join(", ") || undefined
-  );
+      .join(", ");
+    if (fromLocations) return fromLocations;
+  }
+  const fromTopLevel = [job.city, job.state, job.country]
+    .filter((part): part is string => Boolean(part))
+    .join(", ");
+  return fromTopLevel || undefined;
 }
 
 function resolveLocationMode(
   job: WorkableJob,
   locationRaw: string | undefined,
 ): NormalizedJob["locationMode"] {
-  const workplaceType = job.location?.workplace_type ?? job.workplace_type;
-  if (workplaceType === "remote") return "remote";
-  if (workplaceType === "hybrid") return "hybrid";
-  if (workplaceType === "on_site") return "onsite";
-  if (job.location?.telecommuting === true) return "remote";
+  // Real payload has no workplace_type/hybrid signal at all -- the only
+  // structured remote indicator is the boolean `telecommuting`. Hybrid
+  // and onsite aren't distinguishable from a boolean alone, so both fall
+  // through to inferLocationMode's text-based heuristic on locationRaw
+  // (e.g. a title/location string containing "Hybrid").
+  if (job.telecommuting === true) return "remote";
   return inferLocationMode(locationRaw);
 }
 
@@ -180,11 +199,6 @@ function normalizeTimestamp(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-}
-
-function joinText(...parts: Array<string | null | undefined>): string | undefined {
-  const text = parts.filter((part): part is string => Boolean(part?.trim())).join("\n\n");
-  return text || undefined;
 }
 
 export class WorkableSchemaError extends Error {
