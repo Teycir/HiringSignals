@@ -9,6 +9,12 @@ import {
   getDetectionLatencyStats,
   updateJobClassification,
   applyLifecycleTransition,
+  listJobsForCompany,
+  getJobById,
+  toJobListItem,
+  InvalidJobsCursorError,
+  CorruptJobRowError,
+  type JobRow,
 } from "../src/jobs-repo";
 
 /**
@@ -612,5 +618,470 @@ describe("applyLifecycleTransition", () => {
       await cleanupCompany(company.id);
       await cleanupCompany(otherCompany.id);
     }
+  });
+});
+
+/**
+ * `listJobsForCompany`/`getJobById`/`toJobListItem` (new: GET
+ * /api/v1/companies/:slug/jobs, GET /api/v1/jobs/:jobId -- the raw
+ * per-job read surface signals never exposed, see jobs-repo.ts's own
+ * header comments on JOB_BASE_SELECT/toJobListItem for the full
+ * rationale). Mirrors signals-repo.test.ts's listSignals/getSignalDetail/
+ * toListItem coverage shape: seeded via the real createCompany/
+ * createSource/upsertJob write path, cursor/sort/filter behavior
+ * asserted against the real live D1 return value, and one corrupt-row
+ * test that bypasses upsertJob's typed input on purpose (a raw
+ * client.run UPDATE) since the corruption itself -- an enum column
+ * holding a value outside the domain schema -- is not producible via
+ * the typed write path.
+ */
+async function seedJobRow(params: {
+  sourceId: string;
+  companyId: string;
+  externalJobId: string;
+  title?: string;
+  postedAt?: string;
+  observedAt?: string;
+  locationMode?: "remote" | "hybrid" | "onsite" | "unknown";
+  rolePrimary?: string;
+}) {
+  const observedAt = params.observedAt ?? new Date().toISOString();
+  const job = await upsertJob(client, {
+    sourceId: params.sourceId,
+    companyId: params.companyId,
+    externalJobId: params.externalJobId,
+    canonicalUrl: `https://example.invalid/jobs/${params.externalJobId}`,
+    title: params.title ?? "Security Engineer",
+    titleNormalized: (params.title ?? "Security Engineer").toLowerCase(),
+    contentHash: `hash-${params.externalJobId}`,
+    observedAt,
+    postedAt: params.postedAt,
+    locationMode: params.locationMode,
+  });
+  if (params.rolePrimary) {
+    await updateJobClassification(client, job.id, params.companyId, {
+      rolePrimary: params.rolePrimary,
+      classificationConfidence: 0.9,
+      classificationVersion: "v1",
+    });
+  }
+  return job;
+}
+
+describe("listJobsForCompany", () => {
+  it("returns an active job for the company matching default filters (status=active)", async () => {
+    const company = await seedCompany("ljfc-default", "List Jobs Default Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-1" });
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "newest",
+        limit: 50,
+      });
+      expect(result.items.map((i) => i.id)).toContain(job.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("filters by status, excluding jobs in a different lifecycle state", async () => {
+    const company = await seedCompany("ljfc-status", "List Jobs Status Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const activeJob = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-active" });
+      const closedJob = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-closed" });
+      await applyLifecycleTransition(client, closedJob.id, company.id, {
+        status: "closed",
+        missingRunCount: 3,
+      });
+
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "newest",
+        limit: 50,
+      });
+      expect(result.items.map((i) => i.id)).toContain(activeJob.id);
+      expect(result.items.map((i) => i.id)).not.toContain(closedJob.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("filters by roles, matching role_primary set via updateJobClassification", async () => {
+    const company = await seedCompany("ljfc-roles", "List Jobs Roles Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const secJob = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-sec",
+        rolePrimary: "cybersecurity",
+      });
+      const swJob = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-sw",
+        rolePrimary: "software_engineering",
+      });
+
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        roles: ["cybersecurity"],
+        status: "active",
+        sort: "newest",
+        limit: 50,
+      });
+      expect(result.items.map((i) => i.id)).toContain(secJob.id);
+      expect(result.items.map((i) => i.id)).not.toContain(swJob.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("filters by locationMode", async () => {
+    const company = await seedCompany("ljfc-loc", "List Jobs Location Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const remoteJob = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-remote",
+        locationMode: "remote",
+      });
+      const onsiteJob = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-onsite",
+        locationMode: "onsite",
+      });
+
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        locationMode: "remote",
+        status: "active",
+        sort: "newest",
+        limit: 50,
+      });
+      expect(result.items.map((i) => i.id)).toContain(remoteJob.id);
+      expect(result.items.map((i) => i.id)).not.toContain(onsiteJob.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("orders by posted_at DESC for sort=newest, falling back to first_seen_at when postedAt is absent", async () => {
+    const company = await seedCompany("ljfc-newest", "List Jobs Newest Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const older = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-older",
+        postedAt: "2026-07-01T00:00:00.000Z",
+      });
+      const newer = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-newer",
+        postedAt: "2026-07-20T00:00:00.000Z",
+      });
+
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "newest",
+        limit: 50,
+      });
+      const ids = result.items.map((i) => i.id);
+      expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("orders by title_normalized ASC for sort=title_asc", async () => {
+    const company = await seedCompany("ljfc-title", "List Jobs Title Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const zebra = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-zebra",
+        title: "Zebra Engineer",
+      });
+      const alpha = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-alpha",
+        title: "Alpha Engineer",
+      });
+
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "title_asc",
+        limit: 50,
+      });
+      const ids = result.items.map((i) => i.id);
+      expect(ids.indexOf(alpha.id)).toBeLessThan(ids.indexOf(zebra.id));
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("sets nextCursor and trims to `limit` when limit+1 rows come back, and the cursor pages to the remainder", async () => {
+    const company = await seedCompany("ljfc-cursor", "List Jobs Cursor Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const first = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-a",
+        postedAt: "2026-07-20T00:00:00.000Z",
+      });
+      const second = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-b",
+        postedAt: "2026-07-10T00:00:00.000Z",
+      });
+
+      const page1 = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "newest",
+        limit: 1,
+      });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.items[0]?.id).toBe(first.id);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "newest",
+        limit: 1,
+        cursor: page1.nextCursor ?? undefined,
+      });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0]?.id).toBe(second.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("throws InvalidJobsCursorError when a cursor's embedded sort mode doesn't match the request", async () => {
+    const cursorForOldest = Buffer.from(
+      JSON.stringify({
+        sort: "oldest",
+        postedAt: "2026-07-01T00:00:00.000Z",
+        firstSeenAt: "2026-07-01T00:00:00.000Z",
+        title: "alpha engineer",
+        id: "job-1",
+      }),
+    )
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    await expect(
+      listJobsForCompany(client, {
+        companyId: "00000000-0000-0000-0000-000000000000",
+        status: "active",
+        sort: "newest",
+        cursor: cursorForOldest,
+        limit: 50,
+      }),
+    ).rejects.toThrow(InvalidJobsCursorError);
+  });
+
+  it("skips a row with a corrupt location_mode instead of throwing for the whole page", async () => {
+    const company = await seedCompany("ljfc-corrupt", "List Jobs Corrupt Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const goodJob = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-good" });
+      const badJob = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-bad" });
+      // Bypasses upsertJob's typed locationMode param on purpose -- this
+      // row's whole reason for existing is being outside the valid enum,
+      // which the real write path can't produce. Only badJob is
+      // touched -- goodJob must stay valid so it has something to
+      // assert stayed present in the result.
+      await client.run(`UPDATE jobs SET location_mode = 'not_a_real_mode' WHERE id = ?`, [badJob.id]);
+
+      const result = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "newest",
+        limit: 50,
+      });
+      expect(result.items.map((i) => i.id)).toContain(goodJob.id);
+      expect(result.items.map((i) => i.id)).not.toContain(badJob.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+});
+
+describe("getJobById", () => {
+  it("returns null for an unknown job id", async () => {
+    const result = await getJobById(client, "00000000-0000-0000-0000-000000000000");
+    expect(result).toBeNull();
+  });
+
+  it("returns full detail including descriptionText/locationRaw/observationCount", async () => {
+    const company = await seedCompany("gjbi-detail", "Get Job Detail Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const now = new Date().toISOString();
+      const job = await upsertJob(client, {
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-detail-1",
+        canonicalUrl: "https://example.invalid/jobs/job-detail-1",
+        title: "Security Engineer",
+        titleNormalized: "security engineer",
+        descriptionText: "Full job description text.",
+        locationRaw: "Remote (US)",
+        contentHash: "hash-detail-1",
+        observedAt: now,
+      });
+      const sourceRunId = await recordSourceRunStart(client, { sourceId: source.id, startedAt: now });
+      await insertJobObservation(client, {
+        jobId: job.id,
+        sourceRunId,
+        observedAt: now,
+        contentHash: "hash-detail-1",
+        isPresent: true,
+      });
+
+      const detail = await getJobById(client, job.id);
+      expect(detail).not.toBeNull();
+      expect(detail!.descriptionText).toBe("Full job description text.");
+      expect(detail!.locationRaw).toBe("Remote (US)");
+      expect(detail!.observationCount).toBe(1);
+      expect(detail!.companyId).toBe(company.id);
+      expect(detail!.sourceId).toBe(source.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("returns observationCount 0 when the job has never been through insertJobObservation", async () => {
+    const company = await seedCompany("gjbi-no-obs", "Get Job No Observation Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-no-obs" });
+      const detail = await getJobById(client, job.id);
+      expect(detail).not.toBeNull();
+      expect(detail!.observationCount).toBe(0);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("degrades gracefully (does not throw) for a job with a corrupt status, still returning a JobDetail", async () => {
+    const company = await seedCompany("gjbi-corrupt", "Get Job Corrupt Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const job = await seedJobRow({ sourceId: source.id, companyId: company.id, externalJobId: "job-corrupt" });
+      // Bypasses upsertJob's typed status on purpose -- status is never
+      // settable via UpsertJobInput itself (only applyLifecycleTransition
+      // writes it, and only to valid enum values), so this raw UPDATE is
+      // the only way to produce a row outside the domain enum.
+      await client.run(`UPDATE jobs SET status = 'not_a_real_status' WHERE id = ?`, [job.id]);
+
+      const detail = await getJobById(client, job.id);
+      expect(detail).not.toBeNull();
+      // Per getJobById's own fallback branch: the raw string passes
+      // through uncoerced rather than the call throwing CorruptJobRowError.
+      expect(detail!.status).toBe("not_a_real_status");
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+});
+
+describe("toJobListItem", () => {
+  function makeRow(overrides: Partial<JobRow & { company_slug: string; company_display_name: string; source_platform: string }> = {}) {
+    return {
+      id: "job-1",
+      source_id: "src-1",
+      company_id: "c1",
+      company_slug: "acme",
+      company_display_name: "Acme Corp",
+      source_platform: "greenhouse",
+      external_job_id: "ext-1",
+      canonical_url: "https://example.invalid/jobs/ext-1",
+      title_raw: "Security Engineer",
+      title_normalized: "security engineer",
+      description_text: null,
+      department_raw: null,
+      employment_type: null,
+      location_raw: null,
+      location_mode: "unknown",
+      country_code: null,
+      region_code: null,
+      city: null,
+      role_primary: null,
+      role_tags_json: "[]",
+      classification_confidence: null,
+      classification_version: null,
+      posted_at: null,
+      source_updated_at: null,
+      first_seen_at: "2026-07-01T00:00:00.000Z",
+      last_seen_at: "2026-07-02T00:00:00.000Z",
+      missing_run_count: 0,
+      status: "active",
+      content_hash: "hash-1",
+      requisition_id: null,
+      ...overrides,
+    };
+  }
+
+  it("maps a valid joined row to a JobListItem with camelCase fields", () => {
+    const item = toJobListItem(makeRow());
+    expect(item).toEqual({
+      id: "job-1",
+      companyId: "c1",
+      companySlug: "acme",
+      companyDisplayName: "Acme Corp",
+      sourceId: "src-1",
+      sourcePlatform: "greenhouse",
+      externalJobId: "ext-1",
+      canonicalUrl: "https://example.invalid/jobs/ext-1",
+      title: "Security Engineer",
+      department: null,
+      employmentType: null,
+      locationMode: "unknown",
+      countryCode: null,
+      regionCode: null,
+      city: null,
+      roleCategory: null,
+      classificationConfidence: null,
+      postedAt: null,
+      requisitionId: null,
+      firstSeenAt: "2026-07-01T00:00:00.000Z",
+      lastSeenAt: "2026-07-02T00:00:00.000Z",
+      status: "active",
+    });
+  });
+
+  it("throws CorruptJobRowError for an invalid location_mode", () => {
+    expect(() => toJobListItem(makeRow({ location_mode: "not_a_real_mode" }))).toThrow(CorruptJobRowError);
+  });
+
+  it("throws CorruptJobRowError for an invalid status", () => {
+    expect(() => toJobListItem(makeRow({ status: "not_a_real_status" }))).toThrow(CorruptJobRowError);
+  });
+
+  it("throws CorruptJobRowError for an invalid role_primary when non-null", () => {
+    expect(() => toJobListItem(makeRow({ role_primary: "not_a_real_role" }))).toThrow(CorruptJobRowError);
+  });
+
+  it("does not throw when role_primary is null (unclassified job)", () => {
+    expect(() => toJobListItem(makeRow({ role_primary: null }))).not.toThrow();
   });
 });

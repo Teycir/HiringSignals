@@ -11,7 +11,7 @@
 // modules still own these definitions' source of truth via re-export
 // (`export type { X } from "./types"`), so this is a pure extraction --
 // no shape changes, no new duplication.
-import type { RoleCategory, SignalStatus, SignalType } from "@hiring-signals/domain";
+import type { JobStatus, LocationMode, RoleCategory, SignalStatus, SignalType } from "@hiring-signals/domain";
 
 /** API-shaped signal (spec 9.2/9.3), derived from SignalRow. */
 export interface SignalListItem {
@@ -158,4 +158,55 @@ export interface HiringTrendCompany {
   // (Q.1/Q.2), joined in at read time -- same null-until-computed
   // convention as CompanySummary's own field.
   hiringVelocityScore: number | null;
+}
+
+/**
+ * API-shaped raw job posting (new: GET /api/v1/companies/:slug/jobs and
+ * GET /api/v1/jobs/:jobId), derived from JobRow (jobs-repo.ts). Distinct
+ * from SignalListItem -- a signal is a derived *event* about a job
+ * (new/reopened/still-active), scoped to a role filter and expiring off
+ * the feed; a job is the underlying posting itself, queryable directly
+ * regardless of whether it ever triggered a signal. Exposes the columns
+ * jobs-repo.ts has always captured but no route previously returned:
+ * department, employmentType, requisitionId, classification metadata,
+ * first/last-seen lifecycle timestamps.
+ */
+export interface JobListItem {
+  id: string;
+  companyId: string;
+  companySlug: string;
+  companyDisplayName: string;
+  sourceId: string;
+  sourcePlatform: string;
+  externalJobId: string;
+  canonicalUrl: string;
+  title: string;
+  department: string | null;
+  employmentType: string | null;
+  locationMode: LocationMode;
+  countryCode: string | null;
+  regionCode: string | null;
+  city: string | null;
+  roleCategory: RoleCategory | null;
+  classificationConfidence: number | null;
+  postedAt: string | null;
+  requisitionId: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  status: JobStatus;
+}
+
+export interface JobDetail extends JobListItem {
+  descriptionText: string | null;
+  locationRaw: string | null;
+  roleTags: RoleCategory[];
+  classificationVersion: string | null;
+  sourceUpdatedAt: string | null;
+  missingRunCount: number;
+  /** How many source_runs have observed this job present, oldest-first
+   * absent, per job_observations -- a lightweight presence history so a
+   * caller can see "how long has this actually been live" without
+   * walking signal_evidence (which only exists for jobs that triggered
+   * a signal). */
+  observationCount: number;
 }

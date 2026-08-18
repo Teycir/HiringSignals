@@ -1,6 +1,7 @@
 import { defineCommand, runCommand } from "citty";
 import { signalsCommand } from "./commands/signals";
 import { companiesCommand } from "./commands/companies";
+import { jobsCommand } from "./commands/jobs";
 import { facetsCommand } from "./commands/facets";
 import { sourcesCommand } from "./commands/sources";
 import { exportCommand } from "./commands/export";
@@ -34,6 +35,7 @@ const rootCommand = defineCommand({
   subCommands: {
     signals: signalsCommand,
     companies: companiesCommand,
+    jobs: jobsCommand,
     facets: facetsCommand,
     sources: sourcesCommand,
     export: exportCommand,

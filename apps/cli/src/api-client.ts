@@ -3,6 +3,8 @@ import type {
   CompanySummary,
   Facets,
   HiringTrendCompany,
+  JobDetail,
+  JobListItem,
   SignalDetail,
   SignalListItem,
 } from "@hiring-signals/db/src/types";
@@ -13,6 +15,7 @@ import {
   ApiClientError,
   type ApiFetchFn,
   type CompanyTimelineQuery,
+  type JobsQuery,
   type SignalsQuery,
   type TrendsQuery,
 } from "@hiring-signals/domain";
@@ -171,6 +174,43 @@ export async function fetchCompanyTimeline(
     config,
     `/api/v1/companies/${encodeURIComponent(slug)}/timeline${qs ? `?${qs}` : ""}`,
   );
+}
+
+/**
+ * GET /api/v1/companies/:slug/jobs (new -- raw per-job listing, see
+ * apps/api/src/routes/companies.ts's ":slug/jobs" route for the full
+ * "why this exists" rationale). Params validated by JobsQuery
+ * (@hiring-signals/domain) upstream in the CLI command layer, same
+ * pattern as fetchSignals/fetchCompanyTimeline.
+ */
+export interface JobListResponse {
+  data: JobListItem[];
+  meta: {
+    requestId: string;
+    appliedFilters: Record<string, unknown>;
+    nextCursor: string | null;
+  };
+}
+
+export async function fetchCompanyJobs(
+  config: CliClientConfig,
+  slug: string,
+  params: Partial<JobsQuery> = {},
+): Promise<JobListResponse> {
+  const qs = queryFromRecord(params);
+  return request<JobListResponse>(
+    config,
+    `/api/v1/companies/${encodeURIComponent(slug)}/jobs${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** GET /api/v1/jobs/:jobId (new -- single job detail, analog to
+ * fetchSignalDetail). */
+export async function fetchJobDetail(
+  config: CliClientConfig,
+  jobId: string,
+): Promise<{ data: JobDetail; meta: { requestId: string } }> {
+  return request(config, `/api/v1/jobs/${encodeURIComponent(jobId)}`);
 }
 
 /**

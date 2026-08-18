@@ -1,8 +1,17 @@
 import { defineCommand } from "citty";
-import { ApiClientError, fetchCompanies, fetchCompanyDetail, fetchCompanyTimeline, resolveConfig, type CompanyListResponse } from "../api-client";
-import type { RoleCategory } from "@hiring-signals/domain";
-import { printResult, renderTable, type TableColumn } from "../output";
-import type { CompanySummary } from "@hiring-signals/db/src/types";
+import {
+  ApiClientError,
+  fetchCompanies,
+  fetchCompanyDetail,
+  fetchCompanyJobs,
+  fetchCompanyTimeline,
+  resolveConfig,
+  type CompanyListResponse,
+  type JobListResponse,
+} from "../api-client";
+import { jobsQuerySchema, type RoleCategory } from "@hiring-signals/domain";
+import { printResult, renderTable, truncate, type TableColumn } from "../output";
+import type { CompanySummary, JobListItem } from "@hiring-signals/db/src/types";
 import { loadWatchedCompanies, watchCompany, unwatchCompany } from "../config-store";
 
 const COMPANY_LIST_COLUMNS: TableColumn<CompanySummary>[] = [
@@ -180,7 +189,67 @@ const timeline = defineCommand({
   },
 });
 
+/**
+ * Columns picked for `--format table` scannability, same reasoning as
+ * signals.ts's SIGNAL_LIST_COLUMNS -- role/department/employment type/
+ * location at a glance; `hs jobs get <id>` is the drill-down for full
+ * detail (description, role tags, classification version, observation
+ * count).
+ */
+const JOB_LIST_COLUMNS: TableColumn<JobListItem>[] = [
+  { header: "TITLE", value: (j) => truncate(j.title, 50) },
+  { header: "ROLE", value: (j) => j.roleCategory ?? "" },
+  { header: "DEPT", value: (j) => j.department ?? "" },
+  { header: "TYPE", value: (j) => j.employmentType ?? "" },
+  { header: "LOCATION", value: (j) => j.locationMode },
+  { header: "STATUS", value: (j) => j.status },
+];
+
+function renderJobListTable(result: JobListResponse): string {
+  const table = renderTable(result.data, JOB_LIST_COLUMNS);
+  const cursorNote = result.meta.nextCursor
+    ? `\n(more results -- pass --cursor ${result.meta.nextCursor} for the next page)`
+    : "";
+  return table + cursorNote;
+}
+
+/**
+ * `hs companies jobs <slug> [flags]` -- GET /api/v1/companies/:slug/jobs
+ * (new -- see apps/api/src/routes/companies.ts's ":slug/jobs" route for
+ * the full "why this exists" rationale: raw per-job postings, not
+ * derived signals or aggregated timeline buckets). Flag names/defaults
+ * mirror `hs signals list` where the concept overlaps (role,
+ * location-mode, sort, cursor, limit) so a caller already familiar with
+ * that command doesn't have to learn a second convention here.
+ * `--status` defaults server-side to "active" (jobsQuerySchema) -- pass
+ * `possibly_closed` or `closed` explicitly for historical lookups.
+ */
+const jobs = defineCommand({
+  meta: { name: "jobs", description: "List a company's raw job postings (not derived signals)." },
+  args: {
+    slug: { type: "positional", description: "Company slug", required: true },
+    role: { type: "string", description: "Comma-separated role categories" },
+    locationMode: { type: "string", description: "remote|hybrid|onsite|unknown" },
+    status: { type: "string", description: "active|possibly_closed|closed (default active)" },
+    sort: { type: "string", description: "newest|oldest|title_asc (default newest)" },
+    cursor: { type: "string", description: "Pagination cursor from a prior response" },
+    limit: { type: "string", description: "Page size, 1-100" },
+  },
+  async run({ args }) {
+    const parsed = jobsQuerySchema.parse({
+      roles: args.role,
+      locationMode: args.locationMode,
+      status: args.status,
+      sort: args.sort,
+      cursor: args.cursor,
+      limit: args.limit,
+    });
+    const result = await fetchCompanyJobs(resolveConfig(), args.slug, parsed);
+    printResult(result, renderJobListTable);
+  },
+});
+
 export const companiesCommand = defineCommand({
   meta: { name: "companies", description: "Read companies (spec 9.2)." },
-  subCommands: { list, get, timeline, watch, unwatch },
+  subCommands: { list, get, timeline, jobs, watch, unwatch },
 });

@@ -19,3 +19,5 @@ export * from "./trends-query";
 export * from "./hiring-velocity";
 export * from "./signal-id-param";
 export * from "./company-slug-param";
+export * from "./jobs-query";
+export * from "./job-id-param";

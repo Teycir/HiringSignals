@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-08-18)
+
+- **Raw job read surface: `GET /api/v1/companies/:slug/jobs`, `GET
+  /api/v1/jobs/:jobId`, `hs companies jobs <slug>`, `hs jobs get
+  <jobId>`.** Closes a real gap: no route or CLI command ever exposed
+  the raw `jobs` table (department, employment type, requisition ID,
+  classification confidence, first/last-seen) -- only derived signals
+  (which expire) and aggregated timeline buckets (counts only) were
+  queryable. Built as a full vertical slice mirroring `signals
+  list`/`signals get`'s own conventions end to end: `packages/domain`
+  gets `jobsQuerySchema`/`jobIdParamSchema`; `packages/db`'s
+  `jobs-repo.ts` gets `listJobsForCompany` (cursor-paginated, same
+  fetch-one-extra-row-for-nextCursor + per-row corrupt-row-degrade
+  pattern as `listSignals`, `InvalidJobsCursorError` mirroring
+  `InvalidCursorError`) and `getJobById` (full detail plus an
+  `observationCount` derived from `job_observations`, so a caller sees
+  how many times a posting was actually confirmed present without a
+  separate evidence lookup); `apps/api` mounts the two new routes;
+  `apps/cli` gets `fetchCompanyJobs`/`fetchJobDetail` plus the two new
+  commands, `hs jobs get` skipping `--format table` (no honest
+  single-row flattening for `JobDetail`'s free-text fields, same
+  reasoning `hs companies get` already documents for itself). 18 new
+  live-D1 tests in `packages/db/test/jobs-repo.test.ts`
+  (`listJobsForCompany`/`getJobById`/`toJobListItem` describe blocks,
+  appended alongside that file's existing `getDetectionLatencyStats`/
+  tenant-isolation/`requisitionId` coverage -- zero mocks, zero fakes).
+  spec §9.2's endpoint table and a new §9.3a document the two routes
+  and the jobs-list query params. `packages/db`, `packages/domain`,
+  `apps/api`, `apps/cli` all typecheck and lint clean.
+
 ### Added (2026-08-17)
 
 - **`hs signals list --watched`.** Filters signals to the local

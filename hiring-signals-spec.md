@@ -674,6 +674,8 @@ Error envelope:
 | `GET`   | `/api/v1/signals/:signalId`   | Signal detail and evidence                       |
 | `GET`   | `/api/v1/companies`           | Company autocomplete / filter facets             |
 | `GET`   | `/api/v1/companies/:slug`     | Company detail and recent signals                |
+| `GET`   | `/api/v1/companies/:slug/jobs` | Raw per-job listing for one company (new -- see §9.3a) |
+| `GET`   | `/api/v1/jobs/:jobId`         | Single raw job posting, full detail (new)        |
 | `GET`   | `/api/v1/facets`              | Role, company, source, location counts           |
 | `GET`   | `/api/v1/export/signals.csv`  | Server-generated CSV of the current filtered query |
 
@@ -717,6 +719,39 @@ Allowed fields:
 | `limit`         | integer $1$–$100$    | Default $50$                                          |
 
 The API must build parameterized SQL. Never concatenate raw query text into SQL.
+
+### 9.3a Company jobs list query (new)
+
+`GET /api/v1/companies/:slug/jobs` -- the raw per-job listing signals
+never exposed (signals are derived events over jobs, not the jobs
+themselves; a job below the scoring threshold, or in a role category
+with no matching saved filter, still shows up here). `company` is the
+`:slug` path param, not a query field; everything else mirrors §9.3's
+shape/defaults/error behavior.
+
+Example:
+
+```text
+GET /api/v1/companies/acme/jobs?roles=cybersecurity&locationMode=remote&status=active&sort=newest&limit=50
+```
+
+Allowed fields:
+
+| Parameter      | Type                 | Notes                                          |
+| -------------- | -------------------- | ----------------------------------------------- |
+| `roles`        | comma-delimited enum | Primary role categories (`role_primary`)        |
+| `locationMode` | enum                 | `remote`, `hybrid`, `onsite`, `unknown`         |
+| `status`       | enum                 | `active`, `possibly_closed`, `closed`; default `active` |
+| `sort`         | enum                 | `newest`, `oldest`, `title_asc`                 |
+| `cursor`       | opaque string        | Pagination cursor                               |
+| `limit`        | integer $1$–$100$    | Default $50$                                    |
+
+`GET /api/v1/jobs/:jobId` returns the same job shape plus every field
+the list view omits (`descriptionText`, `locationRaw`, `roleTags`,
+`classificationVersion`, `sourceUpdatedAt`, `missingRunCount`) and an
+`observationCount` derived from `job_observations`, so a caller can see
+how many times a posting has actually been confirmed present without a
+separate evidence lookup.
 
 ### 9.4 Semantic search (draft — added 2026-07-29, not yet built; see `ROADMAP.md` Milestone I)
 

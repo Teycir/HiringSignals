@@ -1,18 +1,22 @@
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { AppEnv } from "../bindings";
 import {
+  InvalidJobsCursorError,
   createD1Client,
   getCompanyBySlug,
   getCompanyHiringTimeline,
   getCompanyRoleActivity,
   getRecentSignalsForCompany,
+  listJobsForCompany,
   searchCompanies,
 } from "@hiring-signals/db";
 import {
   HIRING_VELOCITY_DISCLAIMER,
   companySlugParamSchema,
   companyTimelineQuerySchema,
+  jobsQuerySchema,
   roleCategorySchema,
 } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
@@ -209,5 +213,64 @@ companiesRoute.get("/:slug/role-activity", async (c) => {
   return c.json({
     data: { company: { slug: company.slug, displayName: company.displayName }, role: parsed.role, buckets },
     meta: { requestId: c.get("requestId"), appliedFilters: parsed },
+  });
+});
+
+/**
+ * Raw per-job listing for one company (new -- see this file's own
+ * history: every prior read path (signals, timeline, role-activity)
+ * either derives events over jobs or aggregates them into counts;
+ * nothing before this returned the underlying jobs table directly, even
+ * though jobs-repo.ts has always captured department/employmentType/
+ * requisitionId/classification metadata that no route surfaced).
+ * Cursor-paginated the same way GET /api/v1/signals is (spec §9.3): a
+ * malformed or sort-mismatched cursor is a client mistake, mapped to
+ * 400 via InvalidJobsCursorError, same as InvalidCursorError's handling
+ * on the signals route above it in this codebase.
+ */
+companiesRoute.get("/:slug/jobs", async (c) => {
+  const { slug } = companySlugParamSchema.parse({ slug: c.req.param("slug") });
+  const parsed = jobsQuerySchema.parse(c.req.query());
+  const client = createD1Client(c.env.DB);
+  const company = await getCompanyBySlug(client, slug);
+
+  if (!company) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Company ${slug} not found.`,
+          requestId: c.get("requestId"),
+        },
+      },
+      404,
+    );
+  }
+
+  let result;
+  try {
+    result = await listJobsForCompany(client, {
+      companyId: company.id,
+      roles: parsed.roles,
+      locationMode: parsed.locationMode,
+      status: parsed.status,
+      sort: parsed.sort,
+      cursor: parsed.cursor,
+      limit: parsed.limit,
+    });
+  } catch (err) {
+    if (err instanceof InvalidJobsCursorError) {
+      throw new HTTPException(400, { message: err.message });
+    }
+    throw err;
+  }
+
+  return c.json({
+    data: result.items,
+    meta: {
+      requestId: c.get("requestId"),
+      appliedFilters: parsed,
+      nextCursor: result.nextCursor,
+    },
   });
 });

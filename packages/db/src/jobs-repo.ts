@@ -1,5 +1,15 @@
-import type { NormalizedJob } from "@hiring-signals/domain";
+import {
+  jobStatusSchema,
+  locationModeSchema,
+  roleCategorySchema,
+  type NormalizedJob,
+  type RoleCategory,
+} from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+import { decodeJsonFromBase64Url, encodeJsonToBase64Url } from "../../../lib/text/base64url";
+import type { JobDetail, JobListItem } from "./types";
+
+export type { JobDetail, JobListItem } from "./types";
 
 /** Raw D1 row shape (snake_case) for the `jobs` table (spec §8.2). */
 export interface JobRow {
@@ -632,4 +642,327 @@ export async function applyLifecycleTransition(
 ): Promise<void> {
   const statement = buildLifecycleStatement(jobId, companyId, patch);
   await client.run(statement.sql, statement.params);
+}
+
+/**
+ * Thrown when a `jobs` row has a value outside the domain enum for a
+ * column typed as one of RoleCategory/LocationMode/JobStatus at the API
+ * boundary. Same reasoning as signals-repo.ts's CorruptSignalRowError --
+ * kept as a distinct exported class so a job-row problem and a
+ * signal-row problem are never conflated in a caller's catch block.
+ */
+export class CorruptJobRowError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CorruptJobRowError";
+  }
+}
+
+/** Joined row shape shared by listJobsForCompany and getJobById --
+ * `jobs` plus `companies` (slug/display_name) and `sources` (provider),
+ * the same two joins BASE_SELECT in signals-repo.ts already makes for
+ * signal rows, applied here directly to jobs instead of by way of
+ * signal_evidence. */
+interface JobJoinedRow extends JobRow {
+  company_slug: string;
+  company_display_name: string;
+  source_platform: string;
+}
+
+const JOB_BASE_SELECT = `
+  SELECT j.*, c.slug AS company_slug, c.display_name AS company_display_name,
+         src.provider AS source_platform
+  FROM jobs j
+  JOIN companies c ON c.id = j.company_id
+  JOIN sources src ON src.id = j.source_id
+`;
+
+/**
+ * Converts one joined DB row to the API-shaped JobListItem, validating
+ * the three DB-enum columns (role_primary, location_mode, status) the
+ * same way signals-repo.ts's toListItem validates role_category/
+ * signal_type/status -- a stale write, manual edit, or taxonomy change
+ * since the row was written throws CorruptJobRowError so the caller can
+ * skip-and-log rather than 500 the whole page over one bad row.
+ * role_primary is nullable (a job that hasn't been classified yet, or
+ * that the classifier couldn't confidently categorize) -- only validated
+ * against the enum when non-null.
+ */
+export function toJobListItem(row: JobJoinedRow): JobListItem {
+  const roleCategory =
+    row.role_primary === null ? null : roleCategorySchema.safeParse(row.role_primary);
+  if (roleCategory && !roleCategory.success) {
+    throw new CorruptJobRowError(`Job ${row.id} has invalid role_primary="${row.role_primary}".`);
+  }
+  const locationMode = locationModeSchema.safeParse(row.location_mode);
+  if (!locationMode.success) {
+    throw new CorruptJobRowError(`Job ${row.id} has invalid location_mode="${row.location_mode}".`);
+  }
+  const status = jobStatusSchema.safeParse(row.status);
+  if (!status.success) {
+    throw new CorruptJobRowError(`Job ${row.id} has invalid status="${row.status}".`);
+  }
+
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    companySlug: row.company_slug,
+    companyDisplayName: row.company_display_name,
+    sourceId: row.source_id,
+    sourcePlatform: row.source_platform,
+    externalJobId: row.external_job_id,
+    canonicalUrl: row.canonical_url,
+    title: row.title_raw,
+    department: row.department_raw,
+    employmentType: row.employment_type,
+    locationMode: locationMode.data,
+    countryCode: row.country_code,
+    regionCode: row.region_code,
+    city: row.city,
+    roleCategory: roleCategory ? roleCategory.data : null,
+    classificationConfidence: row.classification_confidence,
+    postedAt: row.posted_at,
+    requisitionId: row.requisition_id,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    status: status.data,
+  };
+}
+
+/** Opaque cursor for listJobsForCompany, same base64url-JSON shape as
+ * signals-repo.ts's DecodedCursor -- carries the sort mode so a request
+ * that changes `sort` mid-pagination is rejected instead of silently
+ * paginated against the wrong ORDER BY. */
+interface JobsDecodedCursor {
+  sort: ListJobsForCompanyParams["sort"];
+  postedAt: string | null;
+  firstSeenAt: string;
+  title: string;
+  id: string;
+}
+
+/** Thrown when a jobs-list cursor is malformed or was issued for a
+ * different `sort` than the current request -- same role
+ * signals-repo.ts's InvalidCursorError plays there. */
+export class InvalidJobsCursorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidJobsCursorError";
+  }
+}
+
+function encodeJobsCursor(
+  sort: ListJobsForCompanyParams["sort"],
+  row: Pick<JobRow, "posted_at" | "first_seen_at" | "title_raw" | "id">,
+): string {
+  const payload: JobsDecodedCursor = {
+    sort,
+    postedAt: row.posted_at,
+    firstSeenAt: row.first_seen_at,
+    title: row.title_raw,
+    id: row.id,
+  };
+  return encodeJsonToBase64Url(payload);
+}
+
+function decodeJobsCursor(
+  cursor: string,
+  expectedSort: ListJobsForCompanyParams["sort"],
+): JobsDecodedCursor {
+  let decoded: JobsDecodedCursor;
+  try {
+    decoded = decodeJsonFromBase64Url<JobsDecodedCursor>(cursor);
+  } catch {
+    throw new InvalidJobsCursorError("Invalid cursor: not decodable.");
+  }
+  if (decoded.sort !== expectedSort) {
+    throw new InvalidJobsCursorError(
+      `Invalid cursor: was issued for sort=${decoded.sort}, but request has sort=${expectedSort}.`,
+    );
+  }
+  return decoded;
+}
+
+export interface ListJobsForCompanyParams {
+  companyId: string;
+  roles?: RoleCategory[];
+  locationMode?: string;
+  status: "active" | "possibly_closed" | "closed";
+  sort: "newest" | "oldest" | "title_asc";
+  cursor?: string;
+  limit: number;
+}
+
+export interface ListJobsForCompanyResult {
+  items: JobListItem[];
+  nextCursor: string | null;
+}
+
+/**
+ * Raw per-job listing for one company (new: GET /api/v1/companies/:slug/jobs).
+ * Reads directly from `jobs` -- no signals/signal_evidence involved --
+ * so a job that never triggered a signal (below scoring threshold, or a
+ * role category with no active saved filter matching it) is still
+ * visible here. `sort=newest`/`oldest` order by posted_at when present,
+ * falling back to first_seen_at for jobs whose adapter never supplied a
+ * postedAt (COALESCE, matches the nullable postedAt field every adapter
+ * doesn't populate -- see NormalizedJob's own header comment on
+ * job.ts). `title_asc` is the one sort with no numeric tiebreak need
+ * beyond id, since title collisions are rare and no ordering guarantee
+ * beyond "roughly alphabetical, stable" is promised.
+ *
+ * Same fetch-one-extra-row-for-nextCursor + per-row corrupt-row-degrade
+ * pattern as signals-repo.ts's listSignals, for the same reasons: one
+ * bad row must not 500 the whole page, and pagination must be provably
+ * stable across concurrent writes.
+ */
+export async function listJobsForCompany(
+  client: D1Client,
+  params: ListJobsForCompanyParams,
+): Promise<ListJobsForCompanyResult> {
+  const where: string[] = ["j.company_id = ?", "j.status = ?"];
+  const args: unknown[] = [params.companyId, params.status];
+
+  if (params.roles?.length) {
+    where.push(`j.role_primary IN (${params.roles.map(() => "?").join(",")})`);
+    args.push(...params.roles);
+  }
+  if (params.locationMode) {
+    where.push("j.location_mode = ?");
+    args.push(params.locationMode);
+  }
+
+  const orderBy =
+    params.sort === "oldest"
+      ? "COALESCE(j.posted_at, j.first_seen_at) ASC, j.id ASC"
+      : params.sort === "title_asc"
+        ? "j.title_normalized ASC, j.id ASC"
+        : "COALESCE(j.posted_at, j.first_seen_at) DESC, j.id DESC";
+
+  if (params.cursor) {
+    const cur = decodeJobsCursor(params.cursor, params.sort);
+    if (params.sort === "oldest") {
+      where.push(
+        "(COALESCE(j.posted_at, j.first_seen_at) > ? OR (COALESCE(j.posted_at, j.first_seen_at) = ? AND j.id > ?))",
+      );
+      args.push(cur.postedAt ?? cur.firstSeenAt, cur.postedAt ?? cur.firstSeenAt, cur.id);
+    } else if (params.sort === "title_asc") {
+      where.push("(j.title_normalized > ? OR (j.title_normalized = ? AND j.id > ?))");
+      args.push(cur.title, cur.title, cur.id);
+    } else {
+      where.push(
+        "(COALESCE(j.posted_at, j.first_seen_at) < ? OR (COALESCE(j.posted_at, j.first_seen_at) = ? AND j.id < ?))",
+      );
+      args.push(cur.postedAt ?? cur.firstSeenAt, cur.postedAt ?? cur.firstSeenAt, cur.id);
+    }
+  }
+
+  const sql = `${JOB_BASE_SELECT} WHERE ${where.join(" AND ")} ORDER BY ${orderBy} LIMIT ?`;
+  const rows = await client.all<JobJoinedRow>(sql, [...args, params.limit + 1]);
+
+  const hasMore = rows.length > params.limit;
+  const page = hasMore ? rows.slice(0, params.limit) : rows;
+
+  const items: JobListItem[] = [];
+  let lastValid: JobJoinedRow | undefined;
+  for (const row of page) {
+    try {
+      items.push(toJobListItem(row));
+      lastValid = row;
+    } catch (err) {
+      if (err instanceof CorruptJobRowError) {
+        console.error("corrupt_job_row_skipped", { jobId: row.id, reason: err.message });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return {
+    items,
+    nextCursor: hasMore && lastValid ? encodeJobsCursor(params.sort, lastValid) : null,
+  };
+}
+
+/**
+ * Single-job detail (new: GET /api/v1/jobs/:jobId) -- every column
+ * JobListItem omits (description, raw location string, role tags,
+ * classification version, source_updated_at, missing_run_count) plus a
+ * lightweight observationCount derived from job_observations, so a
+ * caller can see how many times this posting has actually been
+ * confirmed present without a separate evidence lookup (signal_evidence
+ * only exists for jobs that triggered a signal; job_observations exists
+ * for every job, every run).
+ */
+export async function getJobById(client: D1Client, jobId: string): Promise<JobDetail | null> {
+  const row = await client.first<JobJoinedRow>(`${JOB_BASE_SELECT} WHERE j.id = ?`, [jobId]);
+  if (!row) return null;
+
+  const observationRow = await client.first<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM job_observations WHERE job_id = ?`,
+    [jobId],
+  );
+
+  let roleTags: RoleCategory[] = [];
+  try {
+    const parsed = JSON.parse(row.role_tags_json);
+    if (Array.isArray(parsed)) {
+      roleTags = parsed.filter(
+        (tag): tag is RoleCategory => roleCategorySchema.safeParse(tag).success,
+      );
+    }
+  } catch (err) {
+    console.error("corrupt_job_role_tags_json", {
+      jobId: row.id,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Same per-row degrade as listJobsForCompany -- on a detail page this
+  // just means "this one job has a stale enum value," not a 500.
+  let listItem: JobListItem;
+  try {
+    listItem = toJobListItem(row);
+  } catch (err) {
+    if (err instanceof CorruptJobRowError) {
+      console.error("corrupt_job_detail_fallback", { jobId: row.id, reason: err.message });
+      listItem = {
+        id: row.id,
+        companyId: row.company_id,
+        companySlug: row.company_slug,
+        companyDisplayName: row.company_display_name,
+        sourceId: row.source_id,
+        sourcePlatform: row.source_platform,
+        externalJobId: row.external_job_id,
+        canonicalUrl: row.canonical_url,
+        title: row.title_raw,
+        department: row.department_raw,
+        employmentType: row.employment_type,
+        locationMode: row.location_mode as JobListItem["locationMode"],
+        countryCode: row.country_code,
+        regionCode: row.region_code,
+        city: row.city,
+        roleCategory: row.role_primary as JobListItem["roleCategory"],
+        classificationConfidence: row.classification_confidence,
+        postedAt: row.posted_at,
+        requisitionId: row.requisition_id,
+        firstSeenAt: row.first_seen_at,
+        lastSeenAt: row.last_seen_at,
+        status: row.status as JobListItem["status"],
+      };
+    } else {
+      throw err;
+    }
+  }
+
+  return {
+    ...listItem,
+    descriptionText: row.description_text,
+    locationRaw: row.location_raw,
+    roleTags,
+    classificationVersion: row.classification_version,
+    sourceUpdatedAt: row.source_updated_at,
+    missingRunCount: row.missing_run_count,
+    observationCount: observationRow?.count ?? 0,
+  };
 }

@@ -8,6 +8,7 @@ import { errorHandler } from "./middleware/error-handler";
 import { freeReadTier } from "./middleware/anti-abuse";
 import { signalsRoute } from "./routes/signals";
 import { companiesRoute } from "./routes/companies";
+import { jobsRoute } from "./routes/jobs";
 import { sourcesRoute } from "./routes/sources";
 import { facetsRoute } from "./routes/facets";
 import { adminRoute } from "./routes/admin";
@@ -56,6 +57,7 @@ app.get(
 
 app.route("/api/v1/signals", signalsRoute);
 app.route("/api/v1/companies", companiesRoute);
+app.route("/api/v1/jobs", jobsRoute);
 app.route("/api/v1/sources", sourcesRoute);
 app.route("/api/v1/facets", facetsRoute);
 app.route("/api/v1/export", exportRoute);
