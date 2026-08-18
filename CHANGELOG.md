@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-18
+
 ### Fixed (2026-08-18)
+
+- **`/signals` and `/trends` rendered fully blank for up to several seconds on a cold load.** Both routes wrap a `useSearchParams()`-using client component in `<Suspense>` (required by Next since that hook needs a Suspense boundary), but the fallback was `<AppShell>{null}</AppShell>` — the masthead rendered, but the entire content column stayed empty with zero indication anything was loading while the client bundle for `SignalsView`/`TrendsView` downloaded and hydrated. New `PageLoadingSkeleton` component (`apps/web/src/components/page-loading-skeleton.tsx`) renders immediately with no client JS or data fetch required, matching the existing post-mount skeleton styling already used in `signal-feed.tsx`/`trends-view.tsx` (`border-2 border-ink ... animate-pulse` blocks) so there's no visual jump once the real component mounts.
+
+- **`/trends` required manually selecting a role before any data loaded.** Landing on a bare `/trends` URL showed "select at least one role" instead of populating results — `parseRoles` returned `[]` whenever the URL had no `roles` param, which is exactly the state of a fresh page load. `trends-view.tsx`'s `parseRoles` now defaults to `software_engineering` (`ROLE_CATEGORIES[0]`) specifically when the `roles` key is absent from the URL entirely, while still respecting an explicit empty selection: `updateParams` now writes `roles=` (empty string, not a deleted key) when every chip is deselected, so the default only fires on a genuinely fresh landing and a user can still clear every role without it snapping back.
+
+- **Stale "8 providers" copy in `/signals`' page metadata description**, left over from the Breezy removal below (now 7).
+
+- **Duplicate changelog entry.** This file's own `## [Unreleased]` section had accidentally duplicated the entire `hs --version` / `hs -v` entry twice under `### Added (2026-08-17)`. Removed the duplicate.
+
+- **Remaining Breezy trace across code, docs, and remote D1**, left behind after the adapter itself was removed in an earlier pass. Found via an exhaustive case-insensitive repo-wide grep and fixed file by file: the dead `sources` row and its now-sourceless company were deleted from D1 (previously left to degrade in place per the old spec design); leftover comment mentions removed from `registry.ts`, `index.ts`, `providers.ts`, `personio.ts`, `import-sources.mjs`, `add-source.mjs`; live user-facing copy on `/how-to-use` and `/faq` fixed (was still claiming "8 ATS providers... Breezy"); `seed-local-d1.sql`'s synthetic `ironcladsecurity` fixture company swapped from `breezy` to `ashby` (source row + 3 job URLs) to keep local dev seed data provider-accurate; `README.md`, `ROADMAP.md`, `CHANGELOG.md`, `llm.txt`, `hiring-signals-spec.md`, `project-metadata.json`, and migration `0009`'s SQL comment reworded to drop the provider name while preserving the true underlying history (adapter removed 2026-08-18, dead board); the dedicated "Removed: Breezy adapter" changelog entry deleted outright rather than reworded, since it existed purely to describe the removal.
 
 - **SmartRecruiters adapter failing on every real board (`consecutive_failures`, `enabled: 0` on the one live production source).** A production audit of the lowest-source-count provider found SmartRecruiters' API is live and returning real postings today, but the adapter's `normalize()` required `posting.actions.details.url` or `.apply.url` to build a `canonicalUrl`, and a live-data check showed every posting from a real board now returns an empty `actions: {}` — SmartRecruiters stopped populating those fields in its list response at some point after this adapter was written (2026-07-30). `packages/adapters/src/smartrecruiters.ts` now synthesizes the canonical URL from `posting.id`/`uuid` + the source's `boardToken` (`https://jobs.smartrecruiters.com/{boardToken}/{postingId}`, confirmed live: resolves 200 for a real posting) whenever the response doesn't supply one directly, still preferring the response's own action link when present. 3 new tests in `smartrecruiters.test.ts` against a new `smartrecruiters-board-no-actions.json` fixture matching the real live response shape (18/18 passing). This provider was **not** removed.
 
@@ -104,21 +116,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `apps/cli/test/signals-list-watched.test.ts`, mirroring
   `companies-watchlist.test.ts`'s structure; full `apps/cli` suite
   (111 tests, 8 files) passing with no regressions.
-
-- **`hs --version` / `hs -v`.** `apps/cli`'s root `citty` command declared
-  a `meta.version`, but this file uses `runCommand()` (not `runMain()`)
-  for its JSON-error-shape contract, and only `runMain()` wires up
-  citty's builtin `--version`/`-v` handling — so the flag was silently
-  inert, and `meta.version` itself had been hardcoded `"0.0.0"` all
-  along (never matched `apps/cli/package.json`, made worse by the
-  v1.0.0 release below). Fixed by hand-checking `--version`/`-v` as the
-  sole argument in `main()` (mirroring the existing `--format`
-  extraction pattern) and reading the version live from
-  `apps/cli/package.json` via a `with { type: "json" }` import instead
-  of a literal, so it can't drift out of sync again. 3 new subprocess
-  tests in `cli-process.test.ts` assert against the live `package.json`
-  value rather than a hardcoded string, and confirm `-v` doesn't
-  shadow a subcommand's own flags when other arguments are present.
 
 ## [1.0.0] — 2026-08-17
 
