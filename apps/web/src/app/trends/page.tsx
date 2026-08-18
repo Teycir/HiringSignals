@@ -6,6 +6,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
+import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { TrendsView } from "@/components/trends-view";
 
 // See app/signals/page.tsx's metadata comment -- same reasoning, this
@@ -19,7 +20,13 @@ export const metadata: Metadata = {
 
 export default function TrendsPage() {
   return (
-    <Suspense fallback={<AppShell>{null}</AppShell>}>
+    <Suspense
+      fallback={
+        <AppShell>
+          <PageLoadingSkeleton />
+        </AppShell>
+      }
+    >
       <TrendsView />
     </Suspense>
   );

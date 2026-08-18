@@ -38,9 +38,20 @@ function isRoleCategory(value: string): value is RoleCategory {
   return (ROLE_CATEGORIES as readonly string[]).includes(value);
 }
 
+const DEFAULT_ROLE: RoleCategory = ROLE_CATEGORIES[0];
+
+// Defaults to software_engineering only when the URL never had a
+// `roles` key at all (a fresh /trends landing) so results populate
+// immediately instead of showing "select at least one role" on first
+// load. Distinguished from the user explicitly clearing every chip --
+// that case leaves `roles=` (empty string, not absent) via
+// updateParams below, so `raw === null` (missing key) is the only
+// branch that applies the default; `raw === ""` (present-but-empty)
+// correctly falls through to the real empty-selection state.
 function parseRoles(searchParams: URLSearchParams): RoleCategory[] {
   const raw = searchParams.get("roles");
-  if (!raw) return [];
+  if (raw === null) return [DEFAULT_ROLE];
+  if (raw === "") return [];
   return raw.split(",").filter(isRoleCategory);
 }
 
@@ -69,7 +80,10 @@ export function TrendsView() {
   function updateParams(next: { roles?: RoleCategory[]; sort?: SortOption; industry?: string; country?: string }) {
     const params = new URLSearchParams(searchParams.toString());
     const roles = next.roles ?? selectedRoles;
-    if (roles.length > 0) params.set("roles", roles.join(",")); else params.delete("roles");
+    // Empty (not deleted): distinguishes "user cleared every role chip"
+    // from "roles was never in the URL" so parseRoles's default only
+    // fires on a genuinely fresh landing, not after a deliberate clear.
+    params.set("roles", roles.join(","));
     const nextSort = next.sort ?? sort;
     if (nextSort !== "acceleration_desc") params.set("sort", nextSort); else params.delete("sort");
     const nextIndustry = next.industry ?? industry;

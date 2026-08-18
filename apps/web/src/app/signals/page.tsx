@@ -6,6 +6,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
+import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { SignalsView } from "@/components/signals-view";
 
 // Root layout's title.template turns this into "Signal Feed |
@@ -17,12 +18,18 @@ import { SignalsView } from "@/components/signals-view";
 export const metadata: Metadata = {
   title: "Signal Feed",
   description:
-    "Scored, filterable hiring signals from official ATS job-board APIs -- new roles, hiring bursts, role acceleration, and more, across 8 providers.",
+    "Scored, filterable hiring signals from official ATS job-board APIs -- new roles, hiring bursts, role acceleration, and more, across 7 providers.",
 };
 
 export default function SignalsPage() {
   return (
-    <Suspense fallback={<AppShell>{null}</AppShell>}>
+    <Suspense
+      fallback={
+        <AppShell>
+          <PageLoadingSkeleton />
+        </AppShell>
+      }
+    >
       <SignalsView />
     </Suspense>
   );
