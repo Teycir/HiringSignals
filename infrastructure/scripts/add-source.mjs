@@ -28,11 +28,11 @@ const ATS_PROVIDERS = [
   "workable",
   "recruitee",
   "personio",
-  "teamtailor",
-  "jazzhr",
-  "breezy",
-  "bamboohr",
-]; // must stay in sync with packages/domain/src/providers.ts's ATS_PROVIDERS
+]; // must stay in sync with packages/domain/src/providers.ts's ATS_PROVIDERS.
+// teamtailor/jazzhr/bamboohr were never real ATS_PROVIDERS members to
+// begin with and are dropped here too. smartrecruiters was audited
+// 2026-08-18 for possible removal but kept -- its API is live, the
+// original failure was a fixable adapter bug.
 
 function parseArgs(argv) {
   const args = {};

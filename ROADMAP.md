@@ -106,7 +106,7 @@ CHANGELOG.md.
 - **G.5 — Acceptance criteria sign-off (spec §16).** Fully walked and
   PASS end to end, 2026-08-11. All 6 sub-items (§16.1–§16.3.6) passed
   live verification; 3 real gaps found and fixed in the process:
-  custom-host port-injection bypass in `breezy`/`personio` adapters
+  custom-host port-injection bypass in the `personio` adapter
   (§16.3.2), missing path-param schema validation on signal/company
   detail routes (§16.3.3), and no API-error-rate monitoring — closed
   by adding an Analytics Engine binding + `api-metrics.ts` middleware

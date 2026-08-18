@@ -453,10 +453,10 @@ export async function handleIngestMessage(
       );
     } catch (err) {
       // spec §11.1 SSRF allow-list: a boardToken that fails an adapter's
-      // own hostname validation (currently only breezy.ts/personio.ts,
-      // whose custom-career-site-host support accepts a dotted
-      // boardToken as a literal host -- see those files' own
-      // boardHost() comments) is a config error, not a transient one --
+      // own hostname validation (currently only personio.ts, whose
+      // custom-career-site-host support accepts a dotted boardToken as
+      // a literal host -- see that file's own resolveHost() comment) is
+      // a config error, not a transient one --
       // retrying won't produce a different, syntactically-valid host.
       // Name-suffix check (not an `instanceof` union across every
       // adapter's own error class) matches isAdapterSchemaError's

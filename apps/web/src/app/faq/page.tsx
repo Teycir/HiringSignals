@@ -20,7 +20,7 @@ const FAQS = [
   },
   {
     q: "Where does the data come from?",
-    a: "Official, documented APIs of eight ATS providers: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, and Breezy. No scraping — each posting is fetched from the provider's own public API, normalized, and classified.",
+    a: "Official, documented APIs of seven ATS providers: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, and Personio. No scraping — each posting is fetched from the provider's own public API, normalized, and classified.",
   },
   {
     q: "What signal types exist?",

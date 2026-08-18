@@ -5,6 +5,7 @@ import { SmartRecruitersSchemaError, smartRecruitersAdapter } from "../src/smart
 import boardFixture from "./fixtures/smartrecruiters-board.json";
 import flatFixture from "./fixtures/smartrecruiters-board-flat.json";
 import malformedFixture from "./fixtures/smartrecruiters-board-malformed.json";
+import noActionsFixture from "./fixtures/smartrecruiters-board-no-actions.json";
 
 const source: SourceConfig = {
   sourceId: "src_smartrecruiters",
@@ -97,6 +98,36 @@ describe("smartRecruitersAdapter.normalize", () => {
 
   it("throws on a payload that is not a SmartRecruiters board", () => {
     expect(() => smartRecruitersAdapter.normalize({ jobs: [] }, source)).toThrow(SmartRecruitersSchemaError);
+  });
+
+  // 2026-08-18: a live board audit found every posting from a real
+  // SmartRecruiters board now returns actions: {} -- no details/apply
+  // URL at all. This is the real shape production sees today; the
+  // adapter must synthesize a working canonical URL rather than
+  // throwing, since throwing here previously failed 100% of postings
+  // on every real board (not just a rare malformed one).
+  it("synthesizes a canonical URL from id + boardToken when actions is empty", () => {
+    const result = smartRecruitersAdapter.normalize(noActionsFixture, source);
+    expect(result).toHaveLength(2);
+    expect(at(result, 0).canonicalUrl).toBe(
+      "https://jobs.smartrecruiters.com/example/744000143115219",
+    );
+    expect(at(result, 0).externalJobId).toBe("f14d00ce-bfd2-4ebf-8a01-c8e0fa636a49");
+  });
+
+  it("synthesizes a canonical URL from uuid when id is absent and actions is empty", () => {
+    const second = at(smartRecruitersAdapter.normalize(noActionsFixture, source), 1);
+    expect(second.canonicalUrl).toBe(
+      "https://jobs.smartrecruiters.com/example/a1b2c3d4-e5f6-4789-a012-3456789abcde",
+    );
+    expect(second.externalJobId).toBe("a1b2c3d4-e5f6-4789-a012-3456789abcde");
+  });
+
+  it("still prefers a details/apply action URL over the synthesized one when the response provides it", () => {
+    const first = at(smartRecruitersAdapter.normalize(boardFixture, source), 0);
+    expect(first.canonicalUrl).toBe(
+      "https://jobs.smartrecruiters.com/example/743999999999999-senior-platform-engineer",
+    );
   });
 });
 

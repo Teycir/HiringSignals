@@ -44,7 +44,9 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 
 ### What it covers
 
-- **8 ATS providers**: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy — all via their official documented APIs
+- **7 ATS providers**: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio — all via their official documented APIs. (SmartRecruiters was audited 2026-08-18 and kept: its API was confirmed live, and the issue was a fixable adapter bug, since fixed.)
+- **193 companies** tracked across all providers
+- **192 sources** (grown from a manual/CSV baseline via the automated discovery script described below — see [Growing source coverage](#growing-source-coverage))
 - **10 IT role categories**: `software_engineering`, `ai_machine_learning`, `cloud_platform_devops_sre`, `cybersecurity`, `data_engineering_analytics`, `qa_test_automation`, `systems_network_administration`, `it_support_help_desk`, `product_technical_program_management`, `erp_business_systems`
 - **Hybrid search**: `--q "distributed systems Rust"` runs keyword + semantic search (Workers AI embeddings + Vectorize) and merges results by relevance; falls back to keyword-only if the AI leg is unavailable
 - **Hiring velocity per company**: A 0–100 investor-grade score per company (`V = 0.40*acceleration + 0.25*breadth + 0.20*volume + 0.15*persistence`) answering "how aggressively is this company building its team right now," surfaced on `GET /companies`, `GET /companies/:slug`, and `GET /trends/hiring?sort=velocity_desc` (null/uncomputed scores sort last)
@@ -76,6 +78,8 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
     - [Core Functionality](#core-functionality)
     - [Design Philosophy](#design-philosophy)
   - [Local dev](#local-dev)
+    - [Data Sources](#data-sources)
+    - [Growing source coverage](#growing-source-coverage)
   - [🤖 AI Agent Metadata](#-ai-agent-metadata)
   - [License](#license)
   - [💼 Support Development](#-support-development)
@@ -95,11 +99,11 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 | `apps/web/` | Next.js web UI | **Complete** → Next.js 16 app deployed on Cloudflare Workers via OpenNext (own `hiring-signals-web` Worker, service-bound to `apps/api`). Routes: `/` (redirects to `/signals`), `/signals` (signal feed with FilterRail, SignalCard, hybrid search bar + recent searches), `/signals/:id` (signal detail with evidence table, score breakdown, MoreLikeThis), `/companies/:slug` (company detail with hiring timeline), `/trends` (cross-company hiring trends table with velocity badges), `/how-to-use`, `/faq`. Thin client over `apps/api` — no direct D1 access; server-side calls (`generateMetadata`) route through a Cloudflare service binding, browser calls hit the public API URL. All signal filters (role, location, source, signal type, company, min score, recency, free-text `q`) are exposed as URL search params and kept in sync with the FilterRail. Export button triggers `GET /export/signals.csv`. See `apps/web/README.md`. |
 | `apps/api/` | Cloudflare Worker API | **Complete** → Hono Worker. Routes: `GET /signals` (hybrid search, cursor pagination), `GET /signals/:id`, `GET /companies`, `GET /companies/:slug`, `GET /companies/:slug/timeline` (time-bucketed hiring activity, 7/14/30-day buckets, 90-day window cap), `GET /trends/hiring` (cross-company ranked analytics, acceleration/volume/velocity/newest-signal sorts, 5-min KV cache), `GET /facets` (60s KV cache), `GET /sources`, `GET /export/signals.csv` (2 000-row cap, `X-Export-Truncated` header), `GET /feed.rss` (RSS 2.0, 50-item cap, ETag/304 conditional requests). Three `POST /admin/*` pipeline triggers gated on bearer `HS_ADMIN_SECRET`. Middleware chain: request-id, client-IP (trusted-first CF-Connecting-IP extraction), security headers, circuit-breaker-wrapped D1 client, anti-abuse rate-limiting (SHA-256-hashed identifiers), free-read-tier enforcement, API error-rate metrics (Analytics Engine `API_METRICS` dataset with normalized route-shape cardinality). Background: 15-min cron scheduler → `INGEST_QUEUE` consumer with 5-retry exponential backoff, daily reconciliation cron (stale score recompute + company hiring velocity recompute). |
 | `packages/domain/` | Core domain logic | **Complete** → Zod schemas, taxonomies, classification, lifecycle, signal scoring (v2), embedding-text, search-merge logic, and a platform-agnostic API-client core (request/error-envelope/query-serialization) shared by `apps/cli` and `apps/web`'s HTTP clients. |
-| `packages/adapters/` | ATS provider integrations | **8 P0 providers built** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio, breezy. |
+| `packages/adapters/` | ATS provider integrations | **7 providers** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio. (smartrecruiters was audited 2026-08-18 and kept — it had a real adapter bug, since fixed — see spec §4.1.) |
 | `packages/db/` | D1 database layer | **Complete** → D1 client + repository functions. Read paths: signals/companies/facets/export. Write paths: sources/jobs/signals. Company-role activity stats, signals-export repo. |
 | `packages/test-support/` | Testing infrastructure | **Complete** → Live Cloudflare bindings for zero-mocks integration testing (live D1 client, live AI/Vectorize/KV, remote transport layer). Used by packages/db and apps/api suites. |
 | `lib/` | Cross-workspace utilities | **Complete** → D1 helpers (client, LIKE pattern, unique-constraint), HTTP primitives (circuit-breaker, rate-limit with SHA-256-hashed identifiers, trusted IP extraction, security-headers), KV TTL store, audit logging, cursor pagination, text utilities (base64url, content-hash, CSV, location-mode, RSS serializer). |
-| `infrastructure/` | DevOps & migrations | **Complete** → D1 migrations (0001-0010 landed). Ops scripts: add-source, update-source, add-company, update-company, source-health, backfill-embeddings, import-sources, ingestion-metrics. |
+| `infrastructure/` | DevOps & migrations | **Complete** → D1 migrations (0001-0010 landed). Ops scripts: add-source, update-source, add-company, update-company, source-health, backfill-embeddings, import-sources, ingestion-metrics, discover-companies (automated coverage growth — see [Growing source coverage](#growing-source-coverage)). |
 
 ## 🛠 Tech Stack
 
@@ -124,7 +128,7 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 
 ### Core Functionality
 
-- **Multi-ATS integration**: Official documented ATS API adapters (no scraping) — 8 of 11 P0 providers built
+- **Multi-ATS integration**: Official documented ATS API adapters (no scraping) — 7 providers (greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio)
 - **Real-time monitoring**: Scheduled ingestion with adaptive cadence per provider; `still_active` evidence appended daily to prevent score decay on persistently-open roles
 - **Signal scoring v2**: Priority score (0–100) = `0.35*freshness + 0.25*volume + 0.20*acceleration + 0.10*breadth + 0.10*classification_confidence`; decays over time with no new evidence
 - **Hiring velocity per company**: Separate investor-grade 0–100 company-level score = `0.40*acceleration + 0.25*breadth + 0.20*volume_norm + 0.15*persistence`; recomputed daily during reconciliation for any company with signal activity that run, null for untouched companies (never fabricated as 0)
@@ -134,7 +138,7 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 - **Single-company hiring timelines**: `GET /companies/:slug/timeline` + `hs companies timeline` time-bucketed new/closed/active jobs per 7/14/30-day window (90-day cap) with role/location breakdowns and signal types per bucket; pure read path over existing observations
 - **Push-style delivery via RSS**: `GET /feed.rss` + `hs feed-url` for feed-reader subscriptions, no accounts, no personal data. 50-item cap, ETag/Last-Modified/304 Not Modified conditional-request support. `<link>` omitted for aggregate signals with no job-linked evidence.
 - **Export**: CSV export of filtered signal list via `GET /api/v1/export/signals.csv` (same filters as signal feed, 2000-row cap with truncation header; also exposed as `hs export signals` in CLI)
-- **Bulk onboarding**: CSV import (`import-sources.mjs`) for batch source/company onboarding
+- **Bulk onboarding**: CSV import (`import-sources.mjs`) for batch source/company onboarding, fed either by hand or by the automated `discover-companies.mjs` harvester — see [Growing source coverage](#growing-source-coverage)
 - **Admin operations**: Secret-bearer-token-gated pipeline triggers (`POST /admin/source/:id/run`, `/admin/scheduler/flush`, `/admin/reconcile`) + local ops scripts for source/company CRUD. Source ingestion retry logic respects 429 `Retry-After` headers and caps exponential backoff at 5 attempts; permanent config/schema errors skip retry immediately.
 - **Monitoring & observability**: `infrastructure/scripts/source-health.mjs` (stale/stuck/degraded detection), `ingestion-metrics.mjs` (success rate + duplicate rate with/without requisitionId tiering), and per-request Analytics Engine data points for API error rates/latency histograms
 - **Health isolation**: Per-source error isolation prevents cascading failures
@@ -173,10 +177,43 @@ node infrastructure/scripts/add-source.mjs --help
 node infrastructure/scripts/update-source.mjs --help
 node infrastructure/scripts/update-company.mjs --help
 node infrastructure/scripts/import-sources.mjs path/to/sources.csv   # bulk CSV onboarding
+node infrastructure/scripts/discover-companies.mjs --out sources.csv # find new companies + candidate sources (see below)
 node infrastructure/scripts/source-health.mjs                    # source status table
 node infrastructure/scripts/ingestion-metrics.mjs                # ingestion stats
 node infrastructure/scripts/backfill-embeddings.mjs               # Vectorize backfill (semantic search)
 ```
+
+### Data Sources
+
+The system integrates with 7 active ATS providers via their official public APIs:
+
+| Provider | API Endpoint | Sources |
+|----------|-------------|-----------|
+| Workable | Public jobs API | 71 |
+| Greenhouse | `https://boards-api.greenhouse.io/v1/boards/{token}/jobs` | 65 |
+| Ashby | `https://api.ashbyhq.com/posting-api/job-board/{name}` | 23 |
+| Lever | `https://api.lever.co/v0/postings/{site}?mode=json` | 13 |
+| Recruitee | Public careers API | 8 |
+| Personio | Public job postings API (where offered) | 6 |
+| SmartRecruiters | `https://api.smartrecruiters.com/v1/companies/{id}/postings` | 5 |
+
+192 sources total, 193 companies tracked. New companies/sources are added via `add-company.mjs`/`add-source.mjs` (one at a time), `import-sources.mjs` (bulk CSV), or the automated `discover-companies.mjs` harvester described next.
+
+### Growing source coverage
+
+`infrastructure/scripts/discover-companies.mjs` finds new companies to track without anyone hand-typing a list. It works in four steps:
+
+1. **Harvest real company names for free.** It searches Workable's public job-search API using a rotating list of common job titles ("sales," "nurse," "driver," "software engineer," ...) and collects the company name attached to each result. Varying the search term keeps turning up new companies; paging deeper into one search term does not — confirmed live, one term plateaued at 13 unique companies after 120 results, while rotating terms kept surfacing 10-15 new companies per term with no sign of slowing down.
+2. **Guess each company's board address.** Every ATS provider (Greenhouse, Workable, Lever, etc.) hosts a company's jobs at a predictable-looking URL keyed by a short "token," usually the company's name in lowercase with spaces and legal suffixes ("Inc," "LLC," "Group," ...) stripped out. The script makes this guess for each harvested company name. It's a best-effort guess, not a certainty — a company known by an acronym (e.g. "ABcom") won't naively slugify to its real token — so nothing is trusted until the next step confirms it live.
+3. **Test the guess against all 7 providers.** For each guessed token, the script makes a real request to each provider's public API and checks whether a genuine, active job board comes back. Each provider signals "this board doesn't exist" differently (a 404, a redirect, an empty result), and one provider (SmartRecruiters) returns a misleadingly generic-looking success response even for a token that doesn't correspond to any real company — so the script checks for actual job postings in the response, not just a successful HTTP status, before calling anything a match. Only a confirmed hit — a real board with real postings — gets kept.
+4. **Skip anything already tracked, then write a CSV.** Before testing, and again before writing results, the script checks the confirmed hits against the current company/source registry so nothing gets re-added. Confirmed hits are written to a CSV in the same format `import-sources.mjs` already accepts — this script never writes to the database directly, it only produces a list for `import-sources.mjs` to import (which does its own independent duplicate check before writing anything).
+
+```bash
+node infrastructure/scripts/discover-companies.mjs --out infrastructure/scripts/discovered-sources.csv
+node infrastructure/scripts/import-sources.mjs infrastructure/scripts/discovered-sources.csv --remote
+```
+
+Run without `--remote`, both scripts check against a local D1 copy; `import-sources.mjs --remote` is what actually writes to production. Because the guessing step in step 2 is inherently approximate, treat a freshly-discovered CSV as worth a quick skim before importing at scale, especially for short or generic-sounding company names.
 
 Quality commands:
 
@@ -184,7 +221,7 @@ Quality commands:
 pnpm -r typecheck                           # all 6 workspace projects
 pnpm -r lint                                 # ESLint across workspaces
 pnpm --filter @hiring-signals/domain test   # fast pure-logic suite (93 tests, ~1s)
-pnpm --filter @hiring-signals/adapters test # fast fixture suite (126 tests, ~3s)
+pnpm --filter @hiring-signals/adapters test # fast fixture suite (111 tests, ~1s)
 # packages/db and apps/api suites require live CF_TOKEN — see AGENTS.md zero-mocks policy
 # Scope live tests to one file at a time: cd packages/db && npx vitest run test/signals-export-repo.test.ts
 ```

@@ -7,17 +7,18 @@ import { smartRecruitersAdapter } from "./smartrecruiters";
 import { workableAdapter } from "./workable";
 import { recruiteeAdapter } from "./recruitee";
 import { personioAdapter } from "./personio";
-import { breezyAdapter } from "./breezy";
 
 /**
  * Provider -> adapter lookup for the ingest consumer (ROADMAP.md
- * Milestone D). Covers all 8 providers in the ATS_PROVIDERS enum. A
- * source configured for a provider not in this map is a 4xx-style
- * configuration issue (spec §10.4's "4xx configuration issue" row), not
- * a schema mismatch or a transient failure -- getAdapterForProvider
+ * Milestone D). Covers all 7 providers in the ATS_PROVIDERS enum
+ * (smartrecruiters was audited 2026-08-18 and kept -- its API is live,
+ * an earlier failure was a fixable adapter bug, not a dead provider).
+ * A source configured for a provider not in this map is a 4xx-style
+ * configuration issue (spec §10.4's "4xx configuration issue" row),
+ * not a schema mismatch or a transient failure -- getAdapterForProvider
  * throws a typed error so the consumer's failure-handling can route it
- * to the correct branch (mark source degraded, no hammering) instead of
- * retrying forever.
+ * to the correct branch (mark source degraded, no hammering) instead
+ * of retrying forever.
  */
 const ADAPTERS: Partial<Record<AtsProvider, AtsAdapter>> = {
   greenhouse: greenhouseAdapter,
@@ -27,7 +28,6 @@ const ADAPTERS: Partial<Record<AtsProvider, AtsAdapter>> = {
   workable: workableAdapter,
   recruitee: recruiteeAdapter,
   personio: personioAdapter,
-  breezy: breezyAdapter,
 };
 
 export class UnsupportedProviderError extends Error {

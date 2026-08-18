@@ -102,13 +102,28 @@ async function fetchBoard(input: SourceConfig, ctx: FetchContext): Promise<Adapt
   };
 }
 
-function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
+function normalize(raw: unknown, source: SourceConfig): NormalizedJob[] {
   const parsed = smartRecruitersBoardSchema.safeParse(raw);
   if (!parsed.success) throw new SmartRecruitersSchemaError(parsed.error);
 
   const postings = Array.isArray(parsed.data) ? parsed.data : parsed.data.content;
   return postings.map((posting): NormalizedJob => {
-    const canonicalUrl = posting.actions?.details?.url ?? posting.actions?.apply?.url;
+    // SmartRecruiters' list endpoint historically embedded action links
+    // (`actions.details.url` / `actions.apply.url`) directly in each
+    // posting, but a live-data audit (2026-08-18) found every posting
+    // from a real board now returns an empty `actions: {}` -- an
+    // upstream response-shape change, not an adapter bug. SmartRecruiters
+    // still serves every posting at a predictable public URL
+    // (`jobs.smartrecruiters.com/{companyIdentifier}/{postingId}`,
+    // confirmed live: returns 200 for a real posting id), so the
+    // canonical URL is synthesized from that pattern whenever the
+    // response doesn't supply one directly -- preferring the response's
+    // own action link when present, since that's the more authoritative
+    // source if SmartRecruiters ever starts populating it again.
+    const canonicalUrl =
+      posting.actions?.details?.url ??
+      posting.actions?.apply?.url ??
+      synthesizeCanonicalUrl(source.boardToken, posting);
     if (!canonicalUrl) {
       throw new SmartRecruitersSchemaError(
         new z.ZodError([
@@ -116,7 +131,7 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
             code: "custom",
             path: ["posting", "actions"],
             message:
-              "SmartRecruiters posting has no details or apply action URL for public evidence",
+              "SmartRecruiters posting has no details/apply action URL and no id/uuid to synthesize one from",
           },
         ]),
       );
@@ -142,6 +157,18 @@ function normalize(raw: unknown, _source: SourceConfig): NormalizedJob[] {
       updatedAt: normalizeTimestamp(posting.updatedOn ?? posting.releasedDate),
     };
   });
+}
+
+/** Builds the predictable public posting URL SmartRecruiters serves
+ * every job at, keyed on the company identifier (== this source's
+ * boardToken, same value used in boardUrl()) and the posting's own
+ * id/uuid. Returns undefined only if the posting has neither an id
+ * nor a uuid to build from -- confirmed live 2026-08-18 that this
+ * pattern resolves (HTTP 200) for a real posting on a real board. */
+function synthesizeCanonicalUrl(boardToken: string, posting: SmartRecruitersPosting): string | undefined {
+  const postingId = posting.id ?? posting.uuid;
+  if (!postingId) return undefined;
+  return `https://jobs.smartrecruiters.com/${encodeURIComponent(boardToken)}/${encodeURIComponent(postingId)}`;
 }
 
 function formatLocation(location: SmartRecruitersPosting["location"]): string | undefined {

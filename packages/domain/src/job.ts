@@ -23,9 +23,9 @@ export const normalizedJobSchema = z.object({
    * Optional because not every provider's API exposes structured
    * geography -- some (Ashby, Greenhouse, Lever, Personio) only ever
    * supply a free-text location string, so their adapters' normalize()
-   * leave these undefined; others (Breezy, Recruitee, SmartRecruiters,
-   * Workable) already receive real structured fields in their raw API
-   * responses and map them here. Feeds getCompanyRoleActivityStats's
+   * leave these undefined; others (Recruitee, SmartRecruiters, Workable)
+   * already receive real structured fields in their raw API responses
+   * and map them here. Feeds getCompanyRoleActivityStats's
    * distinctLocationCount (packages/db/src/company-role-stats-repo.ts),
    * which is what multi_location's trigger (H.4) actually checks --
    * before these fields existed, that count silently collapsed to 0 for

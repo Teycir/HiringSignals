@@ -55,10 +55,7 @@ export type PersonioPosition = z.infer<typeof personioPositionSchema>;
 /**
  * A custom Personio career-site host (spec §11.1's SSRF allow-list
  * requirement) must be a bare hostname -- no scheme, userinfo, port,
- * path, query, or fragment. Validated the same way breezy.ts's
- * isValidCustomHost does (see that file's own comment for the full
- * reasoning) -- both adapters share this "dotted boardToken = literal
- * custom host" convention, so both need the same guard.
+ * path, query, or fragment.
  */
 function isValidCustomHost(value: string): boolean {
   try {
@@ -66,8 +63,7 @@ function isValidCustomHost(value: string): boolean {
     // hostname (port-free), not host: an explicit non-default port (e.g.
     // "169.254.169.254:80", the cloud-metadata IP) survives in `host`
     // and would pass a `host === value` check while still carrying
-    // attacker-supplied port routing. See breezy.ts's isValidCustomHost
-    // for the full reasoning -- both adapters share this guard.
+    // attacker-supplied port routing.
     return (
       url.hostname === value && url.port === "" && url.pathname === "/" && !url.search && !url.username
     );
@@ -190,11 +186,11 @@ export class PersonioSchemaError extends Error {
 
 /**
  * Thrown by resolveHost when a dotted boardToken isn't a valid bare
- * hostname (spec §11.1 SSRF allow-list). Mirrors
- * BreezyInvalidBoardTokenError -- distinct class so ingest-consumer.ts's
- * generic "*InvalidBoardTokenError" name-suffix catch (same handling as
- * UnsupportedProviderError/PersonioSchemaError) picks it up with no
- * extra wiring; a malformed boardToken won't fix itself on retry.
+ * hostname (spec §11.1 SSRF allow-list). Distinct class so
+ * ingest-consumer.ts's generic "*InvalidBoardTokenError" name-suffix
+ * catch (same handling as UnsupportedProviderError/PersonioSchemaError)
+ * picks it up with no extra wiring; a malformed boardToken won't fix
+ * itself on retry.
  */
 export class PersonioInvalidBoardTokenError extends Error {
   constructor(public readonly boardToken: string) {

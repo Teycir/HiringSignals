@@ -1,7 +1,7 @@
 # Hiring Signals Intelligence
 
 ## Project Summary
-Hiring Signals Intelligence is a CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as scored, filterable signals as soon as they appear publicly across 8 ATS providers via official documented APIs (no scraping). Signals go beyond raw job listings to detect what is actually happening: new roles, reopened roles, hiring bursts, role acceleration, multi-location expansion, persistent demand. Designed for job seekers who want to see openings before the crowd, analysts/investors tracking hiring velocity, and AI agents acting on a person's behalf.
+Hiring Signals Intelligence is a CLI-first tool, built for AI agents to query on a person's behalf, that surfaces genuine, matching IT job postings as scored, filterable signals as soon as they appear publicly across 7 ATS providers via official documented APIs (no scraping). Signals go beyond raw job listings to detect what is actually happening: new roles, reopened roles, hiring bursts, role acceleration, multi-location expansion, persistent demand. Designed for job seekers who want to see openings before the crowd, analysts/investors tracking hiring velocity, and AI agents acting on a person's behalf.
 
 ## Tech Stack
 - **Interface**: Two front doors over the same `apps/api` — `apps/cli` (complete, landed 2026-08-07), a thin JSON-by-default CLI client (`--format table` for interactive human use, added 2026-08-10, no interactive prompts), primary interface for AI agents; and `apps/web`, a Next.js 16 dashboard, deleted 2026-08-07 in the original CLI-first decision, then **restored 2026-08-16** (commit `1bc7a97`) once it was clear the dashboard added real value for human users browsing rather than querying. Both stayed live and current through the 2026-08-17 S/T/U/V/W hardening passes.
@@ -62,10 +62,15 @@ packages/domain/ Zod schemas, taxonomies (10 IT role categories), classification
                   query-serialization logic, extracted from apps/cli's and apps/web's
                   previously independent, drifted API clients. Both apps' param types
                   now derive from the same Zod schemas the live routes validate against.
-packages/adapters/ AtsAdapter interface; 8 P0 providers implemented (coverage closed at 8,
-                  decided with the user 2026-08-04): Greenhouse, Lever, Ashby,
-                  SmartRecruiters, Workable, Recruitee, Personio, Breezy.
-                  Breezy/Personio custom-host validation fixed (port-injection bug,
+packages/adapters/ AtsAdapter interface; 7 providers implemented: Greenhouse,
+                  Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio.
+                  One prior adapter removed 2026-08-18 (its one live source's
+                  board went dead). SmartRecruiters considered for removal the
+                  same day but kept — its one source's failure was a fixable
+                  adapter bug (missing canonicalUrl in the live API response),
+                  since fixed by synthesizing the URL from posting id +
+                  boardToken. See hiring-signals-spec.md §4.1.
+                  Custom-host validation fixed (port-injection bug,
                   hostname-only not host-with-port).
 packages/db/     D1 client + repository functions.
                   Read paths: signals/companies/facets/export/signals-for-feed,
@@ -99,14 +104,14 @@ infrastructure/  D1 migrations 0001-0010 (0010 adds signal score-component colum
 ```
 
 ## Current Status (2026-08-17)
-**All originally scoped milestones (Phase 0 -> R, G.1-G.5) plus five later code-review/bug-hunt passes (S, T, U, V, W) are shipped and verified. 8 active ATS adapters live. 10 D1 migrations (0001-0010) applied to remote. `apps/web` (the dashboard UI) was deleted 2026-08-07, then RESTORED 2026-08-16 (commit `1bc7a97`) and is live again alongside `apps/cli`, which remains the primary interface for AI agents. Both apps' API clients were consolidated onto a shared `packages/domain/src/api-client-core.ts` the same day (2026-08-17). One genuinely open item remains — see "Not yet done" below.**
+**All originally scoped milestones (Phase 0 -> R, G.1-G.5) plus five later code-review/bug-hunt passes (S, T, U, V, W) are shipped and verified. 7 active ATS adapters live (one prior adapter removed 2026-08-18 — its one source's board went dead; SmartRecruiters kept and had a real adapter bug fixed instead). 10 D1 migrations (0001-0010) applied to remote. `apps/web` (the dashboard UI) was deleted 2026-08-07, then RESTORED 2026-08-16 (commit `1bc7a97`) and is live again alongside `apps/cli`, which remains the primary interface for AI agents. Both apps' API clients were consolidated onto a shared `packages/domain/src/api-client-core.ts` the same day (2026-08-17). One genuinely open item remains — see "Not yet done" below.**
 
 Full task-by-task detail lives in `ROADMAP.md`; this file is a summary kept in sync with it.
 
 **Done (some since removed — see note):**
 - pnpm workspace, strict TypeScript base config (noUncheckedIndexedAccess on), Prettier, shared ESLint 10 flat base with --max-warnings 0
 - Hono Worker with full middleware chain, real cron scheduler (15-min source ticks), real queue consumer (multi-chunk continuation for 700+ job boards, 40 jobs/chunk, in-flight stacking guard via hasRecentRunningRun(45min window)), daily reconciliation cron (stale signal score recompute + company hiring velocity recompute for touched companies)
-- 8 P0 ATS adapters implemented with fixture-driven tests, location-mode inference, custom-host validation (port-injection bug fixed 2026-08-10)
+- 7 ATS provider adapters implemented with fixture-driven tests, location-mode inference, custom-host validation (port-injection bug fixed 2026-08-10). One prior adapter removed 2026-08-18 (dead board); SmartRecruiters kept, had a real canonicalUrl-synthesis bug fixed the same day.
 - Full D1 schema with indexes: migrations 0001-0010 (initial, signal evidence, raw payload key rename, job observations idempotency, signals dedup, one-active-signal-per-triple unique, trends role/first-seen index, company velocity score columns, jobs requisition ID column, signal score-component columns)
 - Parameterized D1 client wrapper (no string concatenation, .bind() for all params) with read repos (signals/companies/facets/export/trends/timeline/company-stats) and write repos (sources/jobs/signals/companies)
 - Full ingestion pipeline: fetch → validate → normalize → upsert → observe → lifecycle → classify → score → signal, idempotent per (sourceId, runId), provider/schema errors skip retry immediately, only network failures (429/5xx) get 5-attempt capped exponential backoff with correct attempt incrementing; D1 batch() used for upsert+lifecycle pair to cut per-job subrequest cost
@@ -184,7 +189,7 @@ pnpm --filter @hiring-signals/api dev     # wrangler dev (Worker API)
 pnpm -r typecheck                           # all 7 workspace projects, strict TS, noUncheckedIndexedAccess on
 pnpm -r lint                                # ESLint across workspaces, --max-warnings 0, 0/0 expected
 pnpm --filter @hiring-signals/domain test   # fast pure-logic suite (~93 tests, ~1s)
-pnpm --filter @hiring-signals/adapters test # fast fixture suite (~114 tests, ~3s)
+pnpm --filter @hiring-signals/adapters test # fast fixture suite (~111 tests, ~1s)
 # packages/db and apps/api suites require live CF_TOKEN against the shared
 # live Cloudflare resources — see AGENTS.md zero-mocks policy.
 # Scope to one file at a time: cd packages/db && npx vitest run test/signals-export-repo.test.ts

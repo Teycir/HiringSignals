@@ -1,0 +1,27 @@
+{
+  "content": [
+    {
+      "id": "744000143115219",
+      "uuid": "f14d00ce-bfd2-4ebf-8a01-c8e0fa636a49",
+      "name": "Senior Information Security Engineer",
+      "refNumber": "REF2010Z",
+      "location": { "city": "Poland", "region": "REMOTE", "country": "pl", "remote": true },
+      "department": { "label": "Security" },
+      "typeOfEmployment": { "label": "Full-time" },
+      "releasedDate": "2026-08-12T14:04:56.128Z",
+      "actions": {}
+    },
+    {
+      "uuid": "a1b2c3d4-e5f6-4789-a012-3456789abcde",
+      "name": "Senior AI Engineer",
+      "location": { "city": "Remote", "country": "us", "remote": true },
+      "department": { "label": "Engineering" },
+      "typeOfEmployment": { "label": "Full-time" },
+      "releasedDate": "2026-08-01T09:00:00.000Z",
+      "actions": {}
+    }
+  ],
+  "totalFound": 2,
+  "limit": 100,
+  "offset": 0
+}

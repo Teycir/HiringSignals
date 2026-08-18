@@ -6,9 +6,9 @@
 -- Found during G.3's 2026-08-08 ingestion-metrics audit: spec §7's
 -- third likely-duplicate field, requisitionId, is already parsed from
 -- adapter payloads into NormalizedJob (packages/domain/src/job.ts) by
--- 3 of 8 adapters (greenhouse.ts, breezy.ts, workable.ts) but was never
--- persisted -- no jobs column existed, so upsertJob silently dropped it.
--- The other 5 adapters (ashby, lever, personio, recruitee,
+-- greenhouse.ts and workable.ts but was never persisted -- no jobs
+-- column existed, so upsertJob silently dropped it.
+-- The other active adapters (ashby, lever, personio, recruitee,
 -- smartrecruiters) leave it undefined; their providers don't expose an
 -- equivalent field in the payloads this codebase currently maps.
 --

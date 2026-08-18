@@ -53,14 +53,16 @@ const ATS_PROVIDERS = [
   "workable",
   "recruitee",
   "personio",
-  "teamtailor",
-  "jazzhr",
-  "breezy",
-  "bamboohr",
 ]; // must stay in sync with packages/domain/src/providers.ts's ATS_PROVIDERS
 // (same manually-synced-copy caveat as add-source.mjs's own copy of this
 // list -- these scripts run outside any bundler that could import
-// packages/domain directly).
+// packages/domain directly). teamtailor/jazzhr/bamboohr were never real
+// ATS_PROVIDERS members to begin with -- this list had silently
+// drifted ahead of the domain enum by including 3 providers with no
+// adapter at all, which validateRowShape below would have accepted and
+// then failed at INSERT/ingest time instead of at CSV-validation time.
+// smartrecruiters was audited 2026-08-18 for possible removal but kept
+// -- its API is live, the original failure was a fixable adapter bug.
 
 const REQUIRED_COLUMNS = [
   "company_slug",

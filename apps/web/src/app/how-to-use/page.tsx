@@ -17,7 +17,7 @@ export const metadata: Metadata = {
 const STEPS = [
   {
     title: "Signal feed & filters",
-    body: 'The feed at /signals shows scored hiring signals. The filter rail narrows by role category (10 IT categories, e.g. software_engineering, ai_machine_learning), work mode (remote/hybrid/onsite), source provider (8 ATS: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy), time window, minimum score, and signal type. Filters stack and persist per view.',
+    body: 'The feed at /signals shows scored hiring signals. The filter rail narrows by role category (10 IT categories, e.g. software_engineering, ai_machine_learning), work mode (remote/hybrid/onsite), source provider (7 ATS: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio), time window, minimum score, and signal type. Filters stack and persist per view.',
   },
   {
     title: "The six signal types",
