@@ -538,6 +538,21 @@ export async function handleIngestMessage(
       return;
     }
 
+    // Archive raw payload (KV, TTL'd) BEFORE schema validation, not after.
+    // Originally this call sat after adapter.normalize() succeeded, which
+    // meant the one case you'd most want the raw evidence for -- a
+    // schema_mismatch failure -- never got a raw_payload_key at all
+    // (JSON.stringify(undefined) on a genuinely unparseable body is still
+    // archived as the literal string "undefined", itself a useful signal
+    // that response.json() threw rather than that the parsed shape was
+    // wrong). Found 2026-08-18 investigating an OpenAI/ashby
+    // schema_mismatch disable with http_status=200 and no way to inspect
+    // what the board actually returned. Moved here, before
+    // adapter.normalize()'s try/catch, so every code path that reaches
+    // this point -- success or schema failure alike -- archives first.
+    const payloadKey = rawPayloadKey(source.id, runId);
+    await storeRawPayload(env.RAW_PAYLOADS, source.id, runId, JSON.stringify(fetchResult.rawBody));
+
     let normalizedJobs;
     try {
       normalizedJobs = adapter.normalize(fetchResult.rawBody, {
@@ -551,7 +566,9 @@ export async function handleIngestMessage(
       if (err instanceof GreenhouseSchemaError || isAdapterSchemaError(err)) {
         // Schema mismatch: store safe diagnostic, mark adapter warning
         // (spec §10.4 row 4) -- caught specifically so it never falls
-        // through to a generic failure path.
+        // through to a generic failure path. payloadKey now threaded
+        // through so the failed run's row still points at the archived
+        // raw response (see this function's payloadKey comment above).
         await finalizeConfigError(
           client,
           source.id,
@@ -561,18 +578,13 @@ export async function handleIngestMessage(
           `Schema mismatch: ${errorMessage(err)}`,
           fetchResult.httpStatus,
           "schema_mismatch",
+          payloadKey,
         );
         message.ack();
         return;
       }
       throw err;
     }
-
-    // Archive raw payload (KV, TTL'd) before persisting derived state, so
-    // even a mid-pipeline failure below leaves the raw response
-    // recoverable for diagnosis.
-    const payloadKey = rawPayloadKey(source.id, runId);
-    await storeRawPayload(env.RAW_PAYLOADS, source.id, runId, JSON.stringify(fetchResult.rawBody));
 
     const observedAt = new Date().toISOString();
     // Full-board list, always -- getJobsMissingFromRun (processMissingJobs)
@@ -1793,6 +1805,10 @@ async function finalizeConfigError(
   message: string,
   httpStatus?: number,
   errorCode = "config_error",
+  // Named archivedPayloadKey, not rawPayloadKey, to avoid shadowing the
+  // imported rawPayloadKey() key-builder function from
+  // ../services/raw-payload-store within this function's own scope.
+  archivedPayloadKey?: string,
 ): Promise<void> {
   await recordSourceRunComplete(client, sourceRunId, {
     completedAt: new Date().toISOString(),
@@ -1800,6 +1816,7 @@ async function finalizeConfigError(
     httpStatus,
     errorCode,
     errorMessageSafe: message,
+    rawPayloadKey: archivedPayloadKey,
     durationMs: Date.now() - startTime,
   });
   // "Mark source degraded" (spec §10.4): disable further automatic
