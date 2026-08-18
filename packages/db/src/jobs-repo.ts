@@ -2,6 +2,7 @@ import {
   jobStatusSchema,
   locationModeSchema,
   roleCategorySchema,
+  type LocationMode,
   type NormalizedJob,
   type RoleCategory,
 } from "@hiring-signals/domain";
@@ -753,13 +754,13 @@ export class InvalidJobsCursorError extends Error {
 
 function encodeJobsCursor(
   sort: ListJobsForCompanyParams["sort"],
-  row: Pick<JobRow, "posted_at" | "first_seen_at" | "title_raw" | "id">,
+  row: Pick<JobRow, "posted_at" | "first_seen_at" | "title_normalized" | "id">,
 ): string {
   const payload: JobsDecodedCursor = {
     sort,
     postedAt: row.posted_at,
     firstSeenAt: row.first_seen_at,
-    title: row.title_raw,
+    title: row.title_normalized,
     id: row.id,
   };
   return encodeJsonToBase64Url(payload);
@@ -786,7 +787,7 @@ function decodeJobsCursor(
 export interface ListJobsForCompanyParams {
   companyId: string;
   roles?: RoleCategory[];
-  locationMode?: string;
+  locationMode?: LocationMode;
   status: "active" | "possibly_closed" | "closed";
   sort: "newest" | "oldest" | "title_asc";
   cursor?: string;
@@ -926,6 +927,18 @@ export async function getJobById(client: D1Client, jobId: string): Promise<JobDe
   } catch (err) {
     if (err instanceof CorruptJobRowError) {
       console.error("corrupt_job_detail_fallback", { jobId: row.id, reason: err.message });
+      // Unavoidable type holes by construction: this branch is only
+      // reachable when toJobListItem rejected row.location_mode /
+      // row.role_primary / row.status as outside the domain enum,
+      // meaning a strict parse would have to throw here too. The
+      // whole purpose of this fallback is to return SOMETHING for the
+      // detail page instead of 500ing (contrast listJobsForCompany's
+      // list view, which can just skip the bad row and keep the rest
+      // of the page). Passing raw strings through is the stated
+      // contract (see the "degrades gracefully for a corrupt status"
+      // test) -- the `as JobListItem[...]` casts are what let us keep
+      // that contract without a second parallel type that relaxes the
+      // three enum fields to string for this one call site.
       listItem = {
         id: row.id,
         companyId: row.company_id,

@@ -13,7 +13,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { RoleCategory } from "@hiring-signals/domain";
-import { fetchCompanyRoleActivity, isAbortError, ApiClientError, type CompanyRoleActivityBucket } from "@/lib/api-client";
+import { fetchCompanyRoleActivity, isAbortError, type CompanyRoleActivityBucket } from "@/lib/api-client";
 import { DataLabel } from "./ui/data-label";
 
 interface TrendBlockProps {

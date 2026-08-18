@@ -873,6 +873,88 @@ describe("listJobsForCompany", () => {
     }
   });
 
+  it("pages cursor for sort=oldest (opposite inequality direction, same cursor encode/decode)", async () => {
+    const company = await seedCompany("ljfc-cursor-oldest", "List Jobs Cursor Oldest Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const older = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-old",
+        postedAt: "2026-07-10T00:00:00.000Z",
+      });
+      const newer = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-new",
+        postedAt: "2026-07-20T00:00:00.000Z",
+      });
+
+      const page1 = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "oldest",
+        limit: 1,
+      });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.items[0]?.id).toBe(older.id);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "oldest",
+        limit: 1,
+        cursor: page1.nextCursor ?? undefined,
+      });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0]?.id).toBe(newer.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
+  it("pages cursor for sort=title_asc (cursor stores title_normalized, not title_raw, to match the ORDER BY key)", async () => {
+    const company = await seedCompany("ljfc-cursor-title", "List Jobs Cursor Title Co");
+    try {
+      const source = await seedSource(company.id, company.slug);
+      const alpha = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-z",
+        title: "Alpha Senior Engineer",
+      });
+      const beta = await seedJobRow({
+        sourceId: source.id,
+        companyId: company.id,
+        externalJobId: "job-a",
+        title: "Zebra Engineer",
+      });
+
+      const page1 = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "title_asc",
+        limit: 1,
+      });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.items[0]?.id).toBe(alpha.id);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await listJobsForCompany(client, {
+        companyId: company.id,
+        status: "active",
+        sort: "title_asc",
+        limit: 1,
+        cursor: page1.nextCursor ?? undefined,
+      });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0]?.id).toBe(beta.id);
+    } finally {
+      await cleanupCompany(company.id);
+    }
+  });
+
   it("throws InvalidJobsCursorError when a cursor's embedded sort mode doesn't match the request", async () => {
     const cursorForOldest = Buffer.from(
       JSON.stringify({

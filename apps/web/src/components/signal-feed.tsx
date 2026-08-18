@@ -100,12 +100,10 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // Reset source status whenever the filter key changes so a stale
-    // note from a previous empty state doesn't linger after filters change.
-    setSourceStatus(null);
-
     fetchSignals(toApiParams(filters), { signal: controller.signal })
       .then((res) => {
+        // Reset source status when we successfully fetch with new filters
+        setSourceStatus(null);
         setState({
           status: "ready",
           items: res.data,
@@ -116,6 +114,8 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
       })
       .catch((err) => {
         if (isAbortError(err)) return;
+        // Reset source status on error as well
+        setSourceStatus(null);
         setState({ status: "error", error: err instanceof Error ? err : new Error(String(err)) });
         setResolvedForKey(filterKey);
       });

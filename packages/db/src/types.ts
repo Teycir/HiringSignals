@@ -203,10 +203,12 @@ export interface JobDetail extends JobListItem {
   classificationVersion: string | null;
   sourceUpdatedAt: string | null;
   missingRunCount: number;
-  /** How many source_runs have observed this job present, oldest-first
-   * absent, per job_observations -- a lightweight presence history so a
-   * caller can see "how long has this actually been live" without
-   * walking signal_evidence (which only exists for jobs that triggered
-   * a signal). */
+  /** Total number of source-run observations for this job (present and
+   * absent alike) from job_observations — a lightweight presence-history
+   * proxy so a caller can see how many runs have checked in on this
+   * posting without walking signal_evidence (which only exists for jobs
+   * that triggered a signal). Counted via COUNT(*) with no is_present
+   * filter — a job marked absent during a missing-run lifecycle pass
+   * still writes an is_present=0 row and increments this total. */
   observationCount: number;
 }
