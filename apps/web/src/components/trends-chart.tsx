@@ -79,7 +79,7 @@ interface TrendsChartProps {
    * SortOption so the chart's value axis always matches what the table
    * below it is actually sorted by, rather than always showing
    * acceleration regardless of the user's chosen sort. */
-  metric: "acceleration" | "velocity" | "volume";
+  metric: "acceleration" | "velocity" | "volume" | null;
 }
 
 const CHART_LIMIT = 8;
@@ -99,7 +99,7 @@ interface ChartRow {
 const TIE_BREAK_WEIGHT = 0.15;
 
 const METRIC_CONFIG: Record<
-  TrendsChartProps["metric"],
+  "acceleration" | "velocity" | "volume",
   { label: string; getValue: (t: HiringTrendCompany) => number; format: (v: number) => string }
 > = {
   acceleration: {
@@ -159,9 +159,9 @@ function ChartTooltip({
 }
 
 export function TrendsChart({ trends, metric }: TrendsChartProps) {
-  if (trends.length === 0) return null;
+  if (trends.length === 0 || metric === null) return null;
 
-  const config = METRIC_CONFIG[metric];
+  const config = METRIC_CONFIG[metric!];
   const visible = trends.slice(0, CHART_LIMIT);
 
   // Both maxes are over the VISIBLE rows only, not some global/dataset

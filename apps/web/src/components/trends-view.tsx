@@ -43,13 +43,13 @@ const SORT_OPTIONS: Array<{ value: SortOption; label: string }> = [
 // promotion, see trends-chart.tsx's own header comment) so the bars
 // above TrendsTable always represent whatever metric the table below
 // is actually ranked by. "newest_signal" has no numeric ranking value
-// to chart (it orders by timestamp, not magnitude) -- falls back to
-// acceleration, the same default TrendsChart/the route itself already
-// use, rather than rendering a chart whose axis wouldn't match the
-// sort the user actually picked.
-function sortToChartMetric(sort: SortOption): "acceleration" | "velocity" | "volume" {
+// to chart (it orders by timestamp, not magnitude) -- the chart is
+// hidden entirely when this sort is active rather than rendering a
+// misleading acceleration fallback.
+function sortToChartMetric(sort: SortOption): "acceleration" | "velocity" | "volume" | null {
   if (sort === "velocity_desc") return "velocity";
   if (sort === "volume_desc") return "volume";
+  if (sort === "newest_signal") return null;
   return "acceleration";
 }
 
@@ -276,7 +276,9 @@ export function TrendsView() {
 
         {effectiveState.status === "ready" && (
           <>
-            <TrendsChart trends={effectiveState.data} metric={sortToChartMetric(sort)} />
+            {sortToChartMetric(sort) && (
+              <TrendsChart trends={effectiveState.data} metric={sortToChartMetric(sort)!} />
+            )}
             <TrendsTable trends={effectiveState.data} />
             <p className="font-display text-xs text-soft-ink">{effectiveState.disclaimer}</p>
           </>
