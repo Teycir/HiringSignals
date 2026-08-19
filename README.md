@@ -17,6 +17,8 @@ _"What is actually happening at this company, right now."_
 
 > **AI Agent Discovery**: This project includes optimized metadata for AI agents. See [`llm.txt`](llm.txt) for machine-readable project summary and [`project-metadata.json`](project-metadata.json) for structured metadata.
 
+> **Last updated**: 2026-08-19 — Signal scoring v3, trend charts, and contributor attribution cleanup.
+
 ---
 
 ## What it does
