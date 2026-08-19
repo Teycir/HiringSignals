@@ -66,6 +66,22 @@ export async function apiRequest<T>(
   try {
     res = await fetchImpl(url, init);
   } catch (err) {
+    // A cancelled fetch (AbortController.abort()) rejects with a
+    // DOMException/AbortError -- re-thrown as-is, not wrapped into an
+    // ApiClientError. Callers that race a request against changing
+    // filter state (apps/web's signal-feed.tsx/trends-view.tsx) rely on
+    // isAbortError() (api-client.ts) to distinguish "the user changed
+    // filters again" from "the request genuinely failed," which checks
+    // `err instanceof DOMException` -- wrapping strips that type
+    // identity, so the abort fell through to the generic error path and
+    // its own message ("signal is aborted without reason", the browser's
+    // literal default AbortError text) was shown to the user as if it
+    // were a real API failure. This file has no DOM lib (see header
+    // comment) so detect structurally rather than `instanceof
+    // DOMException`, which works identically across DOM/Node/Workers.
+    if (err instanceof Error && err.name === "AbortError") {
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new ApiClientError("NETWORK_ERROR", message, "req_none");
   }

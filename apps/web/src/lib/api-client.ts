@@ -61,7 +61,16 @@ export { ApiClientError };
  * so they don't show a real error state for an intentional cancellation.
  */
 export function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError";
+  // Checks err.name rather than `instanceof DOMException` specifically:
+  // apiRequest (api-client-core.ts) re-throws a cancelled fetch's
+  // rejection as-is (not wrapped), and that rejection's real type is
+  // whatever the runtime's fetch implementation throws for an abort --
+  // a DOMException in every browser, but not guaranteed to stay that
+  // exact constructor across every environment this code could run in.
+  // err.name === "AbortError" is the actual cross-runtime contract the
+  // Fetch spec defines, so checking that directly is more robust than
+  // pinning to one constructor.
+  return err instanceof Error && err.name === "AbortError";
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
