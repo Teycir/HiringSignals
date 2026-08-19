@@ -28,7 +28,11 @@ const FAQS = [
   },
   {
     q: "How is the priority score computed?",
-    a: "Each signal gets a 0-100 score from freshness, posting volume, acceleration, location breadth, and classification confidence. Scores decay over time if no new evidence arrives, so a high score means something is actively happening right now. The score-breakdown panel on each signal shows how the score is composed.",
+    a: "Each signal gets a 0-100 score from freshness, posting volume, acceleration, location breadth, and classification confidence (formula v3). Scores decay over time if no new evidence arrives, so a high score means something is actively happening right now. Acceleration gets special handling on young datasets: for a company+role pair with no prior 56-day baseline, it is scored on an absolute recent-posting scale instead of a relative-rate comparison — the old formula saturated every such case to maximum, regardless of whether 2 or 200 roles were posted. The score-breakdown panel on each signal shows how the score is composed.",
+  },
+  {
+    q: "How are scores distributed across the feed?",
+    a: "The API exposes score-distribution statistics at GET /api/v1/signals/stats: count, min/max/mean/median/p25/p75 of signal scores, plus per-signal-type and per-role-category breakdown counts, over the same filters as the feed. It is an honest way to see how many signals sit where on the 0-100 scale under your current view.",
   },
   {
     q: "What is hiring velocity?",

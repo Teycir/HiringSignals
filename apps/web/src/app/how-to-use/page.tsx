@@ -25,11 +25,15 @@ const STEPS = [
   },
   {
     title: "Priority score",
-    body: "Every signal carries a 0-100 priority score computed from freshness, posting volume, acceleration, location breadth, and classification confidence. Scores decay when no new evidence arrives — a high score means something is actively happening right now. Scores of 80+ get the accent treatment in the UI.",
+    body: "Every signal carries a 0-100 priority score computed from freshness, posting volume, acceleration, location breadth, and classification confidence (formula v3). Scores decay when no new evidence arrives — a high score means something is actively happening right now. On young datasets, acceleration for a company+role pair with no prior 56-day baseline is scored on an absolute recent-posting scale, not a relative-rate comparison, so early companies aren't all pinned at maximum. Scores of 80+ get the accent treatment in the UI.",
   },
   {
     title: "Score breakdown",
     body: 'Open any signal to see how its score is composed — the score-breakdown panel breaks the 0-100 into its contributing factors with evidence, so you can judge for yourself whether the signal is real.',
+  },
+  {
+    title: "Score distribution",
+    body: "The signals API exposes score-distribution statistics at GET /api/v1/signals/stats: count, min/max/mean/median/p25/p75 of scores plus per-signal-type and per-role-category breakdowns, over the same filters as the feed — useful for gauging how unusually high a particular score really is.",
   },
   {
     title: "Company pages",
