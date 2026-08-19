@@ -272,7 +272,7 @@ export function TrendsView() {
         {effectiveState.status === "ready" && (
           <>
             <TrendsChart trends={effectiveState.data} metric={sortToChartMetric(sort)} />
-            <TrendsTable trends={effectiveState.data} />
+            <TrendsTable trends={effectiveState.data} sort={sort} />
             <p className="font-display text-xs text-soft-ink">{effectiveState.disclaimer}</p>
           </>
         )}

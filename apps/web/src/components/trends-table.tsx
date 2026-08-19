@@ -16,9 +16,11 @@ import Link from "next/link";
 import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
 import { SIGNAL_TYPE_LABELS } from "@/lib/labels";
 import { DataLabel } from "./ui/data-label";
+import { TIE_BREAK_WEIGHT } from "./trends-chart";
 
 interface TrendsTableProps {
   trends: HiringTrendCompany[];
+  sort: "acceleration_desc" | "velocity_desc" | "volume_desc";
 }
 
 const EM_DASH = "\u2014";
@@ -37,8 +39,34 @@ function accelerationLabel(acceleration: number): string {
   return acceleration.toFixed(4);
 }
 
-export function TrendsTable({ trends }: TrendsTableProps) {
-  if (trends.length === 0) {
+// Apply same tie-breaker sorting as chart for consistency
+function sortTrends(trends: HiringTrendCompany[], sort: TrendsTableProps["sort"]): HiringTrendCompany[] {
+  const sorted = [...trends];
+  const maxJobs = Math.max(...trends.map((t) => t.newJobsCount), 0);
+
+  if (sort === "acceleration_desc") {
+    sorted.sort((a, b) => {
+      const aValue = a.acceleration + (maxJobs > 0 ? a.newJobsCount / maxJobs * TIE_BREAK_WEIGHT : 0);
+      const bValue = b.acceleration + (maxJobs > 0 ? b.newJobsCount / maxJobs * TIE_BREAK_WEIGHT : 0);
+      return bValue - aValue;
+    });
+  } else if (sort === "velocity_desc") {
+    sorted.sort((a, b) => {
+      if (a.hiringVelocityScore === null && b.hiringVelocityScore === null) return 0;
+      if (a.hiringVelocityScore === null) return 1;
+      if (b.hiringVelocityScore === null) return -1;
+      return b.hiringVelocityScore - a.hiringVelocityScore;
+    });
+  } else {
+    sorted.sort((a, b) => b.newJobsCount - a.newJobsCount);
+  }
+  return sorted;
+}
+
+export function TrendsTable({ trends, sort }: TrendsTableProps) {
+  const sortedTrends = sortTrends(trends, sort);
+  
+  if (sortedTrends.length === 0) {
     return (
       <div className="border-2 border-ink p-6 flex flex-col items-center gap-2 text-center">
         <p className="font-display text-sm font-bold uppercase">No trending companies found.</p>
@@ -79,7 +107,7 @@ export function TrendsTable({ trends }: TrendsTableProps) {
           </tr>
         </thead>
         <tbody>
-          {trends.map((trend) => (
+          {sortedTrends.map((trend) => (
             <tr key={trend.company.slug} className="border-b border-ink last:border-b-0 align-top">
               <td className="py-2 px-4">
                 <span className="font-display text-sm font-bold">{trend.company.displayName}</span>

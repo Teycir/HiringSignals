@@ -96,7 +96,7 @@ interface ChartRow {
   barValue: number;
 }
 
-const TIE_BREAK_WEIGHT = 0.15;
+export const TIE_BREAK_WEIGHT = 0.15;
 
 const METRIC_CONFIG: Record<
   TrendsChartProps["metric"],
@@ -189,7 +189,7 @@ export function TrendsChart({ trends, metric }: TrendsChartProps) {
       value,
       barValue,
     };
-  });
+  }).sort((a, b) => b.barValue - a.barValue);
 
   // Genuine ties only -- a value shared by 2+ visible rows -- not "any
   // row whose bar got nudged at all" (nearly every row with newJobsCount
