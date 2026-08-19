@@ -28,10 +28,7 @@ function formatSignalAt(iso: string | null): string {
   return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-function topLocationLabel(topLocations: HiringTrendCompany["topLocations"]): string {
-  if (topLocations.length === 0) return EM_DASH;
-  return topLocations[0].countryCode ?? EM_DASH;
-}
+
 
 // acceleration is a 0-1 normalized value (computeAcceleration, shared
 // with signal-score.ts) -- shown with 4 decimal places for precision
@@ -74,9 +71,6 @@ export function TrendsTable({ trends }: TrendsTableProps) {
               Velocity
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
-              Top location
-            </th>
-            <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
               Latest signal
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
@@ -100,9 +94,6 @@ export function TrendsTable({ trends }: TrendsTableProps) {
               </td>
               <td className="py-2 px-4 font-display text-sm">
                 {trend.hiringVelocityScore ?? EM_DASH}
-              </td>
-              <td className="py-2 px-4 font-display text-sm text-soft-ink">
-                {topLocationLabel(trend.topLocations)}
               </td>
               <td className="py-2 px-4 font-display text-sm text-soft-ink">
                 {trend.latestSignalType

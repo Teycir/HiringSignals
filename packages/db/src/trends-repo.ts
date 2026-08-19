@@ -52,7 +52,7 @@ export interface GetHiringTrendsParams {
   countryFilter?: string;
   since: string;
   limit: number;
-  sort: "acceleration_desc" | "volume_desc" | "newest_signal" | "velocity_desc";
+  sort: "acceleration_desc" | "volume_desc" | "velocity_desc";
 }
 
 /**
@@ -141,12 +141,8 @@ export async function getHiringTrends(
   // early. Fix: rank+slice on `rows` directly first (acceleration/
   // newJobsCount/hiringVelocityScore are all already present on `rows`,
   // no enrichment needed), THEN only fan queries 2/3 out over that
-  // `limit`-sized slice -- for every sort except `newest_signal`, which
-  // genuinely can't be decided without querying signals first (a
-  // company's rank under that sort depends on latestSignalAt, which
-  // doesn't exist until query 3 runs), so that one sort keeps the old
-  // full-fan-out behavior rather than faking a pre-signal ordering.
-  const rankedRows = sort === "newest_signal" ? rows : sortRowsBySort(rows, sort).slice(0, limit);
+  // `limit`-sized slice.
+  const rankedRows = sortRowsBySort(rows, sort).slice(0, limit);
   const companyIdsForFanout = rankedRows.map((r) => r.company_id);
 
   const topLocationsByCompany = await getTopLocationsByCompany(client, {
@@ -190,11 +186,9 @@ export async function getHiringTrends(
  * Same ranking `sortTrends` applies, but operating directly on query 1's
  * raw aggregated rows instead of the fully-enriched HiringTrendCompany[]
  * -- lets the caller rank+slice BEFORE paying for the topLocations/
- * latestSignal fan-out queries. Only supports the three sorts whose key
- * is already present on `rows` (acceleration, new_jobs_count,
- * hiring_velocity_score); `newest_signal` is intentionally not handled
- * here (see getHiringTrends's own comment on why) and callers must not
- * pass it.
+ * latestSignal fan-out queries. Supports all three sorts (acceleration,
+ * new_jobs_count, hiring_velocity_score) whose key is already present
+ * on `rows`.
  */
 function sortRowsBySort(rows: TrendRow[], sort: GetHiringTrendsParams["sort"]): TrendRow[] {
   const sorted = [...rows];
@@ -220,20 +214,11 @@ function sortTrends(
   const sorted = [...results];
   if (sort === "volume_desc") {
     sorted.sort((a, b) => b.newJobsCount - a.newJobsCount);
-  } else if (sort === "newest_signal") {
-    // Companies with no signal at all sort last -- null is not "newest."
-    sorted.sort((a, b) => {
-      if (!a.latestSignalAt && !b.latestSignalAt) return 0;
-      if (!a.latestSignalAt) return 1;
-      if (!b.latestSignalAt) return -1;
-      return Date.parse(b.latestSignalAt) - Date.parse(a.latestSignalAt);
-    });
   } else if (sort === "velocity_desc") {
-    // Same null-sorts-last convention as newest_signal above -- a
-    // company whose velocity score hasn't been computed yet (Q.2's
-    // handleVelocityRecompute hasn't run for it) is not "0 velocity,"
-    // it's unknown, so it shouldn't outrank or be conflated with a
-    // genuinely low-velocity company.
+    // Null-sorts-last convention -- a company whose velocity score hasn't
+    // been computed yet (Q.2's handleVelocityRecompute hasn't run for it)
+    // is not "0 velocity," it's unknown, so it shouldn't outrank or be
+    // conflated with a genuinely low-velocity company.
     sorted.sort((a, b) => {
       if (a.hiringVelocityScore === null && b.hiringVelocityScore === null) return 0;
       if (a.hiringVelocityScore === null) return 1;
