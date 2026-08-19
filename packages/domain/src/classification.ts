@@ -17,7 +17,7 @@ import type { RoleCategory } from "./role-taxonomy";
 /** Bump when PHRASE_RULES/ABBREVIATION_RULES/NEGATIVE_TERM_RULES or the
  * scoring weights change, so `classification_version` on stored job rows
  * stays a meaningful audit trail (spec 6.2 step 6). */
-export const CLASSIFICATION_VERSION = "v1";
+export const CLASSIFICATION_VERSION = "v2";
 
 /** Auto-classify only at or above this confidence (spec 6.2, "Only
  * classify automatically when C_role >= 0.80"). Named constant, not
@@ -25,15 +25,18 @@ export const CLASSIFICATION_VERSION = "v1";
  * get in spec 5.4. */
 export const AUTO_CLASSIFY_THRESHOLD = 0.8;
 
-// Confidence weights for C_role = 0.70*C_title + 0.20*C_department + 0.10*C_description (spec 6.2 formula).
+// Confidence weights for C_role = 0.80*C_title + 0.15*C_department + 0.05*C_description (spec 6.2 formula).
 // Each channel that matches contributes its full weight to whichever
 // category it matched (see classifyJob's per-category scoring, L1 fix)
 // -- there's no separate "match confidence" scalar since a match is
 // binary (a channel either hits a category at full weight, or doesn't
 // contribute to it at all).
-const WEIGHT_TITLE = 0.7;
-const WEIGHT_DEPARTMENT = 0.2;
-const WEIGHT_DESCRIPTION = 0.1;
+// Title-only high-precision phrase match achieves WEIGHT_TITLE (0.80),
+// satisfying AUTO_CLASSIFY_THRESHOLD (0.80) so high-precision title matches
+// generate signals even when department is generic or omitted.
+const WEIGHT_TITLE = 0.8;
+const WEIGHT_DEPARTMENT = 0.15;
+const WEIGHT_DESCRIPTION = 0.05;
 
 export interface ClassificationInput {
   title: string;

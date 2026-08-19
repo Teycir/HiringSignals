@@ -5,41 +5,34 @@ describe("classifyJob", () => {
   it("classifies a title-only high-confidence phrase match", () => {
     const result = classifyJob({ title: "Site Reliability Engineer" });
     expect(result.rolePrimary).toBe("cloud_platform_devops_sre");
-    expect(result.confidence).toBeCloseTo(0.7, 5);
-    expect(result.autoClassified).toBe(false); // 0.7 < 0.80 threshold
+    expect(result.confidence).toBeCloseTo(0.8, 5);
+    expect(result.autoClassified).toBe(true); // 0.80 >= 0.80 threshold
   });
 
-  it("title-only match cannot reach auto-classify alone (capped at WEIGHT_TITLE=0.70)", () => {
-    // Title-only confidence is capped at WEIGHT_TITLE (0.70), which is
-    // below AUTO_CLASSIFY_THRESHOLD (0.80) -- title alone (no department
-    // or description provided) can never auto-classify.
+  it("title-only match reaches auto-classify threshold (WEIGHT_TITLE=0.80)", () => {
     const result = classifyJob({ title: "Machine Learning Engineer" });
-    expect(result.confidence).toBeCloseTo(0.7, 5);
-    expect(result.confidence).toBeLessThan(AUTO_CLASSIFY_THRESHOLD);
+    expect(result.confidence).toBeCloseTo(0.8, 5);
+    expect(result.confidence).toBeGreaterThanOrEqual(AUTO_CLASSIFY_THRESHOLD);
+    expect(result.autoClassified).toBe(true);
   });
 
-  it("title + department match alone (no description) still falls short of 0.80", () => {
+  it("department-only match alone (no title) still falls short of 0.80", () => {
     const result = classifyJob({
       title: "some ambiguous role name with no direct phrase match",
       department: "Site Reliability Engineer",
     });
-    // Title has no match (0), department matches SRE phrase (1.0 * 0.20 = 0.20).
-    expect(result.confidence).toBeCloseTo(0.2, 5);
+    // Title has no match (0), department matches SRE phrase (1.0 * 0.15 = 0.15).
+    expect(result.confidence).toBeCloseTo(0.15, 5);
     expect(result.confidence).toBeLessThan(AUTO_CLASSIFY_THRESHOLD);
   });
 
-  it("bug-fix regression: title + department both matching DOES clear 0.80 (previously unreachable)", () => {
-    // Regression test for the 2026-07-28 fix: title match (0.70) +
-    // department match (0.20) = 0.90 >= 0.80. Before the fix, a title
-    // match short-circuited the function and department was never even
-    // inspected, so this case incorrectly returned confidence=0.70,
-    // autoClassified=false.
+  it("bug-fix regression: title + department both matching DOES clear 0.80", () => {
     const result = classifyJob({
       title: "Site Reliability Engineer",
       department: "Site Reliability Engineer",
     });
     expect(result.rolePrimary).toBe("cloud_platform_devops_sre");
-    expect(result.confidence).toBeCloseTo(0.9, 5);
+    expect(result.confidence).toBeCloseTo(0.95, 5);
     expect(result.autoClassified).toBe(true);
   });
 
@@ -60,8 +53,8 @@ describe("classifyJob", () => {
       department: "Security Analyst",
       descriptionText: "You will work as a security analyst on our SOC team.",
     });
-    // department match (0.20) + description match (0.10) = 0.30, title 0.
-    expect(result.confidence).toBeCloseTo(0.3, 5);
+    // department match (0.15) + description match (0.05) = 0.20, title 0.
+    expect(result.confidence).toBeCloseTo(0.2, 5);
     expect(result.rolePrimary).toBe("cybersecurity");
     expect(result.autoClassified).toBe(false);
   });
@@ -80,6 +73,7 @@ describe("classifyJob", () => {
   it("matches an approved abbreviation ('SRE') as a standalone token", () => {
     const result = classifyJob({ title: "SRE II" });
     expect(result.rolePrimary).toBe("cloud_platform_devops_sre");
+    expect(result.confidence).toBeCloseTo(0.8, 5);
   });
 
   it("does not match an abbreviation as a substring of a longer word", () => {
@@ -95,7 +89,7 @@ describe("classifyJob", () => {
       department: "Data Engineer",
     });
     expect(result.rolePrimary).toBe("data_engineering_analytics");
-    expect(result.confidence).toBeCloseTo(0.2, 5);
+    expect(result.confidence).toBeCloseTo(0.15, 5);
   });
 
   it("returns undefined rolePrimary and 0 confidence when nothing matches at all", () => {
@@ -107,7 +101,7 @@ describe("classifyJob", () => {
 
   it("always returns a classificationVersion", () => {
     const result = classifyJob({ title: "Software Engineer" });
-    expect(result.classificationVersion).toBe("v1");
+    expect(result.classificationVersion).toBe("v2");
   });
 
   describe("cross-channel category disagreement (L1 fix)", () => {
@@ -128,13 +122,13 @@ describe("classifyJob", () => {
         descriptionText: "You will work as a security analyst on our SOC team.",
       });
       expect(result.rolePrimary).toBe("data_engineering_analytics");
-      expect(result.confidence).toBeCloseTo(0.7 * 0.85, 5);
+      expect(result.confidence).toBeCloseTo(0.8 * 0.85, 5);
       expect(result.confidence).toBeLessThan(1.0);
     });
 
     it("picks the category with the highest weighted-channel sum, not just the title's category", () => {
-      // Title has no match at all; department says cybersecurity (0.20),
-      // description also says cybersecurity (0.10) -- both channels
+      // Title has no match at all; department says cybersecurity (0.15),
+      // description also says cybersecurity (0.05) -- both channels
       // agree on cybersecurity, so it wins outright with no title
       // candidate to disagree with. Single matched category -> no
       // disagreement discount.
@@ -144,48 +138,37 @@ describe("classifyJob", () => {
         descriptionText: "You will work as a security analyst on our SOC team.",
       });
       expect(result.rolePrimary).toBe("cybersecurity");
-      expect(result.confidence).toBeCloseTo(0.3, 5);
+      expect(result.confidence).toBeCloseTo(0.2, 5);
     });
 
     it("H.1 fix: a disagreeing description no longer compounds a title/department disagreement into the 3-way discount", () => {
-      // Title: software engineering (0.70). Department: cybersecurity
-      // (0.20) -- a real structured-channel conflict, still discounted
+      // Title: software engineering (0.80). Department: cybersecurity
+      // (0.15) -- a real structured-channel conflict, still discounted
       // 15% as a 2-way split. Description: data engineering -- disagrees
       // with BOTH structured channels, so under the H.1 guard it's
       // dropped entirely (neither confirms an existing structured match
       // nor is it the only evidence available) rather than counted as a
-      // third vote. Before the H.1 fix this was a genuine 3-way split
-      // (0.7*0.7=0.49); after the fix it's the same 2-way split as
-      // title-vs-department alone (0.7*0.85=0.595) -- description's
-      // disagreement no longer makes things worse.
+      // third vote. After the fix it's the same 2-way split as
+      // title-vs-department alone (0.8*0.85=0.68).
       const result = classifyJob({
         title: "Software Engineer",
         department: "Security Analyst",
         descriptionText: "You will own our ETL pipelines end to end.",
       });
       expect(result.rolePrimary).toBe("software_engineering");
-      expect(result.confidence).toBeCloseTo(0.7 * 0.85, 5);
+      expect(result.confidence).toBeCloseTo(0.8 * 0.85, 5);
     });
 
     it("H.1 fix: description-only disagreement does not pull a fully-agreeing title+department below AUTO_CLASSIFY_THRESHOLD", () => {
-      // Worked example from ROADMAP.md Milestone H.1: title="Software
-      // Engineer" + department="Software Engineer" agree fully
-      // (0.7+0.2=0.9, structuredCategories={software_engineering}).
-      // Description mentions "our Security team", matching cybersecurity
-      // -- but cybersecurity isn't in structuredCategories and
-      // structuredCategories isn't empty, so under the H.1 guard this
-      // description match is dropped before scoring, not counted as a
-      // competing vote. Before the fix this discounted 0.9 by the 2-way
-      // multiplier (0.9*0.85=0.765), landing BELOW the 0.80 threshold
-      // despite both structured fields agreeing -- exactly the failure
-      // mode H.1 exists to close.
+      // Title="Software Engineer" + department="Software Engineer" agree fully
+      // (0.8+0.15=0.95, structuredCategories={software_engineering}).
       const result = classifyJob({
         title: "Software Engineer",
         department: "Software Engineer",
         descriptionText: "You'll work closely with our Security team on access reviews.",
       });
       expect(result.rolePrimary).toBe("software_engineering");
-      expect(result.confidence).toBeCloseTo(0.9, 5);
+      expect(result.confidence).toBeCloseTo(0.95, 5);
       expect(result.autoClassified).toBe(true);
     });
 

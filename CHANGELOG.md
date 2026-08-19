@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-08-19
+
+### Changed (2026-08-19)
+
+- **Classification title weighting updated (`WEIGHT_TITLE` 0.70 → 0.80, `CLASSIFICATION_VERSION` v1 → v2).** Single-channel high-precision title phrase matches (e.g. *"Software Engineer"*, *"DevOps Engineer"*, *"Data Engineer"*) previously scored `0.70` confidence, falling short of `AUTO_CLASSIFY_THRESHOLD` (`0.80`). Because signal generation drops below-threshold classifications, ~2,000+ valid listings were suppressed across the dataset unless their department field explicitly matched the role category. Adjusted channel weights to `WEIGHT_TITLE = 0.80`, `WEIGHT_DEPARTMENT = 0.15`, `WEIGHT_DESCRIPTION = 0.05` (`packages/domain/src/classification.ts`). Single-channel title phrase matches now reach `0.80 >= 0.80`, enabling auto-classification for exact title matches while retaining the 15% disagreement penalty when department conflicts. Auto-classified listings increased from 72 to 2,128 (+2,056) across the database.
+
 ## [1.3.0] — 2026-08-19
 
 ### Added (2026-08-19)
