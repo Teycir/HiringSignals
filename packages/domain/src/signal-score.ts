@@ -14,9 +14,23 @@
  * later milestone reading v2-computed evidence can rely on this
  * SCORE_FORMULA_VERSION bump to tell it apart from v1 rows (fixed 0.5
  * V/A/B) already persisted before this change.
+ *
+ * v3 (2026-08-19): computeAcceleration gained a cold-start branch. On a
+ * young dataset, most company+role pairs have newInPrior56Days=0 (no
+ * prior-window history yet, not "zero growth") -- feeding that through
+ * spec 7.2's relative-rate formula collapses the denominator to its
+ * max(2, ...) floor, so ANY newInLast14Days>=2 saturates acceleration
+ * to 1.0 regardless of whether it's 2 or 200 (confirmed live: 11/14
+ * companies with jobs were already pinned at 1.0). v3 special-cases
+ * newInPrior56Days=0 to an absolute scale on newInLast14Days instead of
+ * the relative-rate comparison -- see computeAcceleration's own comment
+ * for the exact formula. Every other input (newInPrior56Days>0) is
+ * byte-identical to v2; this bump exists only so signal_evidence rows
+ * scored before/after this change are distinguishable, per spec 7.2's
+ * "formula version" recomputability requirement.
  */
 
-export const SCORE_FORMULA_VERSION = "v2";
+export const SCORE_FORMULA_VERSION = "v3";
 
 // Weights from spec 7.2: S = min(100, 35R + 25V + 20A + 10B + 10Q - P).
 const WEIGHT_FRESHNESS = 35;
@@ -89,8 +103,27 @@ export function computeVolume(activeMatchingCount: number): number {
  * rate before comparing against the actual 14-day count -- the max(2, ...)
  * floor prevents a near-zero denominator from producing an extreme ratio
  * when a company+role has little to no prior history.
+ *
+ * v3 cold-start branch: when n56=0, there is no prior-window history at
+ * all -- not "zero growth," just no baseline to be relative to. Feeding
+ * that through the ratio above collapses priorRate to 0 and the
+ * denominator to its floor of 2, so ANY n14>=2 clamps straight to 1.0
+ * regardless of whether n14 is 2 or 200 -- confirmed live on this
+ * dataset, where 11 of 14 companies with any jobs were already pinned
+ * at exactly 1.0 for this reason, making the trends chart's top-N
+ * ranking arbitrary among ties. Acceleration (rate of change vs. a
+ * baseline) isn't a meaningful question when the baseline is undefined,
+ * so n56=0 is scored on an absolute scale instead:
+ * clamp(n14 / COLD_START_SCALE, 0, 1). COLD_START_SCALE=10 is a
+ * documented v3 guess (same spirit as VOLUME_SCALE/BREADTH_SCALE below,
+ * not spec-derived) -- revisit once enough companies accumulate real
+ * 56-day history that n56=0 stops being the dominant case.
  */
+const COLD_START_SCALE = 10;
 export function computeAcceleration(newInLast14Days: number, newInPrior56Days: number): number {
+  if (newInPrior56Days === 0) {
+    return clamp(newInLast14Days / COLD_START_SCALE, 0, 1);
+  }
   const priorRate = newInPrior56Days / 4;
   return clamp((newInLast14Days - priorRate) / Math.max(2, priorRate), 0, 1);
 }

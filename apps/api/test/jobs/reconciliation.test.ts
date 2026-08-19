@@ -206,7 +206,12 @@ describe("handleReconciliation", () => {
       }>(`SELECT score, score_version, last_detected_at FROM signals WHERE id = ?`, [signalId]);
       expect(persisted).not.toBeNull();
       expect(persisted?.score).toBeLessThan(90);
-      expect(persisted?.score_version).toBe("v2");
+      // Recomputed score is written under the current formula version,
+      // not the seeded stale value ("v2" above) -- confirms
+      // handleReconciliation persists computeReconciliationScore's own
+      // formulaVersion rather than carrying the old row's version
+      // forward untouched.
+      expect(persisted?.score_version).toBe("v3");
       // Reconciliation must never move last_detected_at -- that's the
       // staleness anchor itself.
       expect(persisted?.last_detected_at).toBe(staleDetectedAt);

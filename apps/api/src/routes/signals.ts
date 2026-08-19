@@ -11,6 +11,7 @@ import {
   createD1Client,
   CorruptSignalRowError,
   getSignalDetail,
+  getSignalStats,
   InvalidCursorError,
   listSignals,
   toListItem,
@@ -214,6 +215,44 @@ signalsRoute.get("/", async (c) => {
       nextCursor: result.nextCursor,
       searchMode,
     },
+  });
+});
+
+// GET /api/v1/signals/stats -- descriptive statistics (score
+// distribution + per-type/per-role breakdown counts) over the same
+// filter surface as GET /api/v1/signals above (minus q's hybrid-search
+// specific concerns, sort, cursor, and limit -- a stats aggregate has no
+// pagination or ranking of its own). MUST be registered before the
+// GET /:signalId route below: Hono matches routes in registration
+// order, and /:signalId would otherwise treat the literal path segment
+// "stats" as a signalId value, never reaching this handler.
+//
+// signalsQuerySchema.parse() is reused as-is rather than a bespoke
+// schema (see this file's header comment on why signalsQuerySchema
+// lives in @hiring-signals/domain) -- `like`/`sort`/`cursor`/`limit`
+// simply go unused by getSignalStats' params, same as
+// listSignalsForExport/listSignalsForFeed already do with this same
+// parsed object elsewhere in this codebase's sibling routes
+// (export.ts, feed.ts).
+signalsRoute.get("/stats", async (c) => {
+  const parsed = signalsQuerySchema.parse(c.req.query());
+  const client = createD1Client(c.env.DB);
+
+  const stats = await getSignalStats(client, {
+    roles: parsed.roles,
+    company: parsed.company,
+    q: parsed.q,
+    locationMode: parsed.locationMode,
+    country: parsed.country,
+    source: parsed.source,
+    signalType: parsed.signalType,
+    minScore: parsed.minScore,
+    observedSince: parsed.observedSince,
+  });
+
+  return c.json({
+    data: stats,
+    meta: { requestId: c.get("requestId"), appliedFilters: parsed },
   });
 });
 

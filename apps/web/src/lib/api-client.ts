@@ -6,6 +6,7 @@ import type {
   HiringTrendCompany,
   SignalDetail,
   SignalListItem,
+  SignalStats,
 } from "@hiring-signals/db/src/types";
 import {
   apiRequest,
@@ -182,6 +183,23 @@ export async function fetchFacets(
   init?: RequestInit,
 ): Promise<{ data: Facets; meta: { requestId: string; cached: boolean } }> {
   return request("/api/v1/facets", init);
+}
+
+/**
+ * GET /api/v1/signals/stats (descriptive statistics: score distribution
+ * + per-type/per-role breakdown counts). Takes the same SignalListParams
+ * shape fetchSignals does -- `sort`/`cursor`/`limit`/`like` are accepted
+ * by the route's schema but simply unused server-side for this endpoint
+ * (see the route's own comment), so passing the same FilterState-derived
+ * params object callers already build for fetchSignals is safe and
+ * avoids a second, parallel params type just for this one call.
+ */
+export async function fetchSignalStats(
+  params: SignalListParams = {},
+  init?: RequestInit,
+): Promise<{ data: SignalStats; meta: { requestId: string; appliedFilters: Record<string, unknown> } }> {
+  const qs = queryFromRecord(params);
+  return request(`/api/v1/signals/stats?${qs}`, init);
 }
 
 /** GET /api/v1/companies?q= (spec 9.2, 10.4's company-combobox typeahead). */

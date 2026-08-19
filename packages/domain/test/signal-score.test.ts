@@ -55,12 +55,26 @@ describe("computeAcceleration", () => {
     expect(computeAcceleration(3, 8)).toBeCloseTo(0.5, 5);
   });
 
-  it("hand-computed: n14=0, n56=0 -> priorRate=0, (0-0)/max(2,0) = 0/2 = 0 (floor prevents div-by-zero)", () => {
+  it("hand-computed: n14=0, n56=0 -> cold-start branch, clamp(0/10, 0, 1) = 0", () => {
     expect(computeAcceleration(0, 0)).toBe(0);
   });
 
   it("clamps to 0 when n14 is below the prior rate (deceleration, not negative)", () => {
     expect(computeAcceleration(1, 20)).toBe(0);
+  });
+
+  it("v3 cold-start branch: n56=0 no longer saturates at n14=2 -- scores on an absolute scale instead", () => {
+    // Pre-v3: n56=0 -> priorRate=0, denominator floors to max(2,0)=2, so
+    // ANY n14>=2 clamped straight to 1.0 (this is the exact bug: 2
+    // postings and 200 postings with no prior history were
+    // indistinguishable). v3: clamp(n14/COLD_START_SCALE=10, 0, 1).
+    expect(computeAcceleration(2, 0)).toBeCloseTo(0.2, 5);
+    expect(computeAcceleration(5, 0)).toBeCloseTo(0.5, 5);
+  });
+
+  it("v3 cold-start branch: still saturates at 1 once n14 reaches COLD_START_SCALE=10", () => {
+    expect(computeAcceleration(10, 0)).toBe(1);
+    expect(computeAcceleration(200, 0)).toBe(1);
   });
 });
 
@@ -100,7 +114,7 @@ describe("computeNewJobScore", () => {
     });
     expect(result.score).toBe(86); // rounded
     expect(result.formulaVersion).toBe(SCORE_FORMULA_VERSION);
-    expect(result.formulaVersion).toBe("v2");
+    expect(result.formulaVersion).toBe("v3");
     expect(result.components.freshness).toBeCloseTo(1.0, 5);
     expect(result.components.volume).toBeCloseTo(0.6, 5);
     expect(result.components.acceleration).toBe(1);
@@ -245,7 +259,7 @@ describe("computeReconciliationScore", () => {
       distinctLocationCount: 1,
     });
     expect(result.score).toBe(30); // rounded
-    expect(result.formulaVersion).toBe("v2");
+    expect(result.formulaVersion).toBe("v3");
     expect(result.components.freshness).toBeCloseTo(Math.exp(-20 / 14), 5);
     expect(result.components.volume).toBeCloseTo(0.4, 5);
     expect(result.components.acceleration).toBe(0);
@@ -255,10 +269,13 @@ describe("computeReconciliationScore", () => {
   it("hand-computed case: very stale (60 days quiet), activity has since picked back up", () => {
     // freshness ~= 0.013843 (same decay curve as computeFreshness).
     // volume=computeVolume(6)=1 (saturated), acceleration=computeAcceleration(5,0)
-    //   -> priorRate=0, (5-0)/max(2,0)=5/2=2.5 -> clamp to 1.
+    //   -> v3 cold-start branch (n56=0): clamp(5/COLD_START_SCALE=10, 0, 1) = 0.5.
+    //   Pre-v3 this was priorRate=0, (5-0)/max(2,0)=5/2=2.5 -> clamp to 1; v3
+    //   deliberately no longer saturates n56=0 cases at n14>=2 -- see
+    //   computeAcceleration's own comment.
     // breadth=computeBreadth(4)=1 (saturated), quality=0.90.
-    // raw = 35*0.013843 + 25*1 + 20*1 + 10*1 + 10*0.90
-    //     = 0.4845 + 25 + 20 + 10 + 9 = 64.4845
+    // raw = 35*0.013843 + 25*1 + 20*0.5 + 10*1 + 10*0.90
+    //     = 0.4845 + 25 + 10 + 10 + 9 = 54.4845
     const result = computeReconciliationScore({
       daysSinceLastDetected: 60,
       classificationConfidence: 0.9,
@@ -267,10 +284,10 @@ describe("computeReconciliationScore", () => {
       newInPrior56Days: 0,
       distinctLocationCount: 4,
     });
-    expect(result.score).toBe(64); // rounded
+    expect(result.score).toBe(54); // rounded
     expect(result.components.freshness).toBeLessThan(0.02);
     expect(result.components.volume).toBe(1);
-    expect(result.components.acceleration).toBe(1);
+    expect(result.components.acceleration).toBe(0.5);
     expect(result.components.breadth).toBe(1);
   });
 

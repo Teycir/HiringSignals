@@ -29,6 +29,7 @@ import { AppShell } from "@/components/app-shell";
 import { FilterRail } from "@/components/filter-rail";
 import { SearchBar } from "@/components/search-bar";
 import { SignalFeed } from "@/components/signal-feed";
+import { SignalStats } from "@/components/signal-stats";
 import { fetchFacets } from "@/lib/api-client";
 import { parseFilterState, serializeFilterState, type FilterState } from "@/lib/searchParams";
 
@@ -92,6 +93,7 @@ export function SignalsView() {
             through this one onChange -> URL -> SignalFeed refetch
             pipeline). */}
         <SearchBar filters={filters} onChange={handleFiltersChange} />
+        <SignalStats filters={filters} />
         <SignalFeed filters={filters} onResetFilters={handleResetFilters} />
       </div>
     </AppShell>

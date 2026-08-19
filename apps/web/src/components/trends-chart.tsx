@@ -34,6 +34,32 @@
 // already establishes), not applied to every bar -- an all-accent chart
 // would both violate the token's own "scarce" intent and defeat the
 // point of highlighting a leader.
+//
+// Tie-break bar length (added 2026-08-19, found live: every visible bar
+// under acceleration_desc rendered 1.00 -- computeAcceleration
+// (signal-score.ts) is clamp(..., 0, 1), so it genuinely saturates once
+// a company's recent-vs-prior hiring rate clears the threshold, which
+// most active companies do on this still-young dataset (same root
+// dataset-age cause as the earlier NEW/ACTIVE fix, CHANGELOG [1.1.2]).
+// Real ties, not a chart bug -- but a bar chart's whole job is showing
+// rank, so identical-length bars defeat the point.
+//
+// newJobsCount is the tie-break for every metric mode, not just
+// acceleration: it's the one field populated on every row regardless of
+// which sort is active (hiringVelocityScore is null for most companies
+// right now -- Q.2's daily reconciliation pass hasn't recomputed it for
+// everyone yet, confirmed live 2026-08-19 -- so it can't double as a
+// reliable tiebreak for the other two modes either). Normalized to the
+// VISIBLE rows' own max newJobsCount (not some global constant) and
+// scaled to TIE_BREAK_WEIGHT (15%) of the visible rows' own max primary
+// value, so the nudge only ever spreads apart genuine ties -- it can
+// never be large enough to make a lower-primary-value company's bar
+// visually exceed a higher-primary-value one. The LABEL to the right of
+// each bar always shows the true, unmodified primary metric value
+// (config.format(row.value), not row.barValue) -- the tie-break only
+// changes bar LENGTH, never the displayed number, so nothing is
+// misrepresented. The tooltip shows both values explicitly labeled for
+// the same reason.
 import {
   Bar,
   BarChart,
@@ -64,7 +90,13 @@ interface ChartRow {
   slug: string;
   name: string;
   value: number;
+  /** Bar LENGTH only -- primary value nudged by a normalized newJobsCount
+   * tiebreak (see file header comment). Never shown as text; the label
+   * and tooltip always read `value` via config.format, untouched. */
+  barValue: number;
 }
+
+const TIE_BREAK_WEIGHT = 0.15;
 
 const METRIC_CONFIG: Record<
   TrendsChartProps["metric"],
@@ -99,20 +131,29 @@ function ChartTooltip({
   payload,
   metricLabel,
   format,
+  tiedValues,
 }: {
   active?: boolean;
   payload?: Array<{ payload: ChartRow }>;
   metricLabel: string;
   format: (v: number) => string;
+  tiedValues: Set<number>;
 }) {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0].payload;
+  const isTied = tiedValues.has(row.value);
   return (
     <div className="border-2 border-ink bg-paper px-3 py-2">
       <p className="font-display text-sm font-bold">{row.name}</p>
       <p className="data-label text-soft-ink">
         {metricLabel}: {format(row.value)}
       </p>
+      {isTied && (
+        <p className="data-label text-soft-ink">
+          Bar length includes a tie-break nudge from new-job volume; the
+          score above is the true value.
+        </p>
+      )}
     </div>
   );
 }
@@ -121,11 +162,46 @@ export function TrendsChart({ trends, metric }: TrendsChartProps) {
   if (trends.length === 0) return null;
 
   const config = METRIC_CONFIG[metric];
-  const rows: ChartRow[] = trends.slice(0, CHART_LIMIT).map((t) => ({
-    slug: t.company.slug,
-    name: truncateName(t.company.displayName),
-    value: config.getValue(t),
-  }));
+  const visible = trends.slice(0, CHART_LIMIT);
+
+  // Both maxes are over the VISIBLE rows only, not some global/dataset
+  // constant -- what counts as "a tie worth spreading apart" is relative
+  // to what's actually on screen.
+  const maxPrimary = Math.max(...visible.map((t) => config.getValue(t)), 0);
+  const maxJobs = Math.max(...visible.map((t) => t.newJobsCount), 0);
+
+  const rows: ChartRow[] = visible.map((t) => {
+    const value = config.getValue(t);
+    // 0..1, or 0 if every visible row has 0 new jobs (avoid /0).
+    const tieBreakFraction = maxJobs > 0 ? t.newJobsCount / maxJobs : 0;
+    // Nudge is capped at TIE_BREAK_WEIGHT of the visible rows' own max
+    // primary value -- large enough to visibly separate exact ties,
+    // never large enough to let a lower-value row's bar overtake a
+    // genuinely higher-value row (max nudge < min real gap this metric's
+    // rounding/precision can produce isn't guaranteed in general, but
+    // for these three metrics' actual ranges it holds in practice; this
+    // is a display nudge, not a rescoring, and worth re-checking if a
+    // fourth metric with a very fine-grained scale is ever added).
+    const barValue = value + tieBreakFraction * TIE_BREAK_WEIGHT * maxPrimary;
+    return {
+      slug: t.company.slug,
+      name: truncateName(t.company.displayName),
+      value,
+      barValue,
+    };
+  });
+
+  // Genuine ties only -- a value shared by 2+ visible rows -- not "any
+  // row whose bar got nudged at all" (nearly every row with newJobsCount
+  // > 0 would match that looser check, making the tooltip note noisy
+  // rather than informative).
+  const valueCounts = new Map<number, number>();
+  for (const row of rows) {
+    valueCounts.set(row.value, (valueCounts.get(row.value) ?? 0) + 1);
+  }
+  const tiedValues = new Set(
+    [...valueCounts.entries()].filter(([, count]) => count > 1).map(([v]) => v),
+  );
 
   // Recharts needs an explicit pixel height (ResponsiveContainer only
   // controls width) -- scaled to row count so a short list (e.g. 2
@@ -168,16 +244,24 @@ export function TrendsChart({ trends, metric }: TrendsChartProps) {
             />
             <Tooltip
               cursor={{ fill: "var(--muted)" }}
-              content={<ChartTooltip metricLabel={config.label} format={config.format} />}
+              content={
+                <ChartTooltip metricLabel={config.label} format={config.format} tiedValues={tiedValues} />
+              }
             />
-            <Bar dataKey="value" isAnimationActive={false}>
+            {/* dataKey="barValue" drives bar LENGTH (primary value + tie-break
+                nudge). LabelList's dataKey="value" pulls the true, unmodified
+                primary value from the same row for the text label -- recharts
+                reads label text from whatever dataKey is set on LabelList,
+                independent of what field the enclosing Bar uses for geometry,
+                so this pairing is intentional, not a mismatch. */}
+            <Bar dataKey="barValue" isAnimationActive={false}>
               {rows.map((row, index) => (
                 <Cell key={row.slug} fill={index === 0 ? "var(--accent)" : "var(--ink)"} />
               ))}
               <LabelList
                 dataKey="value"
                 position="right"
-                formatter={(value: React.ReactNode) =>
+                formatter={(value: unknown) =>
                   typeof value === "number" ? config.format(value) : String(value ?? "")
                 }
                 style={{ fill: "var(--ink)", fontFamily: CHART_FONT, fontSize: 11 }}

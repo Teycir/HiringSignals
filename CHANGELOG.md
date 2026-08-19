@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-19
+
+### Added (2026-08-19)
+
+- **New `GET /api/v1/signals/stats` endpoint.** Descriptive statistics (count, min/max/mean/median/p25/p75 of `score`, plus per-`signalType` and per-`roleCategory` breakdown counts) over the same filter surface as `GET /api/v1/signals` (`roles`/`company`/`q`/`locationMode`/`country`/`source`/`signalType`/`minScore`/`observedSince`) — `sort`/`cursor`/`limit` don't apply since a stats aggregate has no pagination or ranking. Percentiles/mean are computed in application code (`getSignalStats`, `signals-repo.ts`) over raw scores pulled with a defensive row cap, since D1/SQLite has no `PERCENTILE_CONT`; a `truncated` flag on the response signals when that cap was hit, though `count`/`bySignalType`/`byRoleCategory` are always exact (plain `COUNT`/`GROUP BY`). New `fetchSignalStats` added to `apps/web/src/lib/api-client.ts`.
+
+### Fixed (2026-08-19)
+
+- **Acceleration scoring saturated to 1.0 for most companies on a young dataset.** `computeAcceleration` (spec 7.2) compares a company+role's last-14-day new-job count against its prior-56-day rate — but with no ingestion history yet, `newInPrior56Days=0` isn't "zero growth," it's "no baseline." Feeding that through the relative-rate formula collapsed the denominator to its floor, so any `newInLast14Days >= 2` clamped straight to 1.0 regardless of whether it was 2 or 200 — confirmed live, where 11 of 14 companies with jobs were already pinned at exactly 1.0, making the `/trends` chart's top-N ranking arbitrary among ties. `computeAcceleration` now special-cases `newInPrior56Days=0` with an absolute scale on `newInLast14Days` instead of the relative-rate comparison. `SCORE_FORMULA_VERSION` bumped `v2` → `v3` so `signal_evidence` rows scored before/after this change stay distinguishable, per spec 7.2's recomputability requirement.
+
 ## [1.2.0] — 2026-08-19
 
 ### Added (2026-08-19)

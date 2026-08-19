@@ -113,6 +113,50 @@ export interface Facets {
 }
 
 /**
+ * Descriptive statistics over a filtered set of active signals'
+ * `score` column (GET /api/v1/signals/stats). Same filter surface as
+ * GET /api/v1/signals (buildCommonFilters + the `q` LIKE clause) --
+ * "stats for what's currently in the feed," not a disconnected global
+ * number, so this endpoint stays honest about which filters produced
+ * it (see the route's own comment for why `sort`/`cursor`/`limit`
+ * don't apply here).
+ *
+ * min/max/mean/median/p25/p75 are all null when count is 0 -- there is
+ * no meaningful distribution over zero rows, and 0 (rather than null)
+ * would read as a real score of zero instead of "no data."
+ * mean/median/p25/p75 are computed in application code (getSignalStats,
+ * signals-repo.ts) over the raw `score` column pulled with a defensive
+ * STATS_ROW_CAP -- D1/SQLite has no PERCENTILE_CONT, and the dataset is
+ * small enough today (dozens to low hundreds of active signals) that
+ * pulling raw scores is simpler and more obviously correct than a
+ * SQL-side approximation.
+ */
+export interface SignalScoreStats {
+  count: number;
+  min: number | null;
+  max: number | null;
+  mean: number | null;
+  median: number | null;
+  p25: number | null;
+  p75: number | null;
+}
+
+export interface SignalStats {
+  score: SignalScoreStats;
+  /** Count per SignalType, only including types with count > 0 -- a
+   * caller wanting the full six-entry taxonomy regardless of zero counts
+   * should merge this against @hiring-signals/domain's SIGNAL_TYPES
+   * itself, the same way facets consumers already do for role labels. */
+  bySignalType: Array<{ signalType: SignalType; count: number }>;
+  byRoleCategory: Array<{ roleCategory: RoleCategory; count: number }>;
+  /** True if the score array backing mean/median/p25/p75 was truncated
+   * at STATS_ROW_CAP -- count/bySignalType/byRoleCategory are always
+   * exact (plain COUNT/GROUP BY queries, uncapped), only the
+   * percentile/mean figures are cap-sensitive. */
+  truncated: boolean;
+}
+
+/**
  * One time bucket of company hiring activity (ROADMAP.md Milestone
  * O.1, spec §1.4/§10.1). `roleBreakdown`/`locationBreakdown` are
  * capped top-N lists (see getCompanyHiringTimeline's header comment

@@ -1,6 +1,7 @@
 import { roleCategorySchema, signalStatusSchema, signalTypeSchema } from "@hiring-signals/domain";
 import type { RoleCategory, SignalStatus, SignalType } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+import type { SignalStats } from "./types";
 import { escapeLikePattern } from "../../../lib/d1/like-pattern";
 import { decodeJsonFromBase64Url, encodeJsonToBase64Url } from "../../../lib/text/base64url";
 
@@ -623,6 +624,173 @@ export async function listSignalsForFeed(
     items: truncated ? rows.slice(0, FEED_ROW_CAP) : rows,
     truncated,
   };
+}
+
+/**
+ * v1 cap for getSignalStats' percentile/mean computation, distinct from
+ * EXPORT_ROW_CAP/FEED_ROW_CAP for the same reason those two have their
+ * own constants (see FEED_ROW_CAP's own comment): this caps how many raw
+ * `score` values get pulled into application code for mean/median/p25/
+ * p75 -- a different concern from "how many full signal rows to return
+ * in a CSV/feed." 5000 is a generous multiple of EXPORT_ROW_CAP (2000):
+ * count/bySignalType/byRoleCategory below are always exact regardless of
+ * this cap (plain COUNT/GROUP BY, not a row pull), only the
+ * score-distribution figures degrade to an approximation over the first
+ * STATS_ROW_CAP matching rows (by s.score DESC, s.id DESC, a stable
+ * order) if the true count exceeds it -- `truncated` on the response
+ * says so explicitly rather than silently reporting a partial
+ * distribution as if it were exact.
+ */
+export const STATS_ROW_CAP = 5000;
+
+/**
+ * Sorted-array percentile via linear interpolation between closest ranks
+ * (the same method R's default `type=7`/numpy's default `"linear"` use)
+ * -- picked for being a well-known, unsurprising convention rather than
+ * inventing a bespoke nearest-rank scheme. `sorted` must already be
+ * ascending; this does not sort or mutate its input.
+ */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 1) return sorted[0] as number;
+  const rank = p * (sorted.length - 1);
+  const lower = Math.floor(rank);
+  const upper = Math.ceil(rank);
+  const lowerVal = sorted[lower] as number;
+  if (lower === upper) return lowerVal;
+  const upperVal = sorted[upper] as number;
+  const weight = rank - lower;
+  return lowerVal * (1 - weight) + upperVal * weight;
+}
+
+/**
+ * Descriptive statistics over a filtered set of active signals (new
+ * feature: signal score distribution, alongside per-type/per-role
+ * breakdown counts). Shares buildCommonFilters + the same `q` LIKE
+ * clause with listSignals/listSignalsForExport/listSignalsForFeed, so
+ * "stats for the current filters" can never silently drift from what
+ * those same filters would actually return in the feed.
+ *
+ * Three independent queries, not one: count/bySignalType/byRoleCategory
+ * are plain COUNT/GROUP BY aggregates with no row cap (SQL aggregates
+ * scale fine regardless of table size), while the score-distribution
+ * figures need the raw score values pulled client-side (see
+ * STATS_ROW_CAP's comment for why) -- capping that one query does not
+ * make the other two any less exact.
+ */
+export async function getSignalStats(
+  client: D1Client,
+  params: Omit<ListSignalsParams, "sort" | "cursor" | "limit">,
+): Promise<SignalStats> {
+  const filtersA = buildCommonFilters(params);
+  const filtersB = buildCommonFilters(params);
+  const filtersC = buildCommonFilters(params);
+  const filtersD = buildCommonFilters(params);
+
+  const qPattern = params.q ? `%${escapeLikePattern(params.q)}%` : null;
+  const qClause = qPattern
+    ? `(s.headline LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\' OR c.display_name LIKE ? ESCAPE '\\')`
+    : null;
+
+  function withQ(where: string[], args: unknown[]): { where: string[]; args: unknown[] } {
+    if (!qClause || !qPattern) return { where, args };
+    return { where: [...where, qClause], args: [...args, qPattern, qPattern, qPattern] };
+  }
+
+  const scoreQuery = withQ(filtersA.where, filtersA.args);
+  const typeQuery = withQ(filtersB.where, filtersB.args);
+  const roleQuery = withQ(filtersC.where, filtersC.args);
+  const totalQuery = withQ(filtersD.where, filtersD.args);
+
+  const [scoreRows, typeRows, roleRows, totalRows] = await client.batch<
+    | { score: number }
+    | { signal_type: string; count: number }
+    | { role_category: string; count: number }
+    | { total: number }
+  >([
+    {
+      sql: `SELECT s.score AS score FROM signals s JOIN companies c ON c.id = s.company_id
+            WHERE ${scoreQuery.where.join(" AND ")}
+            ORDER BY s.score DESC, s.id DESC LIMIT ?`,
+      params: [...scoreQuery.args, STATS_ROW_CAP + 1],
+    },
+    {
+      sql: `SELECT s.signal_type AS signal_type, COUNT(*) AS count
+            FROM signals s JOIN companies c ON c.id = s.company_id
+            WHERE ${typeQuery.where.join(" AND ")}
+            GROUP BY s.signal_type ORDER BY count DESC`,
+      params: typeQuery.args,
+    },
+    {
+      sql: `SELECT s.role_category AS role_category, COUNT(*) AS count
+            FROM signals s JOIN companies c ON c.id = s.company_id
+            WHERE ${roleQuery.where.join(" AND ")}
+            GROUP BY s.role_category ORDER BY count DESC`,
+      params: roleQuery.args,
+    },
+    {
+      // Dedicated, uncapped COUNT(*) for the true matching total -- NOT
+      // derived from scoreRows.length (that's capped at STATS_ROW_CAP+1
+      // and only meant to feed the percentile/mean computation) and NOT
+      // summed from typeRows/roleRows (both intentionally drop rows
+      // whose enum value fails safeParse below, so a sum would silently
+      // under-count in that edge case). This is the one number this
+      // module's own header comment already promises callers: "count
+      // ... always exact."
+      sql: `SELECT COUNT(*) AS total FROM signals s JOIN companies c ON c.id = s.company_id
+            WHERE ${totalQuery.where.join(" AND ")}`,
+      params: totalQuery.args,
+    },
+  ]);
+
+  const rawScores = scoreRows as Array<{ score: number }>;
+  const truncated = rawScores.length > STATS_ROW_CAP;
+  const totalCount = (totalRows as Array<{ total: number }>)[0]?.total ?? 0;
+  const scores = (truncated ? rawScores.slice(0, STATS_ROW_CAP) : rawScores)
+    .map((r) => r.score)
+    .sort((a, b) => a - b);
+
+  const score: SignalStats["score"] =
+    totalCount === 0 || scores.length === 0
+      ? { count: totalCount, min: null, max: null, mean: null, median: null, p25: null, p75: null }
+      : {
+          // The true, uncapped total (totalCount) -- NOT scores.length,
+          // which is the STATS_ROW_CAP-truncated sample the percentile/
+          // mean figures below are computed over. Conflating the two
+          // previously made a truncated dataset's count understate the
+          // real total, which also silently skewed
+          // bySignalType/byRoleCategory's percent-of-count math on the
+          // frontend (signal-stats.tsx's pct()) against the wrong
+          // denominator.
+          count: totalCount,
+          min: scores[0] as number,
+          max: scores[scores.length - 1] as number,
+          mean: scores.reduce((sum, v) => sum + v, 0) / scores.length,
+          median: percentile(scores, 0.5),
+          p25: percentile(scores, 0.25),
+          p75: percentile(scores, 0.75),
+        };
+
+  // Every row's signal_type/role_category is validated by listSignals'
+  // toListItem elsewhere -- a stale/corrupt enum value here would only
+  // ever come from the same DB rows those callers already guard against,
+  // so a bad value here is silently dropped from the breakdown (never
+  // thrown) rather than duplicating CorruptSignalRowError's row-level
+  // machinery for a count that doesn't need per-row identity anyway.
+  const bySignalType = (typeRows as Array<{ signal_type: string; count: number }>)
+    .map((r) => {
+      const parsed = signalTypeSchema.safeParse(r.signal_type);
+      return parsed.success ? { signalType: parsed.data, count: r.count } : null;
+    })
+    .filter((r): r is { signalType: SignalType; count: number } => r !== null);
+
+  const byRoleCategory = (roleRows as Array<{ role_category: string; count: number }>)
+    .map((r) => {
+      const parsed = roleCategorySchema.safeParse(r.role_category);
+      return parsed.success ? { roleCategory: parsed.data, count: r.count } : null;
+    })
+    .filter((r): r is { roleCategory: RoleCategory; count: number } => r !== null);
+
+  return { score, bySignalType, byRoleCategory, truncated };
 }
 
 export interface SignalEvidenceRow {
