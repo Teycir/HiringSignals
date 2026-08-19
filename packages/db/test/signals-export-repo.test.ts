@@ -210,8 +210,9 @@ describe("listSignalsForExport", () => {
         boardToken: company.slug,
         publicUrl: `https://example.invalid/${company.slug}`,
       });
-      const earlier = "2026-07-01T00:00:00.000Z";
-      const later = "2026-07-20T00:00:00.000Z";
+      const now = new Date();
+      const earlier = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000).toISOString();
+      const later = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000).toISOString();
       const jobA = await upsertJob(client, {
         sourceId: source.id,
         companyId: company.id,
@@ -257,7 +258,7 @@ describe("listSignalsForExport", () => {
         payload: {},
       });
 
-      const result = await listSignalsForExport(client, { company: company.slug, minScore: 0 });
+      const result = await listSignalsForExport(client, { company: company.slug, minScore: 0, observedSince: earlier });
       expect(result.items).toHaveLength(1);
       expect(result.items[0]?.canonical_url).toBe("https://example.invalid/jobs/job-b");
     } finally {
