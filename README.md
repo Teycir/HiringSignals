@@ -90,6 +90,22 @@ Every signal keeps a full evidence trail — source platform, canonical public U
 
 ---
 
+## 📸 Screenshots
+
+### Signals Feed
+
+![Signals feed](public/signals.png)
+
+### Hiring Trends
+
+![Hiring trends](public/trends.png)
+
+### Demo Video
+
+[▶️ Watch the explainer video](public/hiring_signals_explainer.mp4)
+
+---
+
 ## 📑 Table of Contents
 
 - [Hiring Signals Intelligence](#hiring-signals-intelligence)
@@ -97,6 +113,10 @@ Every signal keeps a full evidence trail — source platform, canonical public U
     - [How it tells real hiring intent from noise](#how-it-tells-real-hiring-intent-from-noise)
     - [What it covers](#what-it-covers)
     - [Who uses it](#who-uses-it)
+  - [📸 Screenshots](#-screenshots)
+    - [Signals Feed](#signals-feed)
+    - [Hiring Trends](#hiring-trends)
+    - [Demo Video](#demo-video)
   - [📑 Table of Contents](#-table-of-contents)
   - [Layout](#layout)
   - [🛠 Tech Stack](#-tech-stack)
@@ -115,6 +135,7 @@ Every signal keeps a full evidence trail — source platform, canonical public U
     - [Security Tools](#security-tools)
     - [MCP Security Servers](#mcp-security-servers)
     - [Privacy \& Encryption](#privacy--encryption)
+  - [💼 Services Offered](#-services-offered)
 
 ---
 
