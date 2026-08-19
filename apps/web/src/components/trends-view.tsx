@@ -12,9 +12,13 @@
 // rather than making role optional, so the role selector is a
 // multi-select chip-toggle at the top of the page content itself,
 // following signal-type-filter.tsx's Button-toggle styling rather than
-// role-filter.tsx's Checkbox list -- P.3's ranked-table-only framing
-// (spec: company trends are secondary context, not a dashboard) calls
-// for a compact toggle row, not a full filter rail.
+// role-filter.tsx's Checkbox list -- P.3's original ranked-table-only
+// framing (spec: company trends are secondary context, not a dashboard)
+// is why the filter UI stays a compact toggle row rather than a full
+// filter rail; that reasoning is about the filter controls, not the
+// results view below, which now also renders TrendsChart (spec §2.3,
+// promoted 2026-08-19) above TrendsTable for the same already-fetched
+// data -- see trends-chart.tsx's own header comment.
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ROLE_CATEGORIES, type RoleCategory } from "@hiring-signals/domain";
@@ -22,6 +26,7 @@ import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { TrendsTable } from "@/components/trends-table";
+import { TrendsChart } from "@/components/trends-chart";
 import { ROLE_LABELS } from "@/lib/labels";
 import { fetchTrends, ApiClientError, isAbortError, type TrendsParams } from "@/lib/api-client";
 
@@ -33,6 +38,20 @@ const SORT_OPTIONS: Array<{ value: SortOption; label: string }> = [
   { value: "volume_desc", label: "Volume" },
   { value: "newest_signal", label: "Newest signal" },
 ];
+
+// Maps the active table sort to the chart's value axis (spec §2.3
+// promotion, see trends-chart.tsx's own header comment) so the bars
+// above TrendsTable always represent whatever metric the table below
+// is actually ranked by. "newest_signal" has no numeric ranking value
+// to chart (it orders by timestamp, not magnitude) -- falls back to
+// acceleration, the same default TrendsChart/the route itself already
+// use, rather than rendering a chart whose axis wouldn't match the
+// sort the user actually picked.
+function sortToChartMetric(sort: SortOption): "acceleration" | "velocity" | "volume" {
+  if (sort === "velocity_desc") return "velocity";
+  if (sort === "volume_desc") return "volume";
+  return "acceleration";
+}
 
 function isRoleCategory(value: string): value is RoleCategory {
   return (ROLE_CATEGORIES as readonly string[]).includes(value);
@@ -257,6 +276,7 @@ export function TrendsView() {
 
         {effectiveState.status === "ready" && (
           <>
+            <TrendsChart trends={effectiveState.data} metric={sortToChartMetric(sort)} />
             <TrendsTable trends={effectiveState.data} />
             <p className="font-display text-xs text-soft-ink">{effectiveState.disclaimer}</p>
           </>

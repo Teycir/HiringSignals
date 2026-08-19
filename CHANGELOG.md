@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [1.2.0] — 2026-08-19
+
+### Added (2026-08-19)
+
+- **`/trends` now renders a chart, not just a table.** `hiring-signals-spec.md` §2.3 listed "trend charts" as explicitly deferred P2; promoted to §2.2 P1 and built. New `TrendsChart` component (`apps/web/src/components/trends-chart.tsx`, `recharts`) renders a horizontal bar chart of the top 8 companies by whichever metric the page's active sort represents (acceleration/velocity/new-job volume) — no new endpoint, it's the exact same `GET /api/v1/trends/hiring` response `TrendsTable` already renders below it. Strict ink/paper/muted styling per the app's monochrome design tokens (`globals.css`); `--accent` used only on the #1-ranked bar, matching how `VelocityBadge` already reserves that color for a single highlighted state rather than coloring every series. `hiring-signals-spec.md` §9.2's endpoint table also updated to list `/api/v1/trends/hiring`, `/companies/:slug/timeline`, and `/companies/:slug/role-activity` — all three were already built (Milestones P.2, O.1, V.4) but had never been added to that table.
+
+### Changed (2026-08-19)
 
 - **`/signals` no longer accumulates results into one unbounded, ever-growing list.** The feed's "Load more" button appended each new batch onto the existing list forever — after a few clicks (or on a broad/default query) the page became a very long scroll with no way to jump back to a specific spot. Replaced with page-scoped navigation: each page shows at most 15 signals (`DEFAULT_LIMIT`, `searchParams.ts`, down from the fetch batch size of 50), and moving to a new page replaces the visible list rather than appending to it. Still cursor-based under the hood (this API has no stable row offset to page by, spec §12's "use cursor pagination"), so `signal-feed.tsx` caches every visited page's items plus the cursor that reaches the next one; page position is not URL-addressable/bookmarkable (cursor was already deliberately excluded from the URL, see `serializeFilterState`'s own comment) and resets to page 1 whenever a filter changes.
 
@@ -15,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Page navigation on `/signals` no longer replaces the card list with a skeleton, which was reflowing the page height and visually disturbing the fixed-width filter sidebar next to it on every Previous/Next/page-number click.** The skeleton (6 short placeholder blocks, noticeably shorter than a full page of up to 15 cards) is now shown only on true first load, when there's nothing on screen yet. A page navigation instead dims the current page's cards in place while the new page loads (or resolves instantly from cache), keeping the content column's height roughly stable and the sidebar undisturbed.
 
-### Fixed
+### Fixed (2026-08-19)
 
 - **`/signals` showed "signal is aborted without reason" as a hard error, e.g. right after navigating from `/trends`.** `signal-feed.tsx`/`trends-view.tsx` intentionally cancel an in-flight fetch when filter state changes mid-request (`AbortController.abort()`), then use `isAbortError()` to swallow that cancellation silently. But `api-client-core.ts`'s shared `apiRequest()` caught *every* `fetchImpl` rejection — including the abort — and re-wrapped it into a generic `ApiClientError("NETWORK_ERROR", err.message, ...)`, which strips the original `DOMException`'s type identity. `isAbortError()`'s `err instanceof DOMException` check then failed (the error was now an `ApiClientError`), so the cancellation fell through to the real error UI, displaying the aborted fetch's own default message verbatim. `apiRequest()` now re-throws an `AbortError`-named rejection unchanged instead of wrapping it; `isAbortError()` now checks `err.name === "AbortError"` structurally rather than `instanceof DOMException` (this file's tsconfig has no DOM lib, so this also fixes a latent cross-runtime fragility, not just this bug).
 

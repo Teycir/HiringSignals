@@ -1,11 +1,17 @@
 // Ranked cross-company hiring trends table (ROADMAP.md Milestone P.2/
 // P.3, spec's "secondary context" framing -- see hiring-signals-spec.md
 // line 5/23: company-level trends are secondary context, not the
-// primary product, so this is a plain ranked table, not a chart-heavy
-// dashboard). Renders GET /api/v1/trends/hiring's HiringTrendCompany[]
-// rows: company identity, new/active counts, an acceleration indicator,
-// top location, latest signal, and a link into that company's own
-// timeline page (/companies/[slug], Milestone O.2).
+// primary product). Renders GET /api/v1/trends/hiring's
+// HiringTrendCompany[] rows: company identity, new/active counts, an
+// acceleration indicator, top location, latest signal, and a link into
+// that company's own timeline page (/companies/[slug], Milestone O.2).
+//
+// Remains the complete, sortable, linkable record of every trending
+// company the query returned -- trends-chart.tsx (spec §2.3, promoted
+// 2026-08-19) sits above this and renders only the top few rows of the
+// same already-fetched data as a compact visual summary; this table is
+// still where the full list and the per-company link live, not
+// replaced or duplicated by the chart.
 import Link from "next/link";
 import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
 import { SIGNAL_TYPE_LABELS } from "@/lib/labels";

@@ -86,13 +86,14 @@ Every signal shown to users must retain an evidence trail: source platform, cano
 - Manual company/source onboarding from a CSV.
 - Role taxonomy editor and title-rule review queue.
 - Change log showing why a signal or score changed.
+- Trend charts on `/trends` — promoted out of §2.3 P2 and built 2026-08-19. `GET /api/v1/trends/hiring` (Milestone P.2, §9.2 endpoint table) was already returning ranked `HiringTrendCompany[]` rows; `apps/web`'s `TrendsChart` component (recharts, horizontal bar, top 8 by the active sort's metric) now renders that same response visually above the existing `TrendsTable`, no new endpoint. Source-coverage reporting (the other half of the original P2 line item below) stays deferred — this promotion covers trend charts only.
 
 ### 2.3 P2 (explicitly deferred, not part of this optimization)
 
 - Any push delivery channel (email, Slack, webhook) — deliberately out of scope; see delivery model in the header and §1.3. Revisit only if the pull-only model proves insufficient in practice, and only with a robustness bar equal to the rest of the system.
 - Integrations with a CRM through a server-side OAuth flow (secondary sales use case).
 - Team annotations and dispositioning.
-- Trend charts and source-coverage reporting.
+- Source-coverage reporting (which sources/providers are contributing how much signal volume, uptime, etc.) — still deferred. Trend charts, previously grouped with this line item, were promoted to §2.2 P1 and built 2026-08-19 (see above); that promotion does not extend to source-coverage reporting, which remains genuinely out of scope.
 - Clearbit-like company enrichment or a reviewed generic career-page adapter — still excluded; scraping remains out of scope regardless of phase (see §1.3).
 
 ---
@@ -693,8 +694,11 @@ Error envelope:
 | `GET`   | `/api/v1/companies`           | Company autocomplete / filter facets             |
 | `GET`   | `/api/v1/companies/:slug`     | Company detail and recent signals                |
 | `GET`   | `/api/v1/companies/:slug/jobs` | Raw per-job listing for one company (new -- see §9.3a) |
+| `GET`   | `/api/v1/companies/:slug/timeline` | One company's own hiring history, bucketed new/closed/active jobs (Milestone O.1) |
+| `GET`   | `/api/v1/companies/:slug/role-activity` | One company's new/active job counts for one role, over 7/30/90-day windows (Milestone V.4) |
 | `GET`   | `/api/v1/jobs/:jobId`         | Single raw job posting, full detail (new)        |
 | `GET`   | `/api/v1/facets`              | Role, company, source, location counts           |
+| `GET`   | `/api/v1/trends/hiring`       | Cross-company hiring trend ranking, powers `/trends`'s table and chart (Milestone P.2, §2.2's trend-charts promotion) |
 | `GET`   | `/api/v1/export/signals.csv`  | Server-generated CSV of the current filtered query |
 
 `GET /api/v1/sources` is also public/unauthenticated — a read-only
