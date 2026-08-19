@@ -1,7 +1,7 @@
 {
   "name": "hiring-signals",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "engines": {
     "node": ">=24.18.0"
   },

@@ -238,7 +238,7 @@ export async function fetchCompanyTimeline(
  * Cross-company hiring trend ranking -- "which companies started hiring
  * X in the last N days," not one company's own timeline (that's O.1
  * above). `roles` is required server-side (>=1 role, comma-delimited);
- * `since` defaults server-side (30d-ago) when omitted. Response rows
+ * `since` defaults server-side (7d-ago) when omitted. Response rows
  * carry each company's hiringVelocityScore (Milestone Q.3) alongside
  * the trend metrics. Imported from @hiring-signals/domain (see this
  * file's header comment) rather than hand-declared. `roles` stays

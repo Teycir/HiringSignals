@@ -16,7 +16,7 @@ import { roleCategorySchema } from "./role-taxonomy";
  * the "which fintechs started hiring ML" use case this endpoint exists
  * for.
  *
- * `since` defaults inside the route handler (30d-ago), not here, same
+ * `since` defaults inside the route handler (7d-ago), not here, same
  * reasoning as company-timeline-query.ts's header comment: "now" at
  * schema-module-load time would be stale by request time.
  */

@@ -16,8 +16,8 @@ import { buildTrendsCacheKey, resolveTrendsSince } from "../../src/routes/trends
 describe("resolveTrendsSince", () => {
   const now = new Date("2026-08-09T12:00:00.000Z");
 
-  it("defaults to 30 days before now when since is omitted", () => {
-    expect(resolveTrendsSince({}, now)).toBe("2026-07-10T12:00:00.000Z");
+  it("defaults to 7 days before now when since is omitted", () => {
+    expect(resolveTrendsSince({}, now)).toBe("2026-08-02T12:00:00.000Z");
   });
 
   it("passes through an explicit since value unchanged", () => {

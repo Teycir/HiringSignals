@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A `schema_mismatch` ingest failure never archived the raw payload that caused it.** Raw-response archival (`storeRawPayload`, KV, 30-day TTL) ran only after `adapter.normalize()` succeeded, so the one failure case where the raw evidence matters most — schema validation rejecting what the board actually sent — left `source_runs.raw_payload_key` `NULL`, with nothing left to inspect. Found investigating an `OpenAI`/`ashby` source that disabled itself on a `schema_mismatch` with `http_status=200` and an unparseable body (`response.json()` threw, so `rawBody` stayed `undefined`) — no way to tell a genuine API contract change from a one-off transient glitch without the original response. `apps/api/src/jobs/ingest-consumer.ts`: archival now happens immediately after the retryable-status checks (429/5xx/4xx) and before `adapter.normalize()`'s try/catch, so it runs on every path that reaches that point, success or schema failure alike; `finalizeConfigError`'s `schema_mismatch` call site now threads the archived key through into the failed run's own `source_runs` row.
 
+## [1.1.2] — 2026-08-19
+
+### Fixed (2026-08-19)
+
+- **`/trends` showed identical NEW and ACTIVE counts for every company (e.g. 46/46, 19/19, 89/89).** `getHiringTrends`'s SQL computes `new_jobs_count` as jobs first seen within a `since` window and `active_jobs_count` as jobs currently `active`/`possibly_closed` (no date bound) — genuinely different conditions, not a query bug. But the route's `since` default was 30 days, and this dataset's ingestion only started 2026-07-26 (confirmed via `SELECT MIN(first_seen_at) FROM jobs`, and `active_older_than_30d` was 0 across all 6,779 rows), so every currently-active job for every company also happened to be "new" within that 30-day window — the two columns coincided for the dataset's entire life so far. `apps/api/src/routes/trends.ts`: `DEFAULT_SINCE_DAYS` changed 30 → 7, a standard "new this week" window that will diverge from ACTIVE almost immediately regardless of dataset age. `resolveTrendsSince`'s doc comment and `apps/api/test/routes/trends.test.ts`'s default-window assertion updated to match; stale "30d-ago" mentions in `apps/web/src/lib/api-client.ts` and `packages/domain/src/trends-query.ts` corrected to "7d-ago". `packages/db/test/trends-repo.test.ts` needed no change — it calls `getHiringTrends` directly with its own `since`, decoupled from the route default.
+
 ## [1.1.1] — 2026-08-19
 
 ### Fixed (2026-08-19)
