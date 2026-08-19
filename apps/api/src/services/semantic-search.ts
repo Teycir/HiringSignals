@@ -59,7 +59,17 @@ export async function findSemanticSignalMatches(
 
     const results = await env.VECTORIZE.query(embedding, {
       topK: VECTORIZE_TOP_K,
-      returnMetadata: false, // metadata filtering isn't used here -- packages/db's findSignalsByJobIds already re-applies every filter against real D1 rows, which is the source of truth, not the vector's own metadata snapshot.
+      // "none" (string enum), not `false` -- the Workers binding proxy
+      // mis-serializes the boolean `false` for returnMetadata into the
+      // Vectorize API request body, causing every query() call to fail
+      // (confirmed 2026-08-19 via wrangler dev + `wrangler vectorize
+      // query --return-metadata=none`, which works correctly against
+      // the same index/vector). Semantically identical to `false` --
+      // metadata filtering isn't used here regardless, since
+      // packages/db's findSignalsByJobIds already re-applies every
+      // filter against real D1 rows, the source of truth, not the
+      // vector's own metadata snapshot.
+      returnMetadata: "none",
     });
 
     if (results.matches.length === 0) return [];
@@ -155,6 +165,127 @@ async function getQueryEmbedding(
   });
 
   return embedding;
+}
+
+/** How many nearest job vectors to pull for a `like` lookup before
+ * excluding the source job and resolving to signals -- +1 over
+ * VECTORIZE_TOP_K's role in the `q` leg above, since one slot is always
+ * spent on the source job matching itself (cosine similarity 1.0
+ * against its own vector), which gets filtered out below. */
+const LIKE_VECTORIZE_TOP_K = VECTORIZE_TOP_K + 1;
+
+/** Thrown when `jobId` has no stored Vectorize vector -- distinct from
+ * this file's other functions' never-throw contract: spec 9.4's query
+ * contract for capability 3 requires a 404 here specifically, since
+ * "this job was never embedded" is a genuine, useful answer to give the
+ * caller, not a condition that should degrade to an empty result the
+ * way a `q` search's semantic leg does. signals.ts's route handler
+ * catches this one error type and maps it to a 404; every other failure
+ * inside this function still degrades silently, per this file's header. */
+export class JobNotEmbeddedError extends Error {
+  constructor(public readonly jobId: string) {
+    super(`No stored vector for job ${jobId}`);
+    this.name = "JobNotEmbeddedError";
+  }
+}
+
+/**
+ * Id-based "similar signals" lookup (spec §9.4 capability 3, added
+ * 2026-08-19) -- resolves `jobId`'s own stored Vectorize vector via
+ * getByIds, queries nearest neighbours from that vector (not a
+ * re-embedded text query), excludes the source job, then resolves the
+ * neighbour job ids to active signals via the same findSignalsByJobIds
+ * capability 1's semantic leg already uses. Mirrors ArxivExplorer's
+ * handleMoreLikeThis (src/api-worker/routes/search.ts) -- same
+ * getByIds -> query -> exclude-source -> resolve shape, ported to
+ * signals instead of papers.
+ *
+ * Takes no filters (unlike findSemanticSignalMatches above) -- spec
+ * 9.4's query contract for capability 3 is explicit that
+ * roles/company/locationMode/etc. are ignored when `like` is present,
+ * same as ArxivExplorer's handleMoreLikeThis takes none either.
+ *
+ * Throws JobNotEmbeddedError (only) if `jobId` has no stored vector --
+ * see that class's own comment for why this one case doesn't follow
+ * this file's usual never-throw contract. Every other failure mode
+ * (Vectorize query error, D1 error) is caught and logged, returning []
+ * -- same posture as findSemanticSignalMatches for those.
+ */
+export async function findSimilarSignalsByJobId(
+  client: D1Client,
+  env: Pick<Bindings, "VECTORIZE">,
+  jobId: string,
+): Promise<SemanticMatch<SignalRow>[]> {
+  const sourceVectors = await env.VECTORIZE.getByIds([jobId]);
+
+  if (!sourceVectors.length || !sourceVectors[0]?.values) {
+    throw new JobNotEmbeddedError(jobId);
+  }
+
+  const sourceEmbedding = sourceVectors[0].values as number[];
+
+  try {
+    const results = await env.VECTORIZE.query(sourceEmbedding, {
+      topK: LIKE_VECTORIZE_TOP_K,
+      // "none", not `false` -- see findSemanticSignalMatches's query()
+      // call above for the binding-proxy serialization bug this works
+      // around. Same reasoning otherwise: findSignalsByJobIds re-applies
+      // real D1 state, not a vector metadata snapshot.
+      returnMetadata: "none",
+    });
+
+    if (results.matches.length === 0) return [];
+
+    // Exclude the source job itself (it always matches its own vector
+    // at score 1.0) -- mirrors ArxivExplorer's handleMoreLikeThis
+    // filtering out the source paperId the same way.
+    const byJobId = new Map<string, number>();
+    for (const match of [...results.matches].sort((a, b) => b.score - a.score)) {
+      if (match.id === jobId) continue;
+      if (!byJobId.has(match.id)) byJobId.set(match.id, match.score);
+    }
+    const neighbourJobIds = Array.from(byJobId.keys());
+    if (neighbourJobIds.length === 0) return [];
+
+    // No filters passed through (spec 9.4 capability 3: `like` ignores
+    // roles/company/locationMode/etc.) -- minScore is the one field on
+    // ListSignalsParams that isn't optional at the type level (it has a
+    // schema `.default(0)` at the input boundary, but the parsed type
+    // requires it), so 0 (the same value that default resolves to) is
+    // passed explicitly rather than omitted. observedSince is passed
+    // explicitly too (epoch floor), for the same "isn't really optional"
+    // reason but from the other direction: buildCommonFilters
+    // (signals-repo.ts) silently defaults an omitted observedSince to
+    // "last 30 days", which is a real, active filter, not a no-op --
+    // leaving it out here would mean a `like` neighbour whose only
+    // active signal is >30 days stale silently vanishes from a
+    // capability spec 9.4 explicitly says takes NO filters. A fixed
+    // epoch floor (not "just old enough") makes the intent -- no time
+    // bound at all -- explicit rather than relying on today's data
+    // happening to fall inside 30 days to hide the gap (as it did until
+    // this was caught in a 2026-08-19 live smoke test).
+    const signalRows = await findSignalsByJobIds(client, neighbourJobIds, {
+      minScore: 0,
+      observedSince: new Date(0).toISOString(),
+    });
+
+    // Same best-score-wins dedup as findSemanticSignalMatches, for the
+    // same reason (a signal can have multiple evidence jobs, more than
+    // one of which may appear among the neighbours).
+    const bestBySignalId = new Map<string, { signal: SignalRow; similarity: number }>();
+    for (const row of signalRows) {
+      const similarity = row.matched_job_id ? (byJobId.get(row.matched_job_id) ?? 0) : 0;
+      const existing = bestBySignalId.get(row.id);
+      if (!existing || similarity > existing.similarity) {
+        bestBySignalId.set(row.id, { signal: row, similarity });
+      }
+    }
+
+    return Array.from(bestBySignalId.values());
+  } catch (error) {
+    console.error("similar_signals_lookup_failed", { jobId, error: String(error) });
+    return [];
+  }
 }
 
 // Re-exported for callers that only need the type, not the function

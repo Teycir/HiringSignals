@@ -43,12 +43,28 @@ export function SearchBar({ filters, onChange }: SearchBarProps) {
   const debouncedQuery = useDebouncedValue(rawQuery, DEBOUNCE_MS);
 
   useEffect(() => {
+    // filters.like set (MoreLikeThisButton navigation, spec 9.4
+    // capability 3, added 2026-08-19) means this box's own `q` state is
+    // stale/irrelevant -- `like` is a job id the user never typed and
+    // has nothing to do with this input's free-text value, and the
+    // API's own `like`-wins-over-`q` precedence (signals.ts) means a
+    // leftover `q` from a previous search wouldn't even take effect
+    // server-side. Clear the box rather than show either the old query
+    // or the raw job id, so the UI honestly reflects "you're viewing a
+    // similarity result, not a text search."
+    if (filters.like) {
+      if (lastCommitted.current !== "") {
+        lastCommitted.current = "";
+        setRawQuery("");
+      }
+      return;
+    }
     const urlQuery = filters.q ?? "";
     if (urlQuery !== lastCommitted.current) {
       lastCommitted.current = urlQuery;
       setRawQuery(urlQuery);
     }
-  }, [filters.q]);
+  }, [filters.q, filters.like]);
 
   // Debounced commit: writes the settled value into FilterState/URL
   // (spec 9.3's `q` param, min 2 chars server-side -- shorter input
@@ -63,7 +79,12 @@ export function SearchBar({ filters, onChange }: SearchBarProps) {
     const next = trimmed.length >= MIN_QUERY_LENGTH ? trimmed : "";
     if (next === lastCommitted.current) return;
     lastCommitted.current = next;
-    onChange({ ...filters, q: next || undefined });
+    // Clears `like` (not just sets `q`) -- typing a new free-text query
+    // is a deliberate switch away from a `like` similarity result back
+    // to `q` search mode; leaving a stale `like` in FilterState would
+    // silently win over the just-typed `q` server-side (signals.ts's
+    // precedence) and the user's new search would appear to do nothing.
+    onChange({ ...filters, q: next || undefined, like: undefined });
     if (next) addRecentSearch(next);
   }, [debouncedQuery, filters, onChange]);
 
@@ -74,7 +95,9 @@ export function SearchBar({ filters, onChange }: SearchBarProps) {
     const trimmed = value.trim();
     setRawQuery(trimmed);
     lastCommitted.current = trimmed;
-    onChange({ ...filters, q: trimmed || undefined });
+    // Same `like: undefined` clear as the debounced commit above, and
+    // for the same reason.
+    onChange({ ...filters, q: trimmed || undefined, like: undefined });
     if (trimmed) addRecentSearch(trimmed);
     setRecent(getRecentSearches());
   }

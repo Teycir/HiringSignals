@@ -93,11 +93,17 @@ export function SignalDetail({ signal }: SignalDetailProps) {
         </a>
       )}
 
-      {/* Milestone I.4, spec 9.4: "similar roles" via the same free-text
-          semantic search the search bar uses (see
-          more-like-this-button.tsx's header for why this isn't an
-          id-based Vectorize lookup). */}
-      <MoreLikeThisButton headline={signal.headline} />
+      {/* Milestone I.4, spec 9.4 capability 3 (id-based, since the
+          2026-08-19 fix): "similar roles" via the signal's own
+          representative job vector, not a re-embedded headline -- see
+          more-like-this-button.tsx's header for the full history of why
+          this changed from the original free-text `q` approach. jobId
+          is the first evidence row with a non-null job_id; company-
+          level signals (hiring_burst, role_acceleration, multi_location,
+          persistent_demand) can have every evidence row's jobId null,
+          in which case MoreLikeThisButton itself renders nothing -- see
+          that component's own prop comment. */}
+      <MoreLikeThisButton jobId={signal.evidence.find((e) => e.jobId !== null)?.jobId ?? undefined} />
 
       <OutreachPrompt signal={signal} />
     </div>

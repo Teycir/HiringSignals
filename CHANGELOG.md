@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A `schema_mismatch` ingest failure never archived the raw payload that caused it.** Raw-response archival (`storeRawPayload`, KV, 30-day TTL) ran only after `adapter.normalize()` succeeded, so the one failure case where the raw evidence matters most — schema validation rejecting what the board actually sent — left `source_runs.raw_payload_key` `NULL`, with nothing left to inspect. Found investigating an `OpenAI`/`ashby` source that disabled itself on a `schema_mismatch` with `http_status=200` and an unparseable body (`response.json()` threw, so `rawBody` stayed `undefined`) — no way to tell a genuine API contract change from a one-off transient glitch without the original response. `apps/api/src/jobs/ingest-consumer.ts`: archival now happens immediately after the retryable-status checks (429/5xx/4xx) and before `adapter.normalize()`'s try/catch, so it runs on every path that reaches that point, success or schema failure alike; `finalizeConfigError`'s `schema_mismatch` call site now threads the archived key through into the failed run's own `source_runs` row.
 
+## [1.1.1] — 2026-08-19
+
+### Fixed (2026-08-19)
+
+- **`returnMetadata: false` silently broke the `like`/semantic-search Vectorize queries.** `env.VECTORIZE.query()` mis-serializes the boolean `false` for `returnMetadata`, throwing `VECTOR_QUERY_ERROR (code = 40026): Failed to parse the request body as JSON: returnMetadata: expected value` — caught by the surrounding `try/catch` and silently degraded to an empty result, indistinguishable from "no matches" without checking the logs. `apps/api/src/services/semantic-search.ts`: both call sites (`findSemanticSignalMatches`, `findSimilarSignalsByJobId`) now pass `returnMetadata: "none"` instead. Confirmed via live log evidence: the exact `VECTOR_QUERY_ERROR` present before the fix, absent on every request after it.
+
+- **`findSimilarSignalsByJobId`'s "similar jobs" lookup silently inherited a 30-day filter it was never meant to have.** It called `findSignalsByJobIds(client, neighbourJobIds, { minScore: 0 })` without an explicit `observedSince`, so `buildCommonFilters` applied its own default of "last 30 days" — contradicting the `like` capability's own spec (9.4), which defines it as filter-free. Not visible in earlier testing only because the test data happened to fall inside the 30-day window. Fixed by passing `observedSince: new Date(0).toISOString()` explicitly to defeat the default.
+
 ## [1.1.0] — 2026-08-18
 
 ### Fixed (2026-08-18)

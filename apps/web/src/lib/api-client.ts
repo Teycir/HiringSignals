@@ -144,7 +144,10 @@ export interface SignalListResponse {
     requestId: string;
     appliedFilters: Record<string, unknown>;
     nextCursor: string | null;
-    searchMode: "keyword" | "hybrid";
+    // "similar": spec 9.4 capability 3 (`like` param) -- id-based
+    // Vectorize lookup, distinct from "hybrid" (capability 1's `q`
+    // keyword+semantic merge).
+    searchMode: "keyword" | "hybrid" | "similar";
   };
 }
 

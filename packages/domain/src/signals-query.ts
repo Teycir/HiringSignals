@@ -42,6 +42,17 @@ export const signalsQuerySchema = z.object({
     .optional(),
   company: z.string().optional(),
   q: z.string().min(2).optional(),
+  // Job id for id-based "similar signals" (spec 9.4 capability 3, added
+  // 2026-08-19). Wins over `q` when both are present (signals.ts route
+  // handler enforces the precedence, not this schema -- Zod validates
+  // shape, not cross-field business rules). `.uuid()` matches
+  // signalIdParamSchema's own convention (signal-id-param.ts) -- job ids
+  // are crypto.randomUUID() same as signal ids (jobs-repo.ts) -- so
+  // a malformed `like` value is a clean 400 (ZodError, same as every
+  // other bad param here) rather than reaching the DB/Vectorize lookup
+  // at all. A well-formed but *nonexistent* job id (deleted, or never
+  // embedded) is a separate, later 404 -- see spec 9.4's query contract.
+  like: z.string().uuid().optional(),
   locationMode: z.enum(["remote", "hybrid", "onsite", "unknown"]).optional(),
   // 2-letter uppercase country (ISO 3166-1 alpha-2). Uppercase coercion so
   // clients can send `?country=fr` and still match the DB column which

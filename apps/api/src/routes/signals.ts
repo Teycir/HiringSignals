@@ -17,7 +17,11 @@ import {
   type SignalListItem,
 } from "@hiring-signals/db";
 import { freeReadTier } from "../middleware/anti-abuse";
-import { findSemanticSignalMatches } from "../services/semantic-search";
+import {
+  findSemanticSignalMatches,
+  findSimilarSignalsByJobId,
+  JobNotEmbeddedError,
+} from "../services/semantic-search";
 
 // Query schema mirrors spec 9.3, and lives in @hiring-signals/domain
 // (signals-query.ts) as of ROADMAP.md Milestone F.1.1 -- re-exported here
@@ -31,6 +35,69 @@ signalsRoute.use("*", freeReadTier());
 signalsRoute.get("/", async (c) => {
   const parsed = signalsQuerySchema.parse(c.req.query());
   const client = createD1Client(c.env.DB);
+
+  // Id-based "similar signals" (spec 9.4 capability 3): `like` wins over
+  // `q` when both are present, and short-circuits the whole handler --
+  // the keyword (listSignals) leg never runs, no filters apply, no
+  // pagination/cursor semantics, per spec 9.4's query contract for this
+  // capability. This is deliberately its own branch, not folded into
+  // the `q` hybrid-merge logic below: capability 3 has no keyword leg to
+  // merge against (mergeSignalMatches expects a keyword result list),
+  // and its own error contract (404 on an unembedded job) is the
+  // opposite of capability 1's semantic leg (which always degrades
+  // silently) -- conflating the two would mean either capability 3
+  // loses its 404, or capability 1 gains one it was never meant to have.
+  if (parsed.like) {
+    let similarMatches;
+    try {
+      similarMatches = await findSimilarSignalsByJobId(client, c.env, parsed.like);
+    } catch (err) {
+      if (err instanceof JobNotEmbeddedError) {
+        return c.json(
+          {
+            error: {
+              code: "NOT_FOUND",
+              message: `No stored embedding for job ${err.jobId}.`,
+              requestId: c.get("requestId"),
+            },
+          },
+          404,
+        );
+      }
+      throw err;
+    }
+
+    const items: SignalListItem[] = [];
+    for (const match of similarMatches) {
+      try {
+        items.push(toListItem(match.signal));
+      } catch (err) {
+        // Same per-row degrade as the `q` hybrid leg below: skip a
+        // corrupt row with a structured log rather than failing the
+        // whole request over one bad signal.
+        if (err instanceof CorruptSignalRowError) {
+          console.error("corrupt_signal_row_skipped_similar", {
+            signalId: match.signal.id,
+            reason: err.message,
+          });
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    return c.json({
+      data: items,
+      meta: {
+        requestId: c.get("requestId"),
+        appliedFilters: parsed,
+        // No pagination for this mode (see comment above) -- a `like`
+        // response is always a single, complete page.
+        nextCursor: null,
+        searchMode: "similar",
+      },
+    });
+  }
 
   let result;
   try {

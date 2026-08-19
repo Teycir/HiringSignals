@@ -726,6 +726,7 @@ Allowed fields:
 | `roles`         | comma-delimited enum | Primary role categories                               |
 | `company`       | string               | Slug, exact ID, or server-side autocomplete selection |
 | `q`             | string               | Company-name search; minimum $2$ characters           |
+| `like`          | string               | Job id for id-based similarity (§9.4 capability 3); wins over `q` if both are present |
 | `locationMode`  | enum                 | `remote`, `hybrid`, `onsite`, `unknown`               |
 | `country`       | ISO code             | Optional                                              |
 | `source`        | provider enum        | Optional                                              |
@@ -796,8 +797,21 @@ until this section is promoted out of draft status.
    guardrail below and `ROADMAP.md` I.5) — semantic similarity as an
    additional, optional input to §6.2's classification confidence
    scoring, never a replacement for it.
+3. **Id-based "similar signals" lookup** (added 2026-08-19, promoted out
+   of the "future revision" placeholder the query contract below
+   originally left for it) — a dedicated `like` parameter (§9.3's
+   table) that resolves nearest neighbours from a *specific signal's own
+   representative job vector* via `VECTORIZE.getByIds`, rather than
+   re-embedding free text through capability 1's `q` leg. This is the
+   "more precise v2" `more-like-this-button.tsx`'s original header
+   comment already anticipated: capability 1's `q` leg has no upper
+   bound on input length (a signal headline can run well past what a
+   search box would ever contain), and is the wrong mechanism for "find
+   more like this specific thing" even where it works, since it
+   similarity-matches on a re-embedded headline's wording rather than
+   the job's actual stored embedding.
 
-**Guardrail (binding on both capabilities, restated from §18):**
+**Guardrail (binding on all three capabilities, restated from §18):**
 _"Do not use a generic 'AI classifier' where deterministic rules are
 enough. Make any model-assisted classification opt-in, server-side,
 auditable, and non-blocking."_ Concretely for this feature:
@@ -828,14 +842,67 @@ type in §9.3's table does not change (`string`, still company-name
 matched as today) — its *implementation* gains a second, semantic leg
 run in parallel with the existing match and merged by score, the same
 `data`/`meta` response envelope as every other `/api/v1/signals`
-response (§9.1). No new query parameter is introduced for v1 of this
-addendum; a query that returns only a semantic match (no company-name
-substring hit) is a legitimate, expected result once this ships, not a
-bug. If a future revision needs an explicit "semantic-only" or
-"paste text to search" mode, it must be added here first as its own
-named parameter before being implemented (`ROADMAP.md` I.4 already
-flags a paste-text mode as an optional, lower-priority follow-on, not
-in scope for the initial build).
+response (§9.1). A query that returns only a semantic match (no
+company-name substring hit) is a legitimate, expected result once this
+ships, not a bug.
+
+**Query contract (id-based similarity, capability 3):** a new `like`
+parameter on `GET /api/v1/signals` (added to §9.3's table alongside
+`q`), type `string`, holding a `jobs.id` value — specifically, one of
+the requesting signal's own `signal_evidence.job_id` values (schema at
+line ~625; a client resolves this from `GET /api/v1/signals/:signalId`'s
+(§9.2) `evidence[].jobId` field, not from any new field this section
+adds). `like` and `q` are mutually
+exclusive in the same request: if both are present, `like` wins and `q`
+is ignored (rather than erroring on an ambiguous request — the same
+"accept and resolve, don't 400 over it" posture the rest of §9.3 already
+takes toward redundant/overlapping filters). When `like` is present:
+
+- The keyword (`listSignals`) leg does not run at all — capability 3
+  is a pure Vectorize lookup, not a hybrid merge like capability 1.
+  `roles`/`company`/`locationMode`/`country`/`source`/`signalType`/
+  `minScore`/`observedSince`/`sort`/`cursor` are all ignored when `like`
+  is present (mirrors ArxivExplorer's `handleMoreLikeThis`, which takes
+  no filters either) — a future revision may thread the non-`q` filters
+  through if a concrete need for "similar roles, but only remote"
+  emerges, but that's out of scope here per this section's own
+  "must be added here first" rule below.
+- The server resolves the job id's own stored vector via
+  `VECTORIZE.getByIds([jobId])`, queries nearest neighbours from that
+  vector (not a re-embedded text query), excludes the source job id
+  from the result set, then resolves the neighbour job ids back to
+  active signals via the same `findSignalsByJobIds` capability 1's
+  semantic leg already uses (§9.4 I.3) — so a `like` result is still
+  drawn only from real, currently-active, fully-evidenced signals, not
+  a raw Vectorize metadata snapshot.
+- `meta.searchMode` (§9.1's response envelope) is `"similar"` for a
+  `like` request, distinct from `"keyword"`/`"hybrid"` (capability 1),
+  so a client can tell the three modes apart without inspecting which
+  request param it sent.
+- If the job id has no stored vector (never embedded, or embedded after
+  this signal's evidence was captured — §9.4's own availability
+  guardrail already establishes that embedding is best-effort, not
+  guaranteed for every job), the response is a 404 with a structured
+  error body (§9.1's error envelope), not a silent empty result — unlike
+  capability 1's semantic leg, which degrades silently to keyword-only
+  because a `q` search is expected to always return *something*
+  reasonable, a `like` request found nothing to compare against, which
+  is a genuinely different, worth-surfacing condition, not "zero
+  matches."
+- Same never-throw-past-this-boundary posture as capability 1's
+  `findSemanticSignalMatches` for the neighbour-lookup step specifically
+  (a Vectorize `query()` failure after a successful `getByIds` still
+  degrades to an empty match list, not a 500) — but `getByIds` itself
+  returning nothing IS the 404 case above, not a degrade-to-empty case,
+  since that's the one failure mode with a genuine, useful answer to
+  give the caller ("this job was never embedded") rather than papering
+  over it.
+
+If a future revision needs an explicit "semantic-only" or "paste text
+to search" mode beyond what `q` and `like` now cover, it must be added
+here first as its own named parameter before being implemented
+(`ROADMAP.md` I.4 already flags a paste-text mode as an optional,
+lower-priority follow-on, not in scope for this section).
 
 **Non-goals for this addendum:**
 

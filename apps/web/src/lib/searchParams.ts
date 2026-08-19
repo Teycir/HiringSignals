@@ -45,6 +45,13 @@ export interface FilterState {
   roles: RoleCategory[];
   company?: string;
   q?: string;
+  // Job id for id-based "similar signals" (spec 9.4 capability 3, added
+  // 2026-08-19) -- set by MoreLikeThisButton's navigation, never typed
+  // directly. Mutually exclusive with `q` in practice (search-bar.tsx
+  // clears its own input when this is set externally); the API's own
+  // `like`-wins-over-`q` precedence (signals.ts) is the enforcement
+  // point, not this type.
+  like?: string;
   locationMode?: "remote" | "hybrid" | "onsite" | "unknown";
   country?: string;
   source?: AtsProvider;
@@ -87,6 +94,9 @@ export function parseFilterState(params: URLSearchParams): FilterState {
 
   const q = params.get("q");
   if (q) state.q = q;
+
+  const like = params.get("like");
+  if (like) state.like = like;
 
   const locationMode = locationModeSchema.safeParse(params.get("locationMode"));
   if (locationMode.success) state.locationMode = locationMode.data;
@@ -138,6 +148,7 @@ export function serializeFilterState(state: FilterState): URLSearchParams {
   if (state.roles.length > 0) params.set("roles", state.roles.join(","));
   if (state.company) params.set("company", state.company);
   if (state.q) params.set("q", state.q);
+  if (state.like) params.set("like", state.like);
   if (state.locationMode) params.set("locationMode", state.locationMode);
   if (state.country) params.set("country", state.country);
   if (state.source) params.set("source", state.source);
@@ -202,6 +213,7 @@ export function toApiParams(state: FilterState, now = new Date()): SignalListPar
     roles: state.roles.length > 0 ? state.roles : undefined,
     company: state.company,
     q: state.q,
+    like: state.like,
     locationMode: state.locationMode,
     country: state.country,
     source: state.source,
