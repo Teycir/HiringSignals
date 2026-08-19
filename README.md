@@ -21,6 +21,26 @@ _"What is actually happening at this company, right now."_
 
 ---
 
+## 📸 Screenshots
+
+<div align="center">
+
+### Signals Feed
+
+![Signals feed](public/signals.png)
+
+### Hiring Trends
+
+![Hiring trends](public/trends.png)
+
+### Demo Video
+
+[![Watch the explainer video](https://img.youtube.com/vi/bHFCREJ1gIU/maxresdefault.jpg)](https://youtu.be/bHFCREJ1gIU)
+
+</div>
+
+---
+
 ## What it does
 
 Hiring Signals watches company career pages — via official ATS APIs, no scraping — and turns raw job postings into scored, filterable **signals** you can query from a CLI or pipe into an AI agent.
@@ -90,37 +110,17 @@ Every signal keeps a full evidence trail — source platform, canonical public U
 
 ---
 
-## 📸 Screenshots
-
-<div align="center">
-
-### Signals Feed
-
-![Signals feed](public/signals.png)
-
-### Hiring Trends
-
-![Hiring trends](public/trends.png)
-
-### Demo Video
-
-[![Watch the explainer video](https://img.youtube.com/vi/bHFCREJ1gIU/maxresdefault.jpg)](https://youtu.be/bHFCREJ1gIU)
-
-</div>
-
----
-
 ## 📑 Table of Contents
 
 - [Hiring Signals Intelligence](#hiring-signals-intelligence)
-  - [What it does](#what-it-does)
-    - [How it tells real hiring intent from noise](#how-it-tells-real-hiring-intent-from-noise)
-    - [What it covers](#what-it-covers)
-    - [Who uses it](#who-uses-it)
   - [📸 Screenshots](#-screenshots)
     - [Signals Feed](#signals-feed)
     - [Hiring Trends](#hiring-trends)
     - [Demo Video](#demo-video)
+  - [What it does](#what-it-does)
+    - [How it tells real hiring intent from noise](#how-it-tells-real-hiring-intent-from-noise)
+    - [What it covers](#what-it-covers)
+    - [Who uses it](#who-uses-it)
   - [📑 Table of Contents](#-table-of-contents)
   - [Layout](#layout)
   - [🛠 Tech Stack](#-tech-stack)
