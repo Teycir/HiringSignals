@@ -258,14 +258,16 @@ export function TrendsChart({ trends, metric }: TrendsChartProps) {
               {rows.map((row, index) => (
                 <Cell key={row.slug} fill={index === 0 ? "var(--accent)" : "var(--ink)"} />
               ))}
-              <LabelList
-                dataKey="value"
-                position="right"
-                formatter={(value: unknown) =>
-                  typeof value === "number" ? config.format(value) : String(value ?? "")
-                }
-                style={{ fill: "var(--ink)", fontFamily: CHART_FONT, fontSize: 11 }}
-              />
+              {metric === "volume" && (
+                <LabelList
+                  dataKey="value"
+                  position="right"
+                  formatter={(value: unknown) =>
+                    typeof value === "number" ? config.format(value) : String(value ?? "")
+                  }
+                  style={{ fill: "var(--ink)", fontFamily: CHART_FONT, fontSize: 11 }}
+                />
+              )}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
