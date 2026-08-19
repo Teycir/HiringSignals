@@ -92,6 +92,8 @@ Every signal keeps a full evidence trail — source platform, canonical public U
 
 ## 📸 Screenshots
 
+<div align="center">
+
 ### Signals Feed
 
 ![Signals feed](public/signals.png)
@@ -102,7 +104,9 @@ Every signal keeps a full evidence trail — source platform, canonical public U
 
 ### Demo Video
 
-[▶️ Watch the explainer video](public/hiring_signals_explainer.mp4)
+[▶️ Watch the explainer video](https://youtu.be/bHFCREJ1gIU)
+
+</div>
 
 ---
 
