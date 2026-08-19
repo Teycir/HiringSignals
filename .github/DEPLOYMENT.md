@@ -2,6 +2,32 @@
 
 This repository uses GitHub Actions for automated deployment to Cloudflare Workers.
 
+## Required GitHub Secret
+
+The deployment workflow requires the following GitHub repository secret:
+
+### `CLOUDFLARE_API_TOKEN`
+
+A Cloudflare API token with permissions to deploy Workers to your Cloudflare account.
+
+**To set this secret:**
+
+1. Generate a Cloudflare API token with the following permissions:
+   - Account > Workers Scripts > Edit
+   - Account > Workers Scripts Inventory > Edit
+   - Account > Account Settings > Read (for account ID resolution)
+
+2. Set the secret in your GitHub repository:
+   ```bash
+   gh secret set CLOUDFLARE_API_TOKEN
+   ```
+   Paste your token value when prompted.
+
+**Token permissions details:**
+- Must have access to the Cloudflare account specified in `apps/api/wrangler.toml` (account_id)
+- Should be scoped to the specific account to follow principle of least privilege
+- Must include D1, KV, Queue, Vectorize, and Workers AI permissions if you want full deployment capabilities
+
 ## Pre-Push Quality Gate
 
 Before pushing to remote, a git pre-push hook enforces CI/CD quality gates locally:
@@ -43,8 +69,11 @@ cd apps/web
 pnpm deploy
 ```
 
+These require `CLOUDFLARE_API_TOKEN` to be set in your environment (or via `.env.local`).
+
 ## Security Notes
 
+- The `CLOUDFLARE_API_TOKEN` secret is never logged or exposed in workflow logs
 - Pre-push hook prevents pushing code that fails typecheck or lint
 - Deployment only runs on the main branch to prevent accidental deployments from feature branches
 - The workflow performs typecheck and lint before deployment to ensure code quality
