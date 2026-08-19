@@ -62,7 +62,7 @@ export interface FilterState {
   cursor?: string;
 }
 
-export const DEFAULT_LIMIT = 50;
+export const DEFAULT_LIMIT = 15;
 
 const locationModeSchema = z.enum(["remote", "hybrid", "onsite", "unknown"]);
 const sortSchema = z.enum(["score_desc", "newest", "company_asc"]);

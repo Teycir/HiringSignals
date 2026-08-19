@@ -2,11 +2,16 @@
 // Signal feed (spec 12.2 steps 3 & 5 -- fetch + cancel stale requests;
 // URL parsing/sync, steps 1/2/4, is the /signals page's job, not this
 // component's -- same division as company-combobox.tsx not touching
-// the URL either). Cursor-based "load more": FilterState.cursor is
-// deliberately never round-tripped through the URL (see
-// searchParams.ts's serializeFilterState comment -- a new filter
-// combination invalidates pagination), so accumulated results/cursor
-// live in this component's own state, reset whenever `filters` changes.
+// the URL either). Cursor-based pagination, page-scoped (not
+// accumulate-forever "load more"): FilterState.cursor is deliberately
+// never round-tripped through the URL (see searchParams.ts's
+// serializeFilterState comment -- a new filter combination invalidates
+// pagination), so the current page's items plus a small history of
+// past-page cursors (for Previous) live in this component's own state,
+// reset whenever `filters` changes. DEFAULT_LIMIT (searchParams.ts) is
+// 15 -- one page's worth, not a fetch batch size -- so a page never
+// shows more than 15 signals at once, unlike the earlier
+// accumulate-into-one-long-list "Load more" behavior.
 //
 // Loading/empty/error states here are functional, not final: spec
 // 10.6's exact copy is used for the states this component can support
@@ -29,7 +34,7 @@ interface SignalFeedProps {
 
 type FeedState =
   | { status: "error"; error: ApiClientError | Error }
-  | { status: "ready"; items: SignalListItem[]; nextCursor: string | null; loadingMore: boolean };
+  | { status: "ready"; items: SignalListItem[]; nextCursor: string | null };
 
 /** Returns the most recent lastSuccessAt across all sources, or null if
  * none have ever run. Used to render an honest "no data yet" / "stale"
@@ -70,10 +75,30 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
     status: "ready",
     items: [],
     nextCursor: null,
-    loadingMore: false,
   });
   const [resolvedForKey, setResolvedForKey] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Page-history cursor stack: pastCursors[i] is the cursor that
+  // fetched the page *before* the current one (undefined for page 1,
+  // the initial fetch with no cursor at all). goToNextPage pushes the
+  // current page's own request cursor before advancing; goToPreviousPage
+  // pops it and re-fetches with it. Reset to [] whenever filters change
+  // (new filter combination invalidates any prior page position, same
+  // as cursor itself never round-tripping through the URL -- see this
+  // file's header comment). Reset happens inline during render (the
+  // "adjusting state when a prop changes" pattern React's own docs
+  // recommend -- react.dev/learn/you-might-not-need-an-effect#adjusting-
+  // some-state-when-a-prop-changes), comparing filterKey against the
+  // last-seen value stored in state (see lastFilterKey below), NOT in a
+  // useEffect: this codebase's own set-state-in-effect lint rule (see
+  // the FeedState comment above) flags exactly that shape (a bare
+  // setState at the top of an effect body), and this reset is a direct
+  // analogue of resetting a component whenever a `key`-like prop
+  // changes.
+  const [pastCursors, setPastCursors] = useState<(string | undefined)[]>([]);
+  const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
+  const pageNumber = pastCursors.length + 1;
 
   // Source staleness state (ROADMAP V.2): fetched once when the feed
   // resolves empty with no active filters. null = not yet fetched.
@@ -91,16 +116,48 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
   // re-trigger this effect on every render, not just on an actual
   // filter change.
   const filterKey = JSON.stringify(toApiParams(filters));
-  const isLoading = resolvedForKey !== filterKey;
+
+  // Filters changed since the last render (not just a page navigation):
+  // reset pagination state back to page 1, synchronously during render
+  // (see the comment on pastCursors above for why this isn't a
+  // useEffect). lastFilterKey is plain useState, not useRef: this
+  // codebase's lint config (React Compiler-era rules) forbids reading or
+  // writing a ref's `.current` during render entirely (refs are for
+  // effects/handlers only) -- storing the "previous value to compare
+  // against" in state instead is the compiler-safe version of the same
+  // "adjusting state when a prop changes" pattern. Initialized to
+  // filterKey itself (useState's lazy-init form runs once) so the very
+  // first render is never treated as "filters changed."
+  const [lastFilterKey, setLastFilterKey] = useState(filterKey);
+  if (lastFilterKey !== filterKey) {
+    setLastFilterKey(filterKey);
+    if (pastCursors.length > 0 || currentCursor !== undefined) {
+      setPastCursors([]);
+      setCurrentCursor(undefined);
+    }
+  }
+
+  // fetchKey folds currentCursor in too, so a page navigation (same
+  // filters, different cursor) is recognized as "not yet resolved" the
+  // same way a filter change is -- both go through the one effect below.
+  // Deliberately built from filterKey + currentCursor as they stand
+  // *after* the render-time reset above, so a filter change and its
+  // pagination reset are always reflected together, never one render
+  // behind the other.
+  const fetchKey = `${filterKey}::${currentCursor ?? ""}`;
+  const isLoading = resolvedForKey !== fetchKey;
 
   useEffect(() => {
-    if (resolvedForKey === filterKey) return;
+    if (resolvedForKey === fetchKey) return;
 
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    fetchSignals(toApiParams(filters), { signal: controller.signal })
+    fetchSignals(
+      { ...toApiParams(filters), cursor: currentCursor },
+      { signal: controller.signal },
+    )
       .then((res) => {
         // Reset source status when we successfully fetch with new filters
         setSourceStatus(null);
@@ -108,20 +165,19 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
           status: "ready",
           items: res.data,
           nextCursor: res.meta.nextCursor,
-          loadingMore: false,
         });
-        setResolvedForKey(filterKey);
+        setResolvedForKey(fetchKey);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
         // Reset source status on error as well
         setSourceStatus(null);
         setState({ status: "error", error: err instanceof Error ? err : new Error(String(err)) });
-        setResolvedForKey(filterKey);
+        setResolvedForKey(fetchKey);
       });
 
     return () => controller.abort();
-  }, [filterKey, resolvedForKey, filters]);
+  }, [fetchKey, resolvedForKey, filters, currentCursor]);
 
   // When the feed resolves empty with no active filters, check source
   // staleness once (sourceStatus === null guard prevents re-fetching).
@@ -161,33 +217,22 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
       });
   }, [isLoading, state, filters, sourceStatus]);
 
-  function loadMore() {
-    if (state.status !== "ready" || state.nextCursor === null || state.loadingMore) return;
-    const cursor = state.nextCursor;
-    setState({ ...state, loadingMore: true });
+  function goToNextPage() {
+    if (state.status !== "ready" || state.nextCursor === null || isLoading) return;
+    setPastCursors((prev) => [...prev, currentCursor]);
+    setCurrentCursor(state.nextCursor);
+  }
 
-    fetchSignals({ ...toApiParams(filters), cursor })
-      .then((res) => {
-        setState((prev) =>
-          prev.status === "ready"
-            ? {
-                status: "ready",
-                items: [...prev.items, ...res.data],
-                nextCursor: res.meta.nextCursor,
-                loadingMore: false,
-              }
-            : prev,
-        );
-      })
-      .catch((e) => {
-        console.error("[SignalFeed] Load more failed:", e);
-        setState((prev) => (prev.status === "ready" ? { ...prev, loadingMore: false } : prev));
-      });
+  function goToPreviousPage() {
+    if (pastCursors.length === 0 || isLoading) return;
+    const prevCursor = pastCursors[pastCursors.length - 1];
+    setPastCursors((prev) => prev.slice(0, -1));
+    setCurrentCursor(prevCursor);
   }
 
   function retry() {
     // Resetting resolvedForKey to something that can't equal the current
-    // filterKey lets the effect's own guard/fetch logic re-run naturally
+    // fetchKey lets the effect's own guard/fetch logic re-run naturally
     // on next render, rather than duplicating the fetch here a third time.
     setResolvedForKey(null);
   }
@@ -196,7 +241,11 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
     // First-load skeleton (spec 10.6: "preserve dense layout", not a
     // generic spinner) -- fixed count of card-shaped placeholders at
     // the same border/padding as SignalCard so the layout doesn't jump
-    // once real results arrive.
+    // once real results arrive. Capped at DEFAULT_LIMIT (15) rather than
+    // a fixed 6, matching the real page size so the skeleton's height
+    // doesn't visibly shrink once results replace it. Kept small (not
+    // literally 15 placeholder blocks) since the skeleton only needs to
+    // suggest "a page of cards is coming," not pixel-match the final count.
     return (
       <div className="flex flex-col gap-3" aria-busy="true" aria-label="Loading signals">
         {Array.from({ length: 6 }).map((_, i) => (
@@ -284,16 +333,28 @@ export function SignalFeed({ filters, onResetFilters }: SignalFeedProps) {
       {state.items.map((signal) => (
         <SignalCard key={signal.id} signal={signal} />
       ))}
-      {state.nextCursor !== null && (
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={loadMore}
-          disabled={state.loadingMore}
-          className="self-center"
-        >
-          {state.loadingMore ? "Loading..." : "Load more"}
-        </Button>
+      {(pastCursors.length > 0 || state.nextCursor !== null) && (
+        <div className="flex items-center justify-center gap-4 pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={goToPreviousPage}
+            disabled={pastCursors.length === 0 || isLoading}
+          >
+            ← Previous
+          </Button>
+          <span className="font-display text-xs text-soft-ink uppercase">
+            Page {pageNumber}
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={goToNextPage}
+            disabled={state.nextCursor === null || isLoading}
+          >
+            Next →
+          </Button>
+        </div>
       )}
     </div>
   );
