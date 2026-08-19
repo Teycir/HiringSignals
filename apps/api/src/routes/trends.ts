@@ -90,7 +90,16 @@ trendsRoute.get("/hiring", async (c) => {
     sort: parsed.sort,
   });
 
-  await c.env.CACHE.put(cacheKey, JSON.stringify(results), { expirationTtl: CACHE_TTL_SECONDS });
+  // Cache write with graceful fallback for KV quota limits (free tier)
+  // has a daily write limit -- if exceeded, still return the fresh result
+  // rather than failing the entire request.
+  try {
+    await c.env.CACHE.put(cacheKey, JSON.stringify(results), { expirationTtl: CACHE_TTL_SECONDS });
+  } catch (err) {
+    // KV write failed (likely quota limit) -- log and continue, the
+    // fresh result is still valid to return to the user.
+    console.error(`KV cache write failed for key ${cacheKey}:`, err);
+  }
 
   return c.json({
     data: results,

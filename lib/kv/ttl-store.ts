@@ -58,7 +58,14 @@ export function makeTtlStore(namespace: KVNamespace, options: TtlStoreOptions): 
 
     async put(parts: string[], value: string): Promise<string> {
       const k = key(...parts);
-      await namespace.put(k, value, { expirationTtl: options.retentionSeconds });
+      try {
+        await namespace.put(k, value, { expirationTtl: options.retentionSeconds });
+      } catch (err) {
+        // KV write failed (likely quota limit on free tier) -- log but don't
+        // fail the entire operation. The calling code should handle missing
+        // archived data gracefully.
+        console.error(`KV put failed for key ${k}:`, err);
+      }
       return k;
     },
 

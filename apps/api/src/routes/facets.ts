@@ -22,9 +22,16 @@ facetsRoute.get("/", async (c) => {
   const client = createD1Client(c.env.DB);
   const facets = await getFacets(client);
 
-  await c.env.CACHE.put(CACHE_KEY, JSON.stringify(facets), {
-    expirationTtl: CACHE_TTL_SECONDS,
-  });
+  // Cache write with graceful fallback for KV quota limits (free tier
+  // has a daily write limit) -- if exceeded, still return the fresh result
+  // rather than failing the entire request.
+  try {
+    await c.env.CACHE.put(CACHE_KEY, JSON.stringify(facets), {
+      expirationTtl: CACHE_TTL_SECONDS,
+    });
+  } catch (err) {
+    console.error(`KV cache write failed for key ${CACHE_KEY}:`, err);
+  }
 
   return c.json({ data: facets, meta: { requestId: c.get("requestId"), cached: false } });
 });
