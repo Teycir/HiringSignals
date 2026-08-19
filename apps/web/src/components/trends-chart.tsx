@@ -105,12 +105,12 @@ const METRIC_CONFIG: Record<
   acceleration: {
     label: "Acceleration",
     getValue: (t) => t.acceleration,
-    format: (v) => v.toFixed(2),
+    format: (v) => v.toFixed(4),
   },
   velocity: {
     label: "Velocity score",
     getValue: (t) => t.hiringVelocityScore ?? 0,
-    format: (v) => String(Math.round(v)),
+    format: (v) => v === 0 ? "N/A" : String(Math.round(v)),
   },
   volume: {
     label: "New jobs",

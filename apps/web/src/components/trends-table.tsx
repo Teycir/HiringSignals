@@ -34,14 +34,10 @@ function topLocationLabel(topLocations: HiringTrendCompany["topLocations"]): str
 }
 
 // acceleration is a 0-1 normalized value (computeAcceleration, shared
-// with signal-score.ts) -- shown as a plain-language indicator rather
-// than a raw decimal, matching the disclaimer's "not a prediction"
-// framing: a bare 0.73 looks precise in a way the underlying signal
-// isn't.
+// with signal-score.ts) -- shown with 4 decimal places for precision
+// instead of text labels, since the actual differences matter for ranking.
 function accelerationLabel(acceleration: number): string {
-  if (acceleration >= 0.66) return "Accelerating";
-  if (acceleration >= 0.33) return "Steady";
-  return "Slowing";
+  return acceleration.toFixed(4);
 }
 
 export function TrendsTable({ trends }: TrendsTableProps) {

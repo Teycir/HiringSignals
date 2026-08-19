@@ -61,6 +61,8 @@ export function VelocityBadge({ score, computedAt, disclaimer }: VelocityBadgePr
         </h2>
         {score === null ? (
           <DataLabel className="px-3 py-1.5 font-bold text-soft-ink">Not yet computed</DataLabel>
+        ) : score === 0 ? (
+          <DataLabel className="px-3 py-1.5 font-bold text-soft-ink">N/A</DataLabel>
         ) : (
           <DataLabel
             className={`px-3 py-1.5 font-bold text-base ${
