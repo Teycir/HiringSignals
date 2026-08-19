@@ -104,7 +104,7 @@ Every signal keeps a full evidence trail — source platform, canonical public U
 
 ### Demo Video
 
-[▶️ Watch the explainer video](https://youtu.be/bHFCREJ1gIU)
+[![Watch the explainer video](https://img.youtube.com/vi/bHFCREJ1gIU/maxresdefault.jpg)](https://youtu.be/bHFCREJ1gIU)
 
 </div>
 
