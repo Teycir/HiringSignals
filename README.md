@@ -44,6 +44,30 @@ The intended workflow:
 
 Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usual search with no flags at all, making periodic checks fully automated.
 
+### How it tells real hiring intent from noise
+
+The system never asks "is this job posting a scam." It answers a narrower, checkable question instead: **is this a genuine, still-open, freshly-changed hiring event, or is it stale/duplicate/noise that shouldn't be surfaced as one?** That question is answered by three independent layers, each with its own unit-tested pure function (`packages/domain/src/*.ts`) so the reasoning is inspectable and recomputable from persisted data, not a black-box heuristic.
+
+**1. Lifecycle — is the posting actually still there? (`lifecycle.ts`)**
+Every job is tracked as a small state machine (`active` → `possibly_closed` → `closed`, or back to `active` on reappearance), driven only by whether the job's external ID showed up in the most recent successful ATS poll — never by guessing from posting content. This is what separates a *real* signal from a scraping artifact:
+- A job that vanishes for exactly one run stays `active` — could just be pagination flake or a transient 4xx, not a real closure.
+- Two consecutive missing runs → `possibly_closed`. Four consecutive misses, or 14 days since last seen, → `closed`.
+- A closed job reappearing only re-triggers a `reopened_job` signal if it was absent **3+ days** — a shorter gap is treated as the same outage-driven flicker, not a genuine re-hire, so the system doesn't spam reopened-job signals every time one poll blips.
+- If a source run fails outright, missing-run counters are left untouched entirely — a broken adapter can never manufacture a fake "job closed" event.
+
+**2. Classification — is this actually the role it claims to be? (`classification.ts`)**
+Titles alone are noisy (a "Security Engineer" req can sit in a "Data" department, or a description can mention three other teams in passing), so classification blends three channels — title (80% weight), department (15%), description (5%) — using deterministic phrase/abbreviation rules, never an LLM, so results are reproducible. Two guards keep this from manufacturing false confidence:
+- **Disagreement penalty**: if title and department imply *different* role categories, the winning category's score is discounted 15% (or 30% for a 3-way split) — because channels actively disagreeing is weaker evidence than one channel going unconfirmed.
+- **Description noise guard**: unstructured description text only ever *confirms* a category the structured title/department fields already matched (or fills in when both are silent) — it can never out-vote a structured match just because the text mentions an unrelated team in passing.
+- A job only auto-generates a signal at ≥0.80 confidence (`AUTO_CLASSIFY_THRESHOLD`); anything under that is available but not asserted as a confident match.
+
+**3. Scoring — how much does this signal actually matter right now? (`signal-score.ts`)**
+Even a real, correctly-classified, still-open posting doesn't stay equally important forever. Every signal gets a 0–100 score recomputed from five components — freshness (35%, exponential decay from days since last observed), volume (25%, how many matching roles are active for that company+role right now), acceleration (20%, is the pace of new postings above or below this company's own 56-day baseline), breadth (10%, how many distinct locations), and classification confidence (10%) — so a signal that goes quiet decays on its own instead of sitting at a stale high score forever. The acceleration formula has an explicit guard against manufacturing a false "accelerating" read: for a company+role with no 56-day history yet, the relative-rate formula would divide by a near-zero baseline and saturate to 1.0 for almost any activity at all (confirmed live — 11 of 14 companies were pinned at max acceleration for this reason before the fix) — so a cold-start case is instead scored on an absolute scale, not a misleadingly extreme ratio.
+
+Company-level rollups (`hiring-velocity.ts`) reuse these same acceleration/breadth primitives but are always shown with a fixed disclaimer (`HIRING_VELOCITY_DISCLAIMER`): *"Based on pace, breadth, and persistence of public hiring activity. Not a prediction of intent or budget."* — the system reports what it can actually observe and verify (a posting existing, disappearing, or reappearing on a company's own public ATS) and stops short of claiming to know the employer's underlying intent, which it has no access to and never asserts.
+
+Every signal keeps a full evidence trail — source platform, canonical public URL, source job identifier, timestamps, and which rule/formula version produced it — so any score or classification is independently re-checkable against what was actually observed, not just trusted.
+
 ### What it covers
 
 - **7 ATS providers**: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio — all via their official documented APIs. (SmartRecruiters was audited 2026-08-18 and kept: its API was confirmed live, and the issue was a fixable adapter bug, since fixed.)
@@ -70,6 +94,7 @@ Saved filter profiles (`hs signals list --save`) let an AI agent re-run your usu
 
 - [Hiring Signals Intelligence](#hiring-signals-intelligence)
   - [What it does](#what-it-does)
+    - [How it tells real hiring intent from noise](#how-it-tells-real-hiring-intent-from-noise)
     - [What it covers](#what-it-covers)
     - [Who uses it](#who-uses-it)
   - [📑 Table of Contents](#-table-of-contents)
