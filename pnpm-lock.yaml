@@ -57,6 +57,9 @@ importers:
       '@hiring-signals/test-support':
         specifier: workspace:*
         version: link:../../packages/test-support
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
       eslint:
         specifier: ^10.8.0
         version: 10.8.0(jiti@2.7.0)(supports-color@10.2.2)
@@ -168,6 +171,9 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
       eslint:
         specifier: ^10.8.0
         version: 10.8.0(jiti@2.7.0)(supports-color@10.2.2)
@@ -212,6 +218,9 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
       eslint:
         specifier: ^10.8.0
         version: 10.8.0(jiti@2.7.0)(supports-color@10.2.2)
