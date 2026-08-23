@@ -16,6 +16,7 @@ import Link from "next/link";
 import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
 import { SIGNAL_TYPE_LABELS } from "@/lib/labels";
 import { DataLabel } from "./ui/data-label";
+import { InfoTooltip } from "./ui/info-tooltip";
 import { TIE_BREAK_WEIGHT } from "./trends-chart";
 
 interface TrendsTableProps {
@@ -33,10 +34,17 @@ function formatSignalAt(iso: string | null): string {
 
 
 // acceleration is a 0-1 normalized value (computeAcceleration, shared
-// with signal-score.ts) -- shown with 4 decimal places for precision
-// instead of text labels, since the actual differences matter for ranking.
+// with signal-score.ts) -- shown as a whole-number percentage (e.g.
+// "100%", "47%") rather than the raw decimal. A fixed 4-decimal-place
+// number (1.0000) reads as noise, not signal, especially once a company
+// clears the acceleration threshold and saturates to exactly 1 -- see
+// trends-chart.tsx's own header comment on this same saturation being a
+// real, common outcome on this still-young dataset, not a formatting
+// bug. Percent keeps the "higher = accelerating faster" meaning
+// legible at a glance without four digits of precision nobody reads a
+// ranked list to get.
 function accelerationLabel(acceleration: number): string {
-  return acceleration.toFixed(4);
+  return `${Math.round(acceleration * 100)}%`;
 }
 
 // Apply same tie-breaker sorting as chart for consistency
@@ -87,19 +95,34 @@ export function TrendsTable({ trends, sort }: TrendsTableProps) {
               Company
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
-              New
+              <span className="inline-flex items-center">
+                New (7d)
+                <InfoTooltip label="Jobs first spotted in the last 7 days. Some may have closed since." />
+              </span>
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
-              Active
+              <span className="inline-flex items-center">
+                Open now
+                <InfoTooltip label="Jobs still live right now, of any age — not just this week's." />
+              </span>
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
-              Trend
+              <span className="inline-flex items-center">
+                Trend
+                <InfoTooltip label="Hiring pace vs. the prior period. Higher means accelerating." />
+              </span>
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
-              Velocity
+              <span className="inline-flex items-center">
+                Velocity
+                <InfoTooltip label="Overall hiring speed score. Recomputed daily; dash means not yet scored." />
+              </span>
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
-              Latest signal
+              <span className="inline-flex items-center">
+                Latest signal
+                <InfoTooltip label="The most recent hiring event we detected for this company." />
+              </span>
             </th>
             <th scope="col" className="py-2 px-4 font-display text-xs font-bold uppercase tracking-wide">
               &nbsp;

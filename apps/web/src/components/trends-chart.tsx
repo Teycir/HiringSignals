@@ -105,7 +105,10 @@ const METRIC_CONFIG: Record<
   acceleration: {
     label: "Acceleration",
     getValue: (t) => t.acceleration,
-    format: (v) => v.toFixed(4),
+    // Percentage, not a raw 4-decimal number -- see trends-table.tsx's
+    // accelerationLabel for the full reasoning (same "1.0000 reads as
+    // noise" fix applied consistently to both surfaces of this metric).
+    format: (v) => `${Math.round(v * 100)}%`,
   },
   velocity: {
     label: "Velocity score",

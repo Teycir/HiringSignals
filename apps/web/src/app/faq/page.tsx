@@ -16,55 +16,55 @@ export const metadata: Metadata = {
 const FAQS = [
   {
     q: "What is Hiring Signals?",
-    a: "HIRING//SIGNALS watches company career pages — via official ATS APIs, no scraping — and turns raw job postings into scored, filterable signals that answer what is actually happening at a company: new roles, reopened roles, hiring bursts, role acceleration, multi-location pushes, and persistent demand. It is a public hiring-signal feed, not a candidate database.",
+    a: "It watches company career pages and turns new job postings into a simple feed: which companies are hiring right now, and how fast. Think of it as a heads-up on hiring activity before it shows up on the big job boards. It's not a place to browse individual job listings — it's a feed of what's changing.",
   },
   {
     q: "Where does the data come from?",
-    a: "Official, documented APIs of seven ATS providers: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, and Personio. No scraping — each posting is fetched from the provider's own public API, normalized, and classified.",
+    a: "Directly from the same systems companies use to post jobs on their own career pages (Greenhouse, Lever, Ashby, and a few others). We read that data straight from the source, so it's accurate and up to date — nothing is scraped or guessed.",
   },
   {
-    q: "What signal types exist?",
-    a: "Six: new_job (role appeared for the first time), reopened_job (a closed role came back), hiring_burst (3+ new postings for the same role in 14 days), role_acceleration (posting pace accelerating vs. the prior 56-day baseline), multi_location (same role posted in 3+ distinct locations), and persistent_demand (role continuously active for 30+ days).",
+    q: "What do the different signal types mean?",
+    a: "Six things we watch for: a brand-new role just opened (New role); a role that had closed came back (Reopened); a company posting several openings for the same kind of role in a short window (Hiring burst); a role a company is clearly hiring for faster than usual (Speeding up); the same role opened in several cities or countries at once (Multiple locations); and a role that's stayed open for a month or more, meaning it's still being actively filled (Long-running).",
   },
   {
-    q: "How is the priority score computed?",
-    a: "Each signal gets a 0-100 score from freshness, posting volume, acceleration, location breadth, and classification confidence (formula v3). Scores decay over time if no new evidence arrives, so a high score means something is actively happening right now. Acceleration gets special handling on young datasets: for a company+role pair with no prior 56-day baseline, it is scored on an absolute recent-posting scale instead of a relative-rate comparison — the old formula saturated every such case to maximum, regardless of whether 2 or 200 roles were posted. The score-breakdown panel on each signal shows how the score is composed.",
+    q: "How is the priority score worked out?",
+    a: "Each signal gets a score from 0 to 100 based on how recent it is, how many postings back it up, how fast hiring is accelerating, how many locations are involved, and how confident we are in the classification. The score fades over time if nothing new happens — so a high score means something is happening right now, not something that happened a while ago. Every signal has a breakdown you can open to see exactly why it scored the way it did.",
   },
   {
-    q: "How are scores distributed across the feed?",
-    a: "The API exposes score-distribution statistics at GET /api/v1/signals/stats: count, min/max/mean/median/p25/p75 of signal scores, plus per-signal-type and per-role-category breakdown counts, over the same filters as the feed. It is an honest way to see how many signals sit where on the 0-100 scale under your current view.",
+    q: "How are scores spread out across the feed?",
+    a: "There's a stats view showing how scores are distributed — the highest, lowest, average, and typical range — for whatever filters you currently have set. It's a quick way to tell whether a score you're looking at is actually unusual or fairly ordinary.",
   },
   {
     q: "What is hiring velocity?",
-    a: "A 0-100 per-company score answering 'how aggressively is this company building its team right now': V = 0.40*acceleration + 0.25*breadth + 0.20*volume + 0.15*persistence. It is surfaced on company pages and in /trends.",
+    a: "A single 0–100 score per company that answers 'how aggressively is this company building its team right now?' It blends how fast hiring is accelerating, how many different roles and locations are involved, how much volume there is, and how sustained it's been. You'll see it on company pages and in the trends view.",
   },
   {
     q: "How fresh is the data?",
-    a: "Postings are ingested on a scheduler from the providers' APIs and go through classification and scoring. Signals decay when no new evidence arrives, so the feed continuously reflects current activity rather than historical listings.",
+    a: "New postings are pulled in on a regular schedule and scored right away. Signals fade out on their own if a company goes quiet, so what you see reflects what's happening now, not a stale archive.",
   },
   {
-    q: "Is login or an API key required?",
-    a: "No. The app has no login and is public and free by design — that is a permanent product decision, not a trial state. The web UI, RSS feed, and CLI all work without an account.",
+    q: "Do I need to log in or get an API key?",
+    a: "No. There's no login, ever — it's free and public by design, not a trial. The website, the RSS feed, and the command-line tool all work with no account needed.",
   },
   {
-    q: "Can AI assistants use this?",
-    a: "Yes. The hs CLI returns one JSON object on stdout with no interactive prompts (hs signals list --role software_engineering --country US), saved filter profiles let an agent re-run a usual search with no flags, and llm.txt + project-metadata.json describe the project for agent discovery. The RSS feed is filterable by the same signal filters for feed readers.",
+    q: "Can I use this with an AI assistant?",
+    a: "Yes. There's a command-line tool built for exactly that — it returns clean, structured data with no back-and-forth prompts, and you can save your usual search so it's one command instead of a long list of options. There's also a plain-text summary of the project so AI tools can understand what it does without being told.",
   },
   {
     q: "Why should I trust the signals?",
-    a: "Data comes from official ATS APIs rather than scraped job boards, each signal carries the evidence behind it (the evidence table), stale or failing sources are reconciled out, and scores are transparent — you can always open the breakdown and read the underlying postings.",
+    a: "Every posting traces back to a company's own official career-page system, not a scraped job board. Every signal shows its underlying evidence, so you can check the real postings behind it yourself. And sources that go stale or start failing get cleaned out automatically, so old noise doesn't linger.",
   },
   {
-    q: "What is the tech stack?",
-    a: "Next.js 16 deployed as a Cloudflare Worker via OpenNext, a Hono API on Cloudflare Workers, D1 (SQLite) for storage, Vectorize for embeddings, Workers AI for classification/inference, and a pnpm monorepo (apps/web, apps/api, apps/cli; packages/db, domain, adapters).",
+    q: "What is this built with?",
+    a: "It runs on Cloudflare's infrastructure end to end — the website, the API, the database, and the search/classification layer all live there, built as a set of connected apps in one codebase.",
   },
   {
-    q: "Can I access the source code?",
-    a: "Yes — the project is BSL 1.1 licensed. Find it on GitHub via the link in the footer.",
+    q: "Can I see the source code?",
+    a: "Yes — it's open source under the BSL 1.1 license. There's a link to the GitHub repo in the footer.",
   },
   {
     q: "Who built this?",
-    a: "HIRING//SIGNALS was built by Teycir Ben Soltane as a public, no-login lens on company hiring activity — for job seekers, passive seekers, analysts, and AI agents alike.",
+    a: "Teycir Ben Soltane built it as a free, no-login way to see what companies are actually hiring for — useful whether you're job hunting, casually watching the market, doing analysis, or running an AI agent that needs the data.",
   },
 ];
 

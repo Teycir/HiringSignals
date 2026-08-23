@@ -16,52 +16,52 @@ export const metadata: Metadata = {
 
 const STEPS = [
   {
-    title: "Signal feed & filters",
-    body: 'The feed at /signals shows scored hiring signals. The filter rail narrows by role category (10 IT categories, e.g. software_engineering, ai_machine_learning), work mode (remote/hybrid/onsite), source provider (7 ATS: Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio), time window, minimum score, and signal type. Filters stack and persist per view.',
+    title: "The feed & filters",
+    body: "The feed shows hiring activity as it happens, most important first. Use the filters on the side to narrow it down — by type of role (engineering, AI/ML, and other IT categories), work style (remote, hybrid, onsite), which company's job-posting system it came from, how recent it is, a minimum score, or the kind of signal. Your filters stay set as you browse.",
   },
   {
-    title: "The six signal types",
-    body: "A role just appeared for the first time (new_job); a previously closed role came back (reopened_job); three or more new postings for the same role in 14 days (hiring_burst); posting pace accelerating vs. the prior 56-day baseline (role_acceleration); the same role posted in three or more distinct locations (multi_location); a role continuously active for 30+ days (persistent_demand).",
+    title: "The six kinds of signals",
+    body: "A role just opened for the first time (New role); a role that had closed came back (Reopened); several openings for the same kind of role appeared in a short window (Hiring burst); a company is clearly hiring for a role faster than it used to (Speeding up); the same role opened in three or more different locations (Multiple locations); a role has stayed open for a month or more, meaning it's still actively being filled (Long-running).",
   },
   {
-    title: "Priority score",
-    body: "Every signal carries a 0-100 priority score computed from freshness, posting volume, acceleration, location breadth, and classification confidence (formula v3). Scores decay when no new evidence arrives — a high score means something is actively happening right now. On young datasets, acceleration for a company+role pair with no prior 56-day baseline is scored on an absolute recent-posting scale, not a relative-rate comparison, so early companies aren't all pinned at maximum. Scores of 80+ get the accent treatment in the UI.",
+    title: "The priority score",
+    body: "Every signal has a score from 0 to 100, based on how recent it is, how much posting activity backs it up, how fast things are accelerating, how many locations are involved, and how confident we are it's classified correctly. The score fades over time if nothing new happens, so a high score always means something real is happening right now. Scores of 80 or above are highlighted.",
   },
   {
     title: "Score breakdown",
-    body: 'Open any signal to see how its score is composed — the score-breakdown panel breaks the 0-100 into its contributing factors with evidence, so you can judge for yourself whether the signal is real.',
+    body: "Open any signal to see exactly why it scored the way it did — a breakdown of each factor that went into the number, with the actual postings behind it, so you can judge for yourself.",
   },
   {
     title: "Score distribution",
-    body: "The signals API exposes score-distribution statistics at GET /api/v1/signals/stats: count, min/max/mean/median/p25/p75 of scores plus per-signal-type and per-role-category breakdowns, over the same filters as the feed — useful for gauging how unusually high a particular score really is.",
+    body: "There's a stats view showing how scores are spread out across your current filters — the highest, lowest, average, and typical range. It's a fast way to tell whether a score you're looking at is genuinely unusual.",
   },
   {
     title: "Company pages",
-    body: "Visit /companies/[slug] for a company's hiring velocity score (0-100, formula V = 0.40*acceleration + 0.25*breadth + 0.20*volume + 0.15*persistence — how aggressively the team is being built right now), a time-bucketed timeline of new/closed/active jobs, role and location breakdowns, and the evidence table behind every signal.",
+    body: "Every company has its own page with a hiring velocity score (0–100, showing how aggressively they're building their team right now), a timeline of new, closed, and currently open roles over time, a breakdown by role and location, and the underlying evidence for every signal.",
   },
   {
     title: "Trends",
-    body: "/trends ranks companies across the whole dataset by acceleration, volume, newest-signal recency, or velocity — useful for spotting which companies are ramping up in a given role area before it shows up on aggregator boards.",
+    body: "The trends page ranks companies across the whole dataset by how fast they're accelerating, how much volume they're posting, how recently something happened, or overall hiring velocity — a good way to spot who's ramping up before it shows up anywhere else.",
   },
   {
     title: "More like this",
-    body: 'The "more like this" button on signals finds semantically similar signals via embeddings — a quick way to find comparable hiring activity at other companies.',
+    body: "The \"more like this\" button on a signal finds similar hiring activity at other companies — a quick way to widen your search from one good match.",
   },
   {
     title: "Export",
-    body: "The export button downloads the current filtered view as CSV (up to 2,000 rows) for offline analysis — no login required.",
+    body: "The export button downloads whatever you're currently looking at as a spreadsheet file, up to 2,000 rows, no login needed.",
   },
   {
     title: "RSS & AI-agent access",
-    body: "Subscribe to the RSS feed (/api/v1/feed.rss, filterable by the same signal filters, 50-item cap with ETag/304 support) in any feed reader, or let an AI assistant drive the data: the hs CLI returns one JSON object on stdout (hs signals list --role software_engineering --country US), saved filter profiles let it re-run your usual search with no flags, and llm.txt + project-metadata.json describe the project for agent discovery.",
+    body: "You can subscribe to an RSS feed in any feed reader, filtered the same way as the main feed. There's also a command-line tool built for scripts and AI assistants — it returns clean, structured output with no prompts, and you can save your usual search so it's one short command going forward.",
   },
   {
-    title: "Data provenance",
-    body: "Every posting comes from an official, documented ATS API — no scraping. Signals are derived from what companies publish on their own career pages, and stale sources are reconciled out, so the feed reflects real, current postings.",
+    title: "Where the data comes from",
+    body: "Every posting comes straight from the official system a company uses to post jobs on its own career page — nothing is scraped or guessed. Sources that go stale or stop responding get cleaned out automatically, so what you see is always current.",
   },
   {
     title: "Outreach",
-    body: "The outreach-prompt panel drafts a starting message from a signal's evidence — a role, location, and activity context in one place when you decide to act on a match.",
+    body: "The outreach panel drafts a starting message based on a signal's details — the role, location, and what's happening — so you have something ready to send the moment you decide to act.",
   },
 ];
 
