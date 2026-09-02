@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrendsCacheKey, resolveTrendsSince } from "../../src/routes/trends";
+import { buildTrendsCacheKey, buildTrendsFallbackCacheKey, resolveTrendsSince } from "../../src/routes/trends";
 
 /**
  * ROADMAP.md Milestone P.2 (GET /api/v1/trends/hiring).
@@ -45,5 +45,30 @@ describe("buildTrendsCacheKey", () => {
     const keyC = buildTrendsCacheKey(base, "2026-06-01T00:00:00.000Z");
     expect(keyA).not.toBe(keyB);
     expect(keyA).not.toBe(keyC);
+  });
+});
+
+/**
+ * D1-outage "last known good" fallback (2026-09-02 incident, see
+ * trends.ts's own header comment on buildTrendsFallbackCacheKey): this
+ * key must never collide with buildTrendsCacheKey's hot-cache key for
+ * the same params (different KV entries, different lifetimes -- the
+ * hot cache expires in 300s, the fallback never does), and must still
+ * vary per param combination the same way the hot-cache key does, or
+ * two different filter selections would silently share one another's
+ * stale fallback data.
+ */
+describe("buildTrendsFallbackCacheKey", () => {
+  it("differs from buildTrendsCacheKey for the same params", () => {
+    const params = { roles: ["ai_machine_learning"], sort: "acceleration_desc", limit: 20 };
+    const since = "2026-07-10T12:00:00.000Z";
+    expect(buildTrendsFallbackCacheKey(params, since)).not.toBe(buildTrendsCacheKey(params, since));
+  });
+
+  it("produces different keys for different param combinations", () => {
+    const base = { roles: ["ai_machine_learning"], sort: "acceleration_desc", limit: 20 };
+    const keyA = buildTrendsFallbackCacheKey(base, "2026-07-10T12:00:00.000Z");
+    const keyB = buildTrendsFallbackCacheKey({ ...base, industry: "fintech" }, "2026-07-10T12:00:00.000Z");
+    expect(keyA).not.toBe(keyB);
   });
 });

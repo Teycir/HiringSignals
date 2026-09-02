@@ -59,6 +59,30 @@ export function buildTrendsCacheKey(parsed: object, since: string): string {
   return `trends:v1:${JSON.stringify({ ...parsed, since })}`;
 }
 
+/**
+ * "Last known good" fallback key, separate from buildTrendsCacheKey's
+ * 5-min TTL hot-cache key (2026-09-02, D1 free-tier exhaustion
+ * incident). Deliberately a different KV key, not a longer TTL on the
+ * existing one: the hot cache's whole purpose is "expire quickly so
+ * results stay fresh," and giving it a long TTL to double as a fallback
+ * would mean serving stale data on every cache hit within that window,
+ * not just when D1 is genuinely unreachable. This key is written
+ * alongside the hot-cache key on every successful D1 fetch (see below)
+ * with no expirationTtl, so it survives independently of the 300s hot
+ * cache and is only ever overwritten by a fresher successful fetch --
+ * never read on the happy path, only as a fallback when D1 itself
+ * throws (exhausted daily row-read quota, outage, etc.) and there is no
+ * fresh data available at all.
+ */
+export function buildTrendsFallbackCacheKey(parsed: object, since: string): string {
+  return `trends:fallback:v1:${JSON.stringify({ ...parsed, since })}`;
+}
+
+interface StaleTrendsPayload {
+  results: unknown;
+  fetchedAt: string;
+}
+
 export const trendsRoute = new Hono<AppEnv>();
 trendsRoute.use("*", freeReadTier());
 
@@ -95,25 +119,70 @@ trendsRoute.get("/hiring", async (c) => {
     });
   }
 
+  const fallbackCacheKey = buildTrendsFallbackCacheKey(parsed, since);
   const client = createD1Client(c.env.DB);
-  const results = await getHiringTrends(client, {
-    roleCategoryFilter: parsed.roles,
-    industryFilter: parsed.industry,
-    countryFilter: parsed.country,
-    since,
-    limit: parsed.limit,
-    sort: parsed.sort,
-  });
 
-  // Cache write with graceful fallback for KV quota limits (free tier)
-  // has a daily write limit -- if exceeded, still return the fresh result
-  // rather than failing the entire request.
+  // D1-outage fallback (2026-09-02 incident): getHiringTrends throws
+  // when D1 itself is unreachable -- most commonly the free tier's
+  // daily row-read quota (D1_ERROR code 7500), which resets at midnight
+  // UTC but can otherwise leave every /trends request 500ing for hours.
+  // Per-route "get latest working data if there's no way to fetch new
+  // data" policy: on a D1 failure, fall back to the last successful
+  // result for this exact param combination (buildTrendsFallbackCacheKey)
+  // rather than failing the request outright. Only when there is no
+  // fallback available either (first-ever request for this filter
+  // combo, or a KV outage on top of the D1 outage) does this rethrow
+  // and let errorHandler's generic 500 apply -- there is genuinely
+  // nothing to serve at that point.
+  let results: unknown;
+  let stale: { fetchedAt: string } | null = null;
   try {
-    await c.env.CACHE.put(cacheKey, JSON.stringify(results), { expirationTtl: CACHE_TTL_SECONDS });
+    results = await getHiringTrends(client, {
+      roleCategoryFilter: parsed.roles,
+      industryFilter: parsed.industry,
+      countryFilter: parsed.country,
+      since,
+      limit: parsed.limit,
+      sort: parsed.sort,
+    });
   } catch (err) {
-    // KV write failed (likely quota limit) -- log and continue, the
-    // fresh result is still valid to return to the user.
-    console.error(`KV cache write failed for key ${cacheKey}:`, err);
+    console.error(`D1 query failed for trends (falling back to last known good):`, err);
+
+    let fallback: StaleTrendsPayload | null = null;
+    try {
+      fallback = await c.env.CACHE.get<StaleTrendsPayload>(fallbackCacheKey, "json");
+    } catch (kvErr) {
+      console.error(`KV fallback read failed for key ${fallbackCacheKey}:`, kvErr);
+    }
+
+    if (!fallback) throw err;
+
+    results = fallback.results;
+    stale = { fetchedAt: fallback.fetchedAt };
+  }
+
+  // Cache writes with graceful fallback for KV quota limits (free tier
+  // has a daily write limit) -- if exceeded, still return the fresh
+  // result rather than failing the entire request. Only written on the
+  // success path above (stale === null): a served-stale response must
+  // never overwrite the fallback key with the same stale payload it was
+  // just read from, and must never refresh the 300s hot-cache TTL on
+  // data that is, by definition, not fresh.
+  if (!stale) {
+    const fetchedAt = new Date().toISOString();
+    try {
+      await c.env.CACHE.put(cacheKey, JSON.stringify(results), { expirationTtl: CACHE_TTL_SECONDS });
+    } catch (err) {
+      console.error(`KV cache write failed for key ${cacheKey}:`, err);
+    }
+    try {
+      await c.env.CACHE.put(
+        fallbackCacheKey,
+        JSON.stringify({ results, fetchedAt } satisfies StaleTrendsPayload),
+      );
+    } catch (err) {
+      console.error(`KV fallback write failed for key ${fallbackCacheKey}:`, err);
+    }
   }
 
   return c.json({
@@ -122,6 +191,8 @@ trendsRoute.get("/hiring", async (c) => {
       requestId: c.get("requestId"),
       appliedFilters: { ...parsed, since },
       cached: false,
+      stale: stale !== null,
+      staleAsOf: stale?.fetchedAt ?? null,
       hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
     },
   });

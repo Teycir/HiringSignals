@@ -317,18 +317,32 @@ export async function fetchSources(
   return request("/api/v1/sources", init);
 }
 
-export async function fetchTrends(
-  params: TrendsParams,
-  init?: RequestInit,
-): Promise<{
+/**
+ * `stale`/`staleAsOf` (2026-09-02, D1 free-tier exhaustion incident):
+ * trends.ts falls back to the last successful result for this exact
+ * filter combination when a fresh D1 query fails outright (daily quota
+ * exhausted, outage), rather than 500ing -- "get latest working data if
+ * there's no way to fetch new data," see that route's own header
+ * comment. `staleAsOf` is that fallback's original fetch timestamp
+ * (ISO string), null when `stale` is false, so trends-view.tsx can
+ * distinguish "this is current" from "this is the last data we had."
+ */
+export interface FetchTrendsResponse {
   data: HiringTrendCompany[];
   meta: {
     requestId: string;
     appliedFilters: Record<string, unknown>;
     cached: boolean;
+    stale: boolean;
+    staleAsOf: string | null;
     hiringVelocityDisclaimer: string;
   };
-}> {
+}
+
+export async function fetchTrends(
+  params: TrendsParams,
+  init?: RequestInit,
+): Promise<FetchTrendsResponse> {
   const qs = queryFromRecord(params);
-  return request(`/api/v1/trends/hiring?${qs}`, init);
+  return request<FetchTrendsResponse>(`/api/v1/trends/hiring?${qs}`, init);
 }

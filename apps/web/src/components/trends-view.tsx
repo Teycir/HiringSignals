@@ -78,7 +78,13 @@ type LoadState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "error"; error: ApiClientError | Error }
-  | { status: "ready"; data: HiringTrendCompany[]; disclaimer: string };
+  // `stale`/`staleAsOf` (2026-09-02, D1 free-tier exhaustion incident):
+  // mirrors FetchTrendsResponse['meta'] -- see that type's own comment.
+  // When `stale` is true this is the last successfully-fetched result
+  // for the current filters, served because a fresh D1 query failed
+  // outright, not the normal 5-min-TTL `cached` case (which is still
+  // fresh data, just KV-served -- no banner needed for that).
+  | { status: "ready"; data: HiringTrendCompany[]; disclaimer: string; stale: boolean; staleAsOf: string | null };
 
 export function TrendsView() {
   const router = useRouter();
@@ -136,7 +142,13 @@ export function TrendsView() {
       { signal: controller.signal },
     )
       .then((res) => {
-        setState({ status: "ready", data: res.data, disclaimer: res.meta.hiringVelocityDisclaimer });
+        setState({
+          status: "ready",
+          data: res.data,
+          disclaimer: res.meta.hiringVelocityDisclaimer,
+          stale: res.meta.stale,
+          staleAsOf: res.meta.staleAsOf,
+        });
         setResolvedForKey(fetchKey);
       })
       .catch((err) => {
@@ -271,6 +283,17 @@ export function TrendsView() {
 
         {effectiveState.status === "ready" && (
           <>
+            {effectiveState.stale && (
+              <div className="border-2 border-ink p-3 bg-muted">
+                <p className="font-display text-sm font-bold">
+                  Showing the last available data
+                  {effectiveState.staleAsOf
+                    ? ` (as of ${new Date(effectiveState.staleAsOf).toLocaleString()}).`
+                    : "."}{" "}
+                  We couldn&apos;t refresh trends just now -- try again shortly.
+                </p>
+              </div>
+            )}
             <TrendsChart trends={effectiveState.data} metric={sortToChartMetric(sort)} />
             <TrendsTable trends={effectiveState.data} sort={sort} />
             <p className="font-display text-xs text-soft-ink">{effectiveState.disclaimer}</p>
