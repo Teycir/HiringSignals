@@ -25,6 +25,31 @@ describe("resolveTrendsSince", () => {
       "2026-01-01T00:00:00.000Z",
     );
   });
+
+  /**
+   * 2026-09-02 fix: the default branch rounds down to a
+   * CACHE_TTL_SECONDS (300s) boundary so that buildTrendsCacheKey/
+   * buildTrendsFallbackCacheKey produce the same key for every request
+   * within the same 5-minute bucket -- otherwise every request computes
+   * a distinct `since` (millisecond precision) and both the hot cache
+   * and the D1-outage fallback never hit. These two `now` values are
+   * seconds apart but fall in the same 12:05-12:10 UTC bucket, so they
+   * must resolve to the identical `since` -- that equality is the whole
+   * point of the fix, not just each value individually being "close".
+   */
+  it("resolves the identical since for two now values in the same 5-minute bucket", () => {
+    const first = resolveTrendsSince({}, new Date("2026-08-09T12:05:00.000Z"));
+    const second = resolveTrendsSince({}, new Date("2026-08-09T12:09:59.999Z"));
+    expect(first).toBe("2026-08-02T12:05:00.000Z");
+    expect(second).toBe(first);
+  });
+
+  it("resolves a different since once now crosses into the next 5-minute bucket", () => {
+    const inBucket = resolveTrendsSince({}, new Date("2026-08-09T12:09:59.999Z"));
+    const nextBucket = resolveTrendsSince({}, new Date("2026-08-09T12:10:00.000Z"));
+    expect(nextBucket).toBe("2026-08-02T12:10:00.000Z");
+    expect(nextBucket).not.toBe(inBucket);
+  });
 });
 
 describe("buildTrendsCacheKey", () => {

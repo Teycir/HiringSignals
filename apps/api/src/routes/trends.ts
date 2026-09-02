@@ -44,9 +44,37 @@ const DEFAULT_SINCE_DAYS = 7;
  * establishes for O.1. Unlike O.1's window, P.2 has no upper-bound cap
  * to validate (spec doesn't specify one for trends `since`), so this
  * only defaults -- it never rejects.
+ *
+ * The default branch rounds down to a CACHE_TTL_SECONDS boundary
+ * (2026-09-02 fix, see this file's own incident comments below): an
+ * explicit `parsed.since` passes through byte-for-byte unchanged (a
+ * caller who names an exact instant gets exactly that instant back,
+ * every time), but `new Date(now.getTime() - ...)` on the DEFAULT path
+ * used to carry now's full millisecond precision into the computed
+ * `since` string, and that string is exactly what buildTrendsCacheKey/
+ * buildTrendsFallbackCacheKey hash into their KV keys below. Two
+ * requests one second apart with no explicit `since` therefore computed
+ * two different `since` values and two different cache keys -- meaning
+ * the "5-min TTL" hot cache almost never actually hit for the default
+ * (no-since) case, the overwhelmingly common one since trends-view.tsx
+ * never sends `since` itself, and -- discovered in production this
+ * session -- the D1-outage fallback below suffered the exact same bug:
+ * it wrote successfully once, then the very next request (a different
+ * `since`, hence a different fallback key) found nothing to fall back
+ * to and 500'd anyway, even though a fallback had just been written
+ * moments earlier. Rounding the default to a 300s boundary makes every
+ * request within the same 5-minute bucket compute the identical `since`
+ * -- and therefore the identical cache/fallback key -- which is what
+ * both the hot cache and the fallback actually need to work as
+ * designed. Bounded staleness introduced by the rounding itself is
+ * negligible for a 7-day-window trend metric: at most CACHE_TTL_SECONDS
+ * (5 minutes) of skew on a 7-day (604,800s) window.
  */
 export function resolveTrendsSince(parsed: { since?: string }, now: Date = new Date()): string {
-  return parsed.since ?? new Date(now.getTime() - DEFAULT_SINCE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  if (parsed.since) return parsed.since;
+  const bucketMs = CACHE_TTL_SECONDS * 1000;
+  const roundedNowMs = Math.floor(now.getTime() / bucketMs) * bucketMs;
+  return new Date(roundedNowMs - DEFAULT_SINCE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 }
 
 /**
