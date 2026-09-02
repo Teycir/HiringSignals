@@ -40,7 +40,32 @@ export interface RateLimitDecision {
   resetAt: number;
 }
 
-const WINDOW_SHARDS = 60;
+// Number of rotating counters the sliding window is split into.
+//
+// Trimmed 60 -> 30 (2026-09-02 prod incident, same KV-quota exhaustion
+// this file's readShard try/catch above was fixed for): every request
+// through freeReadTier() pays 1 write + up to (WINDOW_SHARDS - 1) reads
+// here, and this middleware runs on EVERY route -- at the old value of
+// 60 that was up to 59 reads/request, meaning the KV free tier's read
+// cap (100,000/day) worked out to roughly 1,700 requests/day before the
+// app started throwing, well below real traffic. The write count is
+// fixed at 1 regardless of WINDOW_SHARDS (only the active shard is ever
+// written), so the write cap (1,000/day) doesn't move here -- but the
+// read count scales linearly with WINDOW_SHARDS, so this is the one
+// knob in this file that meaningfully reduces read-quota pressure. At
+// 30, with FREE_READ_TIER's windowSeconds=300, each shard covers 10s
+// instead of the old 5s -- a modest halving of both read volume and
+// sliding-window granularity, chosen over a more aggressive cut (e.g.
+// 10) to keep the precision loss small while still meaningfully
+// reducing read pressure; FREE_READ_TIER is a generous 600-req/300s
+// anonymous limit, not a tight anti-abuse tripwire, so losing precision
+// at the 10s vs 5s boundary has no practical effect on what it's
+// actually guarding against. Callers needing finer granularity for a
+// tighter-limit tier (see PROTECTED_WRITE_TIER's own comment -- unused
+// today) can still pass a smaller windowSeconds; WINDOW_SHARDS is a
+// fixed tradeoff constant for this file's expected KV budget, not meant
+// to vary per tier.
+const WINDOW_SHARDS = 30;
 
 /**
  * Safe identifier for rate-limit keys. Identifiers that are allowed to
@@ -136,8 +161,10 @@ export async function checkRateLimit(
   // Hash identifier before constructing shard keys (see safeRateLimitIdentifier
   // docstring for why: IPv6 colons + separator injection would defeat the
   // rate limit otherwise). Do this once at the top of checkRateLimit so
-  // the 61 shard reads/writes (1 active + 60 window) all use the same
-  // safe key. Also PII-scrubs the IP out of the KV key itself.
+  // all of this call's shard reads/writes (1 active + up to
+  // WINDOW_SHARDS-1 window, see that constant's own comment for the
+  // exact budget) use the same safe key. Also PII-scrubs the IP out of
+  // the KV key itself.
   const safeId = await safeRateLimitIdentifier(identifier);
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -151,11 +178,35 @@ export async function checkRateLimit(
   // put() above, so the matching read is text + numeric coercion, NOT the
   // "cacheMetadata" positional form (which doesn't exist on KVNamespace.get
   // in @cloudflare/workers-types bundles).
+  //
+  // Wrapped in try/catch (2026-09-02 prod incident): this runs up to
+  // WINDOW_SHARDS-1 times per request across EVERY route (freeReadTier()
+  // is global middleware), so it's by far the highest-volume KV consumer
+  // in the app -- far more than trends.ts/facets.ts's own cache reads.
+  // An unguarded throw here (KV quota exceeded, or any transient KV
+  // error) was propagating all the way up through checkRateLimit ->
+  // freeReadTier -> Hono's error handler as an unhandled exception,
+  // returning a generic 500 "Something went wrong processing the
+  // request" for EVERY route, not just the one whose handler happened
+  // to touch KV -- explains "worked, then failed on refresh" (quota is
+  // cumulative across the day; early requests succeed, later ones don't)
+  // better than any single route's own logic could. Same "degrade, don't
+  // crash the hot path" convention incrementActiveShard below already
+  // uses for KV write failures: treat an unreadable shard as 0 rather
+  // than failing the whole rate-limit check. Worst case this undercounts
+  // the window (a slightly too-generous limit during a KV outage), which
+  // is the correct fail-open direction for a read-tier limiter -- never
+  // fail closed (429/500) on infrastructure trouble unrelated to the
+  // caller's actual request volume.
   const readShard = async (key: string): Promise<number> => {
-    const raw = await params.kv.get(key, "text");
-    if (raw == null) return 0;
-    const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+    try {
+      const raw = await params.kv.get(key, "text");
+      if (raw == null) return 0;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+    } catch {
+      return 0;
+    }
   };
 
   // First read the active shard alone so we can atomically bump it and

@@ -14,7 +14,15 @@ const CACHE_TTL_SECONDS = 60;
 // this yet (spec 15) so a stale-for-up-to-60s facet count is an accepted
 // tradeoff until the ingestion consumer lands and can purge the key.
 facetsRoute.get("/", async (c) => {
-  const cached = await c.env.CACHE.get(CACHE_KEY, "json");
+  // Cache read with graceful fallback (2026-09-02 prod incident, same
+  // reasoning as trends.ts's own .get() fix -- this call had the same
+  // gap the 2026-08-19 KV-quota fix only closed for .put() calls).
+  let cached: unknown = null;
+  try {
+    cached = await c.env.CACHE.get(CACHE_KEY, "json");
+  } catch (err) {
+    console.error(`KV cache read failed for key ${CACHE_KEY}:`, err);
+  }
   if (cached) {
     return c.json({ data: cached, meta: { requestId: c.get("requestId"), cached: true } });
   }

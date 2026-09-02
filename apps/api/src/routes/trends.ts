@@ -67,7 +67,22 @@ trendsRoute.get("/hiring", async (c) => {
   const since = resolveTrendsSince(parsed);
 
   const cacheKey = buildTrendsCacheKey(parsed, since);
-  const cached = await c.env.CACHE.get(cacheKey, "json");
+
+  // Cache read with graceful fallback (2026-09-02 prod incident, same
+  // KV-quota/transient-error reasoning as the .put() below, which this
+  // .get() call was missed by in the 2026-08-19 fix -- an unguarded
+  // read throw here skipped straight to D1 in dev/low-traffic testing
+  // (cache almost always a miss locally) but crashed the whole request
+  // in production once a warm cache made this the hot path on every
+  // request. Falls through to the fresh-D1-query path below on any KV
+  // read failure, same as a genuine cache miss -- correctness is
+  // unaffected, just a lost cache hit.
+  let cached: unknown = null;
+  try {
+    cached = await c.env.CACHE.get(cacheKey, "json");
+  } catch (err) {
+    console.error(`KV cache read failed for key ${cacheKey}:`, err);
+  }
   if (cached) {
     return c.json({
       data: cached,
