@@ -24,6 +24,38 @@ import { handleScheduled } from "../jobs/scheduler";
 import { handleReconciliation } from "../jobs/reconciliation";
 import type { IngestMessage } from "@hiring-signals/domain";
 
+/**
+ * Fixed allow-list of live-D1 test-suite company slug prefixes (one per
+ * packages/db/test/*.ts and apps/api/test/jobs/*.ts file's own
+ * `TEST_PREFIX` constant, 2026-09-03 prod-pollution incident). Every one
+ * of these files already has its own `finally`/`afterAll` cleanup that
+ * deletes rows matching `${TEST_PREFIX}-%` in FK-safe order -- this route
+ * exists only because an interrupted run (the D1-quota chaos during
+ * today's incident) can kill a test process before its `afterAll` sweep
+ * fires, leaving orphaned rows behind in production D1.
+ *
+ * Deliberately NOT a caller-supplied pattern: accepting an arbitrary
+ * LIKE pattern in an admin request body would turn a cleanup tool into a
+ * mass-delete primitive. Only these known-safe prefixes are ever eligible.
+ */
+const TEST_DATA_PREFIXES = [
+  "test-cr",
+  "test-crs",
+  "test-jrp",
+  "test-ser",
+  "test-sr",
+  "test-swr",
+  "test-src",
+  "test-trends",
+  "test-ic",
+  "test-recon",
+  "test-sched",
+] as const;
+
+const testDataCleanupBodySchema = z.object({
+  confirm: z.boolean().optional().default(false),
+});
+
 const sourceIdParamSchema = z.object({
   sourceId: z.string().uuid(),
 });
@@ -166,6 +198,101 @@ adminRoute.post("/reconcile", async (c) => {
       startedAt: now.toISOString(),
       batchLimit: 200,
       note: "Reconciles up to 200 stale signals per run; repeat for remainder or wait for the daily cron.",
+    },
+    meta: { requestId: c.get("requestId") },
+  });
+});
+
+/**
+ * POST /api/v1/admin/test-data/cleanup
+ *
+ * One-off remediation for the 2026-09-03 prod-pollution incident:
+ * deletes any company (and its FK-dependent rows) whose slug matches one
+ * of TEST_DATA_PREFIXES above, using the Worker's own `env.DB` binding
+ * rather than the wrangler CLI's admin-API query path -- the two draw
+ * from separate D1 quotas (confirmed during the incident: the CLI path
+ * was exhausted while live Worker-bound queries kept succeeding), so
+ * this route works even when `wrangler d1 execute --remote` is walled
+ * off for the rest of the UTC day.
+ *
+ * Defaults to a dry run (counts only, no deletes) unless the request
+ * body sets `"confirm": true` -- mirrors the cleanup discipline already
+ * in every live-D1 test file's own cleanupCompany()/afterAll sweep
+ * (signal_evidence -> signals -> jobs -> source_runs -> sources ->
+ * companies), just invoked out-of-band instead of from a test's own
+ * teardown. One batch() call per prefix (D1's real transaction
+ * primitive) so a mid-sequence failure can't leave one prefix
+ * half-deleted while still processing the rest independently.
+ */
+adminRoute.post("/test-data/cleanup", async (c) => {
+  const rawBody = await c.req.json().catch(() => ({}));
+  const parsedBody = testDataCleanupBodySchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return c.json(
+      {
+        error: "invalid_body",
+        message: "Body must be JSON with an optional boolean `confirm` field.",
+        meta: { requestId: c.get("requestId") },
+      },
+      400,
+    );
+  }
+  const { confirm } = parsedBody.data;
+
+  const client = createD1Client(c.env.DB);
+  const results: Array<{ prefix: string; companies: number; deleted: boolean }> = [];
+
+  for (const prefix of TEST_DATA_PREFIXES) {
+    const pattern = `${prefix}-%`;
+    const countRow = await client.first<{ n: number }>(
+      `SELECT COUNT(*) as n FROM companies WHERE slug LIKE ?`,
+      [pattern],
+    );
+    const n = countRow?.n ?? 0;
+
+    if (n > 0 && confirm) {
+      await client.batch([
+        {
+          sql: `DELETE FROM signal_evidence WHERE signal_id IN (
+             SELECT id FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+           )`,
+          params: [pattern],
+        },
+        {
+          sql: `DELETE FROM signals WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+          params: [pattern],
+        },
+        {
+          sql: `DELETE FROM jobs WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+          params: [pattern],
+        },
+        {
+          sql: `DELETE FROM source_runs WHERE source_id IN (
+             SELECT id FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)
+           )`,
+          params: [pattern],
+        },
+        {
+          sql: `DELETE FROM sources WHERE company_id IN (SELECT id FROM companies WHERE slug LIKE ?)`,
+          params: [pattern],
+        },
+        { sql: `DELETE FROM companies WHERE slug LIKE ?`, params: [pattern] },
+      ]);
+    }
+
+    results.push({ prefix, companies: n, deleted: n > 0 && confirm });
+  }
+
+  const totalCompanies = results.reduce((sum, r) => sum + r.companies, 0);
+
+  return c.json({
+    data: {
+      dryRun: !confirm,
+      totalMatchedCompanies: totalCompanies,
+      byPrefix: results,
+      note: confirm
+        ? "Matched rows deleted (FK-safe order, one batch() per prefix)."
+        : "Dry run only -- no rows deleted. Resend with {\"confirm\": true} to delete.",
     },
     meta: { requestId: c.get("requestId") },
   });
