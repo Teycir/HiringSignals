@@ -225,7 +225,16 @@ export interface HiringTrendsResponse {
   meta: {
     requestId: string;
     appliedFilters: Record<string, unknown>;
-    cached: boolean;
+    // snapshot-persistence-plan.md rewrite: the route no longer runs a
+    // live/cached D1 query (that `cached` boolean this field replaces
+    // is gone) -- every response is served from snapshots_current. This
+    // is the oldest capture time among the requested roles (a multi-role
+    // request can mix roles captured at slightly different times if
+    // reconciliation partially failed on a prior run), or null if none
+    // of the requested roles has a snapshot yet (reconciliation hasn't
+    // run since deploy). See apps/api/src/routes/trends.ts's own header
+    // comment.
+    snapshotCapturedAt: string | null;
     // ROADMAP.md Milestone Q.3, spec §11.3 -- same disclaimer text as
     // fetchCompanyBySlug's response meta below, not duplicated per-item.
     hiringVelocityDisclaimer: string;

@@ -14,6 +14,7 @@ import {
   getSignalStats,
   InvalidCursorError,
   listSignals,
+  readSignalsFeedSnapshot,
   toListItem,
   type SignalListItem,
 } from "@hiring-signals/db";
@@ -101,6 +102,8 @@ signalsRoute.get("/", async (c) => {
   }
 
   let result;
+  let servedFromSnapshot = false;
+  let snapshotCapturedAt: string | null = null;
   try {
     // `roles` is already parsed + split into a RoleCategory[] array by the
     // schema transform above -- pass it through directly. Everything else
@@ -126,7 +129,33 @@ signalsRoute.get("/", async (c) => {
       // not the default 500 (error-handler.ts).
       throw new HTTPException(400, { message: err.message });
     }
-    throw err;
+
+    // D1-outage fallback (snapshot-persistence-plan.md): listSignals
+    // previously had NO fallback at all here -- any D1 failure (most
+    // commonly the free tier's daily row-read quota) 500'd the request
+    // immediately, which is the root cause of the "results appear then
+    // disappear" symptom this route was rewritten to fix. Falls back to
+    // the daily-cron-captured default-feed snapshot
+    // (packages/db/src/snapshot-repo.ts, written once a day by
+    // reconciliation.ts's handleSnapshotCapture -- never on request
+    // traffic), re-applying this request's own filters in-process
+    // against the snapshot's payload so a filtered request degrades to
+    // "the best answer computable from the last known-good feed" rather
+    // than an empty/broken response. Only rethrows (and lets
+    // errorHandler's generic 500 apply) when there is no snapshot to
+    // fall back to at all (reconciliation hasn't run once since
+    // deploy) -- there is genuinely nothing to serve at that point.
+    console.error("D1 query failed for signals (falling back to snapshot):", err);
+
+    const snapshot = await readSignalsFeedSnapshot(client);
+    if (!snapshot) throw err;
+
+    result = {
+      items: filterSnapshotItems(snapshot.payload.items, parsed),
+      nextCursor: null,
+    };
+    servedFromSnapshot = true;
+    snapshotCapturedAt = snapshot.capturedAt;
   }
 
   // Semantic leg (spec 9.4, Milestone I.3): additive to the keyword match
@@ -149,7 +178,15 @@ signalsRoute.get("/", async (c) => {
   let searchMode: "keyword" | "hybrid" = "keyword";
   let items: SignalListItem[] = result.items;
 
-  if (parsed.q && !parsed.cursor) {
+  // Skip the semantic leg entirely when already serving from the
+  // snapshot fallback: D1 has already proven unreachable this request,
+  // and findSemanticSignalMatches' own keyword-merge path
+  // (findSignalsByJobIds) is itself a D1 read that would just add more
+  // load against an already-degraded resource for a leg whose result
+  // can't cleanly merge with snapshot-sourced items anyway (the
+  // snapshot's items are a fixed point-in-time capture, not something
+  // mergeSignalMatches' ranking assumptions were designed around).
+  if (parsed.q && !parsed.cursor && !servedFromSnapshot) {
     const semanticMatches = await findSemanticSignalMatches(client, c.env, parsed.q, {
       roles: parsed.roles,
       company: parsed.company,
@@ -214,6 +251,13 @@ signalsRoute.get("/", async (c) => {
       // sequence, per this handler's own page-1-only semantic gating above.
       nextCursor: result.nextCursor,
       searchMode,
+      // snapshot-persistence-plan.md: true when the live D1 query
+      // failed and this response was served from the daily-captured
+      // snapshot fallback instead. snapshotCapturedAt is that
+      // snapshot's own capture time, null on the normal (non-fallback)
+      // path.
+      servedFromSnapshot,
+      snapshotCapturedAt,
     },
   });
 });
@@ -284,3 +328,87 @@ signalsRoute.get("/:signalId", async (c) => {
 
   return c.json({ data: detail, meta: { requestId: c.get("requestId") } });
 });
+
+/**
+ * Re-applies a request's filters against the default-feed snapshot's
+ * items in-process, so a filtered request still gets a best-effort
+ * answer during a D1 outage instead of an empty/broken response
+ * (snapshot-persistence-plan.md §6). Mirrors buildCommonFilters'
+ * semantics (signals-repo.ts) field-for-field, but operating on
+ * already-materialized SignalListItem objects rather than building SQL
+ * -- the snapshot itself was captured with sort=score_desc/minScore=0/
+ * no other filters (reconciliation.ts's handleSnapshotCapture), so
+ * every filter a caller could have sent still needs applying here.
+ *
+ * NOT a full reimplementation of every listSignals capability: `cursor`
+ * (keyset pagination) is intentionally ignored -- a fallback response
+ * is always a single best-effort page (same posture the `like` capacity-3
+ * branch above already takes for "no pagination in this mode"), and
+ * `q`'s free-text match is a simple case-insensitive substring check
+ * against headline/summary/companyDisplayName rather than the live
+ * route's SQL LIKE + semantic hybrid leg (semantic search needs
+ * Vectorize/D1 lookups this fallback path deliberately skips, see the
+ * route handler's own comment on servedFromSnapshot).
+ */
+function filterSnapshotItems(
+  items: SignalListItem[],
+  parsed: {
+    roles?: string[];
+    company?: string;
+    q?: string;
+    locationMode?: string;
+    country?: string;
+    source?: string;
+    signalType?: string;
+    minScore: number;
+    observedSince?: string;
+    sort: "score_desc" | "newest" | "company_asc";
+    limit: number;
+  },
+): SignalListItem[] {
+  let filtered = items;
+
+  if (parsed.roles?.length) {
+    const roleSet = new Set(parsed.roles);
+    filtered = filtered.filter((item) => roleSet.has(item.roleCategory));
+  }
+  if (parsed.company) {
+    filtered = filtered.filter((item) => item.companySlug === parsed.company);
+  }
+  if (parsed.q) {
+    const needle = parsed.q.toLowerCase();
+    filtered = filtered.filter(
+      (item) =>
+        item.headline.toLowerCase().includes(needle) ||
+        item.summary.toLowerCase().includes(needle) ||
+        item.companyDisplayName.toLowerCase().includes(needle),
+    );
+  }
+  if (parsed.locationMode) {
+    filtered = filtered.filter((item) => item.locationMode === parsed.locationMode);
+  }
+  if (parsed.country) {
+    filtered = filtered.filter((item) => item.countryCode === parsed.country);
+  }
+  if (parsed.source) {
+    filtered = filtered.filter((item) => item.sourcePlatform === parsed.source);
+  }
+  if (parsed.signalType) {
+    filtered = filtered.filter((item) => item.signalType === parsed.signalType);
+  }
+  filtered = filtered.filter((item) => item.score >= parsed.minScore);
+  if (parsed.observedSince) {
+    filtered = filtered.filter((item) => item.lastDetectedAt >= parsed.observedSince!);
+  }
+
+  const sorted = [...filtered];
+  if (parsed.sort === "newest") {
+    sorted.sort((a, b) => (a.lastDetectedAt < b.lastDetectedAt ? 1 : -1));
+  } else if (parsed.sort === "company_asc") {
+    sorted.sort((a, b) => a.companyDisplayName.localeCompare(b.companyDisplayName));
+  } else {
+    sorted.sort((a, b) => b.score - a.score);
+  }
+
+  return sorted.slice(0, parsed.limit);
+}

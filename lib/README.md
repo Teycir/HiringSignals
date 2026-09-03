@@ -18,6 +18,7 @@ canonical implementation, kept generic on purpose.
 | `d1/client.ts` | Thin, parameterized D1 query wrapper (`first`/`all`/`run`/`batch`), every call routed through `http/circuit-breaker.ts` on the `"db"` resource | Cloudflare Workers types, `http/circuit-breaker.ts` |
 | `d1/like-pattern.ts` | Escapes `%`/`_` in user input before building a `LIKE` pattern | none |
 | `d1/unique-constraint.ts` | Detects UNIQUE-constraint violations in D1 error results (cross-driver: matches `wrangler d1 execute --json`'s `error_code` strings and the in-Worker `D1Error.code` surface) | none |
+| `d1/snapshot-store.ts` | Generic "capture once, serve indefinitely until the next successful capture" store: `snapshots_current` (overwritten in place) + `snapshots_history` (append-only, one row per successful write) keyed by `(domain, entity_key)`. Replaces KV cache/TTL fallbacks for read paths that must survive a live-query outage (e.g. D1 read-quota exhaustion) without ever showing stale-as-an-error. | none |
 | `kv/ttl-store.ts` | Generic TTL-keyed KV blob store (prefix + retention window) | `@cloudflare/workers-types` |
 | `text/base64url.ts` | UTF-8-safe, URL-safe base64 encode/decode (+ JSON helpers) | none |
 | `text/csv.ts` | RFC-4180 compliant CSV row serializer with proper quoting/escaping, used by `GET /export/signals.csv` | none |

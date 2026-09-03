@@ -1,227 +1,154 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
-import { createD1Client, getHiringTrends } from "@hiring-signals/db";
+import { createD1Client, readTrendsSnapshots } from "@hiring-signals/db";
+import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
 import { HIRING_VELOCITY_DISCLAIMER, trendsQuerySchema } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
-
-const CACHE_TTL_SECONDS = 300;
 
 /**
  * Cross-company hiring trend endpoint (ROADMAP.md Milestone P.2, spec
  * §1.2/§2.3). "Which fintechs started hiring ML in the last 60d" --
  * ranked companies, not a single-company timeline (that's O.1).
  *
- * 5-min TTL KV cache, same pattern as facets.ts -- cache key includes
- * every param that affects the result (roles/industry/country/since/
- * sort/limit) since two different param combinations must never share
- * a cache entry. `since` defaults here (7d-ago), not in
- * trendsQuerySchema itself, same "now at schema-load time would be
- * stale" reasoning as companyTimelineQuerySchema's own header comment.
+ * Rewritten (snapshot-persistence-plan.md) to read exclusively from
+ * snapshots_current (domain="trends", one row per RoleCategory) instead
+ * of a live jobs/companies JOIN plus a KV cache/fallback pair. The KV
+ * "last known good" fallback added 2026-09-02 was keyed per exact
+ * filter-parameter combination, so any new/uncommon filter combo had no
+ * fallback entry and still 500'd on a D1 outage -- a structural gap,
+ * not a bug fixable by tuning that cache further. This route no longer
+ * touches `jobs`/`companies` at all: the daily reconciliation cron
+ * (apps/api/src/jobs/reconciliation.ts's handleSnapshotCapture) is the
+ * only place that computes fresh trend data, once a day, off request
+ * traffic entirely. If that capture step fails or hasn't run yet since
+ * the last successful one, snapshots_current for a given role is simply
+ * whatever the last successful capture wrote -- served indefinitely,
+ * with no TTL/expiry/"stale" concept, per lib/d1/snapshot-store.ts's
+ * design.
  *
- * 7 days, not 30 (changed 2026-08-19): trends-table.tsx shows this
- * window's new_jobs_count next to trends-repo.ts's activeJobsCount
- * (status IN ('active','possibly_closed'), no date bound at all) in
- * adjacent NEW/ACTIVE columns. With a 30-day window, every currently-
- * active job for every company was indistinguishable from "new" for
- * this dataset's entire life so far (ingestion started 2026-07-26 --
- * confirmed live via `SELECT MIN(first_seen_at) FROM jobs`, and
- * `active_older_than_30d` was 0 across all 6,779 rows checked the same
- * way), so NEW and ACTIVE rendered identical on every row -- not a
- * query bug (the two columns measure genuinely different things), just
- * a default wide enough to make them coincide for a dataset this young.
- * 7 days is a standard "new this week" window that will diverge from
- * ACTIVE almost immediately regardless of dataset age, since it's very
- * unlikely every active job across every company was posted in the
- * last 7 days specifically.
+ * `since`/`sort`/`limit`/`industry`/`country` remain accepted query
+ * params (trendsQuerySchema, @hiring-signals/domain) for backward
+ * compatibility with existing callers (apps/web, apps/cli), but they now
+ * apply to the SNAPSHOT rows in-process rather than shaping a live SQL
+ * query -- `since` in particular is no longer meaningful (the snapshot's
+ * own `newJobsCount`/`acceleration` were computed with a fixed 7-day
+ * window at capture time, see reconciliation.ts's handleSnapshotCapture)
+ * and is accepted-but-ignored rather than rejected, so an existing
+ * caller passing it doesn't get a 400.
  */
-const DEFAULT_SINCE_DAYS = 7;
-
-/**
- * Resolves the `since` default (7d-ago at request time, not schema-load
- * time), pulled out of the route handler as a pure function so it's
- * directly unit-testable without a live D1/KV binding -- same
- * "resolveTimelineWindow" precedent companies.ts's own header comment
- * establishes for O.1. Unlike O.1's window, P.2 has no upper-bound cap
- * to validate (spec doesn't specify one for trends `since`), so this
- * only defaults -- it never rejects.
- *
- * The default branch rounds down to a CACHE_TTL_SECONDS boundary
- * (2026-09-02 fix, see this file's own incident comments below): an
- * explicit `parsed.since` passes through byte-for-byte unchanged (a
- * caller who names an exact instant gets exactly that instant back,
- * every time), but `new Date(now.getTime() - ...)` on the DEFAULT path
- * used to carry now's full millisecond precision into the computed
- * `since` string, and that string is exactly what buildTrendsCacheKey/
- * buildTrendsFallbackCacheKey hash into their KV keys below. Two
- * requests one second apart with no explicit `since` therefore computed
- * two different `since` values and two different cache keys -- meaning
- * the "5-min TTL" hot cache almost never actually hit for the default
- * (no-since) case, the overwhelmingly common one since trends-view.tsx
- * never sends `since` itself, and -- discovered in production this
- * session -- the D1-outage fallback below suffered the exact same bug:
- * it wrote successfully once, then the very next request (a different
- * `since`, hence a different fallback key) found nothing to fall back
- * to and 500'd anyway, even though a fallback had just been written
- * moments earlier. Rounding the default to a 300s boundary makes every
- * request within the same 5-minute bucket compute the identical `since`
- * -- and therefore the identical cache/fallback key -- which is what
- * both the hot cache and the fallback actually need to work as
- * designed. Bounded staleness introduced by the rounding itself is
- * negligible for a 7-day-window trend metric: at most CACHE_TTL_SECONDS
- * (5 minutes) of skew on a 7-day (604,800s) window.
- */
-export function resolveTrendsSince(parsed: { since?: string }, now: Date = new Date()): string {
-  if (parsed.since) return parsed.since;
-  const bucketMs = CACHE_TTL_SECONDS * 1000;
-  const roundedNowMs = Math.floor(now.getTime() / bucketMs) * bucketMs;
-  return new Date(roundedNowMs - DEFAULT_SINCE_DAYS * 24 * 60 * 60 * 1000).toISOString();
-}
-
-/**
- * Cache key must include every param that affects the result (see this
- * file's own top header comment) -- pulled out alongside
- * resolveTrendsSince so both pieces of the route's non-pass-through
- * logic are unit-tested the same way, not just the since-default half.
- */
-export function buildTrendsCacheKey(parsed: object, since: string): string {
-  return `trends:v1:${JSON.stringify({ ...parsed, since })}`;
-}
-
-/**
- * "Last known good" fallback key, separate from buildTrendsCacheKey's
- * 5-min TTL hot-cache key (2026-09-02, D1 free-tier exhaustion
- * incident). Deliberately a different KV key, not a longer TTL on the
- * existing one: the hot cache's whole purpose is "expire quickly so
- * results stay fresh," and giving it a long TTL to double as a fallback
- * would mean serving stale data on every cache hit within that window,
- * not just when D1 is genuinely unreachable. This key is written
- * alongside the hot-cache key on every successful D1 fetch (see below)
- * with no expirationTtl, so it survives independently of the 300s hot
- * cache and is only ever overwritten by a fresher successful fetch --
- * never read on the happy path, only as a fallback when D1 itself
- * throws (exhausted daily row-read quota, outage, etc.) and there is no
- * fresh data available at all.
- */
-export function buildTrendsFallbackCacheKey(parsed: object, since: string): string {
-  return `trends:fallback:v1:${JSON.stringify({ ...parsed, since })}`;
-}
-
-interface StaleTrendsPayload {
-  results: unknown;
-  fetchedAt: string;
-}
-
 export const trendsRoute = new Hono<AppEnv>();
 trendsRoute.use("*", freeReadTier());
 
 trendsRoute.get("/hiring", async (c) => {
   const parsed = trendsQuerySchema.parse(c.req.query());
-  const since = resolveTrendsSince(parsed);
-
-  const cacheKey = buildTrendsCacheKey(parsed, since);
-
-  // Cache read with graceful fallback (2026-09-02 prod incident, same
-  // KV-quota/transient-error reasoning as the .put() below, which this
-  // .get() call was missed by in the 2026-08-19 fix -- an unguarded
-  // read throw here skipped straight to D1 in dev/low-traffic testing
-  // (cache almost always a miss locally) but crashed the whole request
-  // in production once a warm cache made this the hot path on every
-  // request. Falls through to the fresh-D1-query path below on any KV
-  // read failure, same as a genuine cache miss -- correctness is
-  // unaffected, just a lost cache hit.
-  let cached: unknown = null;
-  try {
-    cached = await c.env.CACHE.get(cacheKey, "json");
-  } catch (err) {
-    console.error(`KV cache read failed for key ${cacheKey}:`, err);
-  }
-  if (cached) {
-    return c.json({
-      data: cached,
-      meta: {
-        requestId: c.get("requestId"),
-        appliedFilters: { ...parsed, since },
-        cached: true,
-        hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
-      },
-    });
-  }
-
-  const fallbackCacheKey = buildTrendsFallbackCacheKey(parsed, since);
   const client = createD1Client(c.env.DB);
 
-  // D1-outage fallback (2026-09-02 incident): getHiringTrends throws
-  // when D1 itself is unreachable -- most commonly the free tier's
-  // daily row-read quota (D1_ERROR code 7500), which resets at midnight
-  // UTC but can otherwise leave every /trends request 500ing for hours.
-  // Per-route "get latest working data if there's no way to fetch new
-  // data" policy: on a D1 failure, fall back to the last successful
-  // result for this exact param combination (buildTrendsFallbackCacheKey)
-  // rather than failing the request outright. Only when there is no
-  // fallback available either (first-ever request for this filter
-  // combo, or a KV outage on top of the D1 outage) does this rethrow
-  // and let errorHandler's generic 500 apply -- there is genuinely
-  // nothing to serve at that point.
-  let results: unknown;
-  let stale: { fetchedAt: string } | null = null;
-  try {
-    results = await getHiringTrends(client, {
-      roleCategoryFilter: parsed.roles,
-      industryFilter: parsed.industry,
-      countryFilter: parsed.country,
-      since,
-      limit: parsed.limit,
-      sort: parsed.sort,
-    });
-  } catch (err) {
-    console.error(`D1 query failed for trends (falling back to last known good):`, err);
+  const snapshotsByRole = await readTrendsSnapshots(client, {
+    roleCategories: parsed.roles,
+  });
 
-    let fallback: StaleTrendsPayload | null = null;
-    try {
-      fallback = await c.env.CACHE.get<StaleTrendsPayload>(fallbackCacheKey, "json");
-    } catch (kvErr) {
-      console.error(`KV fallback read failed for key ${fallbackCacheKey}:`, kvErr);
-    }
+  const merged = mergeTrendSnapshots(snapshotsByRole, {
+    industryFilter: parsed.industry,
+    countryFilter: parsed.country,
+  });
 
-    if (!fallback) throw err;
+  const sorted = sortTrendCompanies(merged, parsed.sort).slice(0, parsed.limit);
 
-    results = fallback.results;
-    stale = { fetchedAt: fallback.fetchedAt };
-  }
-
-  // Cache writes with graceful fallback for KV quota limits (free tier
-  // has a daily write limit) -- if exceeded, still return the fresh
-  // result rather than failing the entire request. Only written on the
-  // success path above (stale === null): a served-stale response must
-  // never overwrite the fallback key with the same stale payload it was
-  // just read from, and must never refresh the 300s hot-cache TTL on
-  // data that is, by definition, not fresh.
-  if (!stale) {
-    const fetchedAt = new Date().toISOString();
-    try {
-      await c.env.CACHE.put(cacheKey, JSON.stringify(results), { expirationTtl: CACHE_TTL_SECONDS });
-    } catch (err) {
-      console.error(`KV cache write failed for key ${cacheKey}:`, err);
-    }
-    try {
-      await c.env.CACHE.put(
-        fallbackCacheKey,
-        JSON.stringify({ results, fetchedAt } satisfies StaleTrendsPayload),
-      );
-    } catch (err) {
-      console.error(`KV fallback write failed for key ${fallbackCacheKey}:`, err);
-    }
-  }
+  // A role_category with no snapshot row yet (reconciliation hasn't run
+  // since deploy, or genuinely no companies matched that role at last
+  // capture) has no capturedAt to report -- only meaningful once at
+  // least one requested role has a snapshot.
+  const capturedAts = parsed.roles
+    .map((role) => snapshotsByRole.get(role)?.capturedAt)
+    .filter((ts): ts is string => ts !== undefined);
+  const oldestCapturedAt = capturedAts.length > 0 ? capturedAts.sort()[0] : null;
 
   return c.json({
-    data: results,
+    data: sorted,
     meta: {
       requestId: c.get("requestId"),
-      appliedFilters: { ...parsed, since },
-      cached: false,
-      stale: stale !== null,
-      staleAsOf: stale?.fetchedAt ?? null,
+      appliedFilters: parsed,
+      // No live/cached distinction anymore -- every response is served
+      // from the snapshot store. capturedAt (renamed from the old
+      // cached/stale/staleAsOf trio) tells the caller how fresh this
+      // is: the oldest capture time among the requested roles, since a
+      // multi-role request can mix roles captured at slightly different
+      // times if reconciliation partially failed on a prior run (see
+      // handleSnapshotCapture's per-role try/catch).
+      snapshotCapturedAt: oldestCapturedAt,
       hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
     },
   });
 });
+
+/**
+ * A company can appear in more than one requested role's snapshot (a
+ * company hiring both cybersecurity and cloud/devops shows up under
+ * both role_category snapshot rows). Dedupe by company slug, keeping
+ * whichever row has the higher newJobsCount for that company -- an
+ * arbitrary but deterministic tie-break; a multi-role request's ranking
+ * is across companies, not roles, so which single row represents a
+ * multi-role company doesn't change the set of companies shown, only
+ * which one of its per-role metric snapshots backs the displayed
+ * numbers.
+ *
+ * industryFilter/countryFilter are applied here, in-process, against
+ * each row's own denormalized company.industry / topLocations fields --
+ * captured at snapshot time (reconciliation.ts's handleSnapshotCapture),
+ * not re-queried from `companies`/`jobs` live. A countryFilter matches
+ * if the country appears anywhere in that row's topLocations (the same
+ * top-N-per-company shape trends-repo.ts always returned; there is no
+ * per-country job count preserved beyond that top-N list).
+ */
+export function mergeTrendSnapshots(
+  snapshotsByRole: Map<string, { payload: { companies: HiringTrendCompany[] }; capturedAt: string }>,
+  filters: { industryFilter?: string; countryFilter?: string },
+): HiringTrendCompany[] {
+  const bySlug = new Map<string, HiringTrendCompany>();
+
+  for (const { payload } of snapshotsByRole.values()) {
+    for (const row of payload.companies) {
+      if (filters.industryFilter && row.company.industry !== filters.industryFilter) {
+        continue;
+      }
+      if (
+        filters.countryFilter &&
+        !row.topLocations.some((loc) => loc.countryCode === filters.countryFilter)
+      ) {
+        continue;
+      }
+
+      const existing = bySlug.get(row.company.slug);
+      if (!existing || row.newJobsCount > existing.newJobsCount) {
+        bySlug.set(row.company.slug, row);
+      }
+    }
+  }
+
+  return [...bySlug.values()];
+}
+
+/**
+ * Same ranking semantics the old trends-repo.ts's sortTrends applied,
+ * moved here since sorting now happens over merged snapshot rows in the
+ * route rather than freshly queried D1 rows in the repo.
+ */
+export function sortTrendCompanies(
+  results: HiringTrendCompany[],
+  sort: "acceleration_desc" | "volume_desc" | "velocity_desc",
+): HiringTrendCompany[] {
+  const sorted = [...results];
+  if (sort === "volume_desc") {
+    sorted.sort((a, b) => b.newJobsCount - a.newJobsCount);
+  } else if (sort === "velocity_desc") {
+    sorted.sort((a, b) => {
+      if (a.hiringVelocityScore === null && b.hiringVelocityScore === null) return 0;
+      if (a.hiringVelocityScore === null) return 1;
+      if (b.hiringVelocityScore === null) return -1;
+      return b.hiringVelocityScore - a.hiringVelocityScore;
+    });
+  } else {
+    sorted.sort((a, b) => b.acceleration - a.acceleration);
+  }
+  return sorted;
+}

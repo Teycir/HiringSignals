@@ -318,23 +318,22 @@ export async function fetchSources(
 }
 
 /**
- * `stale`/`staleAsOf` (2026-09-02, D1 free-tier exhaustion incident):
- * trends.ts falls back to the last successful result for this exact
- * filter combination when a fresh D1 query fails outright (daily quota
- * exhausted, outage), rather than 500ing -- "get latest working data if
- * there's no way to fetch new data," see that route's own header
- * comment. `staleAsOf` is that fallback's original fetch timestamp
- * (ISO string), null when `stale` is false, so trends-view.tsx can
- * distinguish "this is current" from "this is the last data we had."
+ * `snapshotCapturedAt` (snapshot-persistence-plan.md, replaces the
+ * 2026-09-02 `cached`/`stale`/`staleAsOf` trio): GET /api/v1/trends/hiring
+ * now reads exclusively from a D1 snapshot table written once a day by
+ * the reconciliation cron, never a live query on request traffic -- see
+ * trends.ts's own header comment. There is no "fresh vs stale" split
+ * anymore since every response is a snapshot read; `snapshotCapturedAt`
+ * is simply when that snapshot data was last captured (oldest capture
+ * time among the requested roles), null only if reconciliation hasn't
+ * run yet for any requested role since deploy.
  */
 export interface FetchTrendsResponse {
   data: HiringTrendCompany[];
   meta: {
     requestId: string;
     appliedFilters: Record<string, unknown>;
-    cached: boolean;
-    stale: boolean;
-    staleAsOf: string | null;
+    snapshotCapturedAt: string | null;
     hiringVelocityDisclaimer: string;
   };
 }

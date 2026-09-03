@@ -37,3 +37,13 @@ test-results/
 __*.ts
 __*.js
 .history
+
+# Local D1 data dumps/exports (wrangler d1 export, ad-hoc prod-data
+# imports for local end-to-end testing) -- these can contain real
+# production rows (company names, job postings, signal evidence) and
+# must never be committed. Always named prod-*.sql by convention when
+# pulled down for a local test session; delete when done, but ignore
+# them too as a backstop.
+apps/api/prod-*.sql
+apps/api/*.sqlite
+apps/api/*.sqlite-*

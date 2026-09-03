@@ -1,14 +1,23 @@
-import { computeHiringVelocity, computeReconciliationScore } from "@hiring-signals/domain";
+import {
+  computeHiringVelocity,
+  computeReconciliationScore,
+  ROLE_CATEGORIES,
+  type RoleCategory,
+} from "@hiring-signals/domain";
 import {
   appendSignalEvidence,
   createD1Client,
   getCompanyActivityStats,
   getCompanyRoleActivityStats,
+  getHiringTrends,
+  listSignals,
   listSignalsNeedingReconciliation,
   listStillActiveCandidates,
   markSignalStillActive,
   updateCompanyVelocityScore,
   updateSignalScore,
+  writeSignalsFeedSnapshot,
+  writeTrendsSnapshot,
 } from "@hiring-signals/db";
 import type { Bindings } from "../bindings";
 
@@ -155,7 +164,93 @@ export async function handleReconciliation(
 
   await handleVelocityRecompute(client, touchedCompanyIds, now);
   await handleStillActive(client, now);
+  await handleSnapshotCapture(client, now);
 }
+
+/**
+ * Snapshot capture (snapshot-persistence-plan.md): the ONLY place in
+ * the codebase that writes to snapshots_current/snapshots_history
+ * (packages/db/src/snapshot-repo.ts, lib/d1/snapshot-store.ts). Runs
+ * once at the end of every daily reconciliation tick -- never on
+ * request traffic -- so a read-path failure can never be the thing
+ * that skips a capture, and a capture failure can never manifest as a
+ * request-path error (best-effort, logs and continues, same discipline
+ * as every other pass in this file).
+ *
+ * If this step fails outright (D1 unreachable for the whole run),
+ * snapshots_current is simply left untouched -- readers keep serving
+ * whatever was captured last time, indefinitely, which is the intended
+ * degrade path (see lib/d1/snapshot-store.ts's header comment). There
+ * is deliberately no retry/backoff here: tomorrow's cron tick is the
+ * retry.
+ *
+ * Two independent captures, each wrapped in its own try/catch so a
+ * trends failure can't skip the signals capture or vice versa:
+ *   1. Trends: one snapshot row per RoleCategory (10 fixed values,
+ *      the same bounded/enumerable grain getHiringTrends already
+ *      operates over), computed with a broad multi-role query per
+ *      role_category individually so a request for any subset of
+ *      roles/sort/limit can be served entirely from these 10 rows
+ *      without ever touching `jobs`/`companies` again.
+ *   2. Signals: a single default-feed snapshot (score_desc, no filters,
+ *      capped -- see SNAPSHOT_SIGNALS_CAP) backing the plain
+ *      unfiltered feed request and the live-query fallback path in
+ *      signals.ts.
+ */
+async function handleSnapshotCapture(
+  client: ReturnType<typeof createD1Client>,
+  now: Date,
+): Promise<void> {
+  const capturedAt = now.toISOString();
+
+  for (const roleCategory of ROLE_CATEGORIES) {
+    try {
+      const companies = await getHiringTrends(client, {
+        roleCategoryFilter: [roleCategory as RoleCategory],
+        since: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        limit: SNAPSHOT_TRENDS_LIMIT,
+        sort: "acceleration_desc",
+      });
+      await writeTrendsSnapshot(client, {
+        roleCategory: roleCategory as RoleCategory,
+        companies,
+        capturedAt,
+      });
+    } catch (error) {
+      console.error("trends_snapshot_capture_failed", {
+        role_category: roleCategory,
+        error_code: error instanceof Error ? error.name : "UnknownError",
+        error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+      });
+    }
+  }
+
+  try {
+    const feed = await listSignals(client, {
+      minScore: 0,
+      sort: "score_desc",
+      limit: SNAPSHOT_SIGNALS_CAP,
+    });
+    await writeSignalsFeedSnapshot(client, { items: feed.items, capturedAt });
+  } catch (error) {
+    console.error("signals_snapshot_capture_failed", {
+      error_code: error instanceof Error ? error.name : "UnknownError",
+      error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+    });
+  }
+}
+
+/** Row cap for the trends snapshot per role_category -- generous
+ * relative to trendsQuerySchema's own max (50, trends-query.ts) since
+ * this snapshot must be able to serve any caller-requested limit up to
+ * that max entirely from precomputed rows. */
+const SNAPSHOT_TRENDS_LIMIT = 50;
+
+/** Row cap for the signals default-feed snapshot -- same order of
+ * magnitude as EXPORT_ROW_CAP/FEED_ROW_CAP (signals-repo.ts) for the
+ * same reason: this is a bounded, "current picture" dataset, not an
+ * unbounded historical dump. */
+const SNAPSHOT_SIGNALS_CAP = 500;
 
 /**
  * Company-level hiring velocity recompute (ROADMAP.md Milestone Q.2).

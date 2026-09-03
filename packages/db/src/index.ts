@@ -20,3 +20,4 @@ export * from "./jobs-repo";
 export * from "./signals-write-repo";
 export * from "./company-role-stats-repo";
 export * from "./trends-repo";
+export * from "./snapshot-repo";
