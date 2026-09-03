@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
-import { createD1Client, readTrendsSnapshots } from "@hiring-signals/db";
+import { createD1Client, readTrendsSnapshots, readTrendsSnapshotsMirror } from "@hiring-signals/db";
 import type { HiringTrendCompany } from "@hiring-signals/db/src/types";
-import { HIRING_VELOCITY_DISCLAIMER, trendsQuerySchema } from "@hiring-signals/domain";
+import { HIRING_VELOCITY_DISCLAIMER, type RoleCategory, trendsQuerySchema } from "@hiring-signals/domain";
 import { freeReadTier } from "../middleware/anti-abuse";
 
 /**
@@ -35,6 +35,17 @@ import { freeReadTier } from "../middleware/anti-abuse";
  * window at capture time, see reconciliation.ts's handleSnapshotCapture)
  * and is accepted-but-ignored rather than rejected, so an existing
  * caller passing it doesn't get a 400.
+ *
+ * Deliberately snapshot-first, never live, unlike signals.ts (which
+ * tries a live D1 query before falling back to its own snapshot). See
+ * signals.ts's header comment for the full cost/fidelity comparison --
+ * short version: getHiringTrends (trends-repo.ts) scans every `jobs`
+ * row for the requested roles before `limit` ever applies, which is the
+ * unbounded query that exhausted the D1 free-tier quota in the first
+ * place, whereas this route's own `since`/7-day-window semantics are
+ * already daily-granularity by design -- so reading the snapshot by
+ * default costs no fidelity here the way it would on signals.ts. Same
+ * D1-snapshot -> KV-mirror fallback shape as signals.ts either way.
  */
 export const trendsRoute = new Hono<AppEnv>();
 trendsRoute.use("*", freeReadTier());
@@ -43,9 +54,49 @@ trendsRoute.get("/hiring", async (c) => {
   const parsed = trendsQuerySchema.parse(c.req.query());
   const client = createD1Client(c.env.DB);
 
-  const snapshotsByRole = await readTrendsSnapshots(client, {
-    roleCategories: parsed.roles,
-  });
+  // D1-outage guard on the snapshot read itself (2026-09-03 prod
+  // incident): the snapshot-persistence-plan.md rewrite moved this
+  // route off the live jobs/companies JOIN specifically so read traffic
+  // could never hit the D1 daily-row-read quota wall ingestion is
+  // subject to -- but readTrendsSnapshots() is still a D1 query against
+  // snapshots_current, and a bare account-wide quota exhaustion (not
+  // just a live-table-sized query) can still throw here, same as it
+  // can for any other D1 call. On failure, this now falls back to a KV
+  // mirror of the same snapshot data (written alongside the D1 row on
+  // every successful daily capture, see reconciliation.ts's
+  // handleSnapshotCapture) -- KV has its own quota, entirely separate
+  // from D1's, so trends stays servable from the last known-good
+  // capture even during a full D1 outage, not just a smaller D1 query.
+  // Only genuinely empty (degraded: true, no data) when BOTH D1 and the
+  // KV mirror are unreachable for a requested role -- e.g. reconciliation
+  // has never run since deploy, or KV itself is also down.
+  let snapshotsByRole: Map<string, { payload: { companies: HiringTrendCompany[] }; capturedAt: string }>;
+  let degraded = false;
+  try {
+    snapshotsByRole = await readTrendsSnapshots(client, {
+      roleCategories: parsed.roles,
+    });
+  } catch (err) {
+    console.error("D1 query failed for trends snapshot read, falling back to KV mirror:", err);
+    try {
+      snapshotsByRole = await readTrendsSnapshotsMirror(c.env.CACHE, {
+        roleCategories: parsed.roles as RoleCategory[],
+      });
+    } catch (kvErr) {
+      // readTrendsSnapshotsMirror itself never throws (best-effort
+      // internally, lib/kv/snapshot-mirror.ts) -- this catch exists
+      // only as a defensive backstop, not an expected path.
+      console.error("KV mirror read also failed for trends:", kvErr);
+      snapshotsByRole = new Map();
+    }
+    // degraded reflects whether we still ended up with nothing at all
+    // for every requested role, not merely whether D1 itself failed --
+    // a successful KV fallback is a full recovery from the caller's
+    // point of view (real data, just via a different path), so it
+    // should not be flagged as degraded the same way a genuine
+    // both-paths-failed outcome is.
+    degraded = snapshotsByRole.size === 0;
+  }
 
   const merged = mergeTrendSnapshots(snapshotsByRole, {
     industryFilter: parsed.industry,
@@ -77,6 +128,14 @@ trendsRoute.get("/hiring", async (c) => {
       // handleSnapshotCapture's per-role try/catch).
       snapshotCapturedAt: oldestCapturedAt,
       hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
+      // True only when the snapshot read itself failed this request
+      // (see the try/catch above) -- distinct from "no data yet"
+      // (reconciliation hasn't run since deploy), which reports
+      // degraded: false with an empty `data` array and
+      // snapshotCapturedAt: null. Lets callers tell "temporarily
+      // degraded, try again shortly" apart from "genuinely nothing
+      // captured yet" without guessing from an empty array alone.
+      degraded,
     },
   });
 });

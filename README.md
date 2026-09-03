@@ -131,6 +131,7 @@ Every signal keeps a full evidence trail — source platform, canonical public U
   - [Local dev](#local-dev)
     - [Data Sources](#data-sources)
     - [Growing source coverage](#growing-source-coverage)
+  - [Read-path resilience: snapshots + KV mirror](#read-path-resilience-snapshots--kv-mirror)
   - [🤖 AI Agent Metadata](#-ai-agent-metadata)
   - [License](#license)
   - [💼 Support Development](#-support-development)
@@ -149,7 +150,7 @@ Every signal keeps a full evidence trail — source platform, canonical public U
 |-----------|---------|-----------------|
 | `apps/cli/` | CLI, primary interface | **Complete** → landed 2026-08-07, `--format table` renderer added 2026-08-10. The real end-user is an AI agent, not a human typing commands, so JSON is the default on stdout with single-JSON-object machine-readable errors on stderr and no interactive prompts (admin actions require `--yes`). Thin client over `apps/api`'s existing routes only — no D1 access, no bypassing API validation/rate-limits/auth. Commands: `hs signals list/get`, `hs companies list/get/timeline`, `hs facets`, `hs sources list`, `hs export signals`, `hs feed-url`, `hs trends hiring`, `hs admin source run/scheduler flush/reconcile`. `--format table` works on flat-list commands; nested/dense shapes (signal detail, company detail, timeline buckets) fall back to JSON. Saved filter profiles (`--save`/`--clear-saved`) stored at `~/.hiring-signals/config.json` auto-apply on no-flag invocations. See `apps/cli/README.md` for exact invocations/output. |
 | `apps/web/` | Next.js web UI | **Complete** → Next.js 16 app deployed on Cloudflare Workers via OpenNext (own `hiring-signals-web` Worker, service-bound to `apps/api`). Routes: `/` (redirects to `/signals`), `/signals` (signal feed with FilterRail, SignalCard, hybrid search bar + recent searches), `/signals/:id` (signal detail with evidence table, score breakdown, MoreLikeThis), `/companies/:slug` (company detail with hiring timeline), `/trends` (cross-company hiring trends table with velocity badges), `/how-to-use`, `/faq`. Thin client over `apps/api` — no direct D1 access; server-side calls (`generateMetadata`) route through a Cloudflare service binding, browser calls hit the public API URL. All signal filters (role, location, source, signal type, company, min score, recency, free-text `q`) are exposed as URL search params and kept in sync with the FilterRail. Export button triggers `GET /export/signals.csv`. See `apps/web/README.md`. |
-| `apps/api/` | Cloudflare Worker API | **Complete** → Hono Worker. Routes: `GET /signals` (hybrid search, cursor pagination), `GET /signals/stats` (score distribution: count/min/max/mean/median/p25/p75 plus per-signal-type and per-role-category breakdowns over the same filter surface, registered before `/:signalId`), `GET /signals/:id`, `GET /companies`, `GET /companies/:slug`, `GET /companies/:slug/timeline` (time-bucketed hiring activity, 7/14/30-day buckets, 90-day window cap), `GET /trends/hiring` (cross-company ranked analytics, acceleration/volume/velocity/newest-signal sorts, 5-min KV cache), `GET /facets` (60s KV cache), `GET /sources`, `GET /export/signals.csv` (2 000-row cap, `X-Export-Truncated` header), `GET /feed.rss` (RSS 2.0, 50-item cap, ETag/304 conditional requests). Three `POST /admin/*` pipeline triggers gated on bearer `HS_ADMIN_SECRET`. Middleware chain: request-id, client-IP (trusted-first CF-Connecting-IP extraction), security headers, circuit-breaker-wrapped D1 client, anti-abuse rate-limiting (SHA-256-hashed identifiers), free-read-tier enforcement, API error-rate metrics (Analytics Engine `API_METRICS` dataset with normalized route-shape cardinality). Background: 15-min cron scheduler → `INGEST_QUEUE` consumer with 5-retry exponential backoff, daily reconciliation cron (stale score recompute + company hiring velocity recompute). |
+| `apps/api/` | Cloudflare Worker API | **Complete** → Hono Worker. Routes: `GET /signals` (hybrid search, cursor pagination, live-first with D1-snapshot → KV-mirror fallback — see [Read-path resilience](#read-path-resilience-snapshots--kv-mirror)), `GET /signals/stats` (score distribution: count/min/max/mean/median/p25/p75 plus per-signal-type and per-role-category breakdowns over the same filter surface, registered before `/:signalId`), `GET /signals/:id`, `GET /companies`, `GET /companies/:slug`, `GET /companies/:slug/timeline` (time-bucketed hiring activity, 7/14/30-day buckets, 90-day window cap), `GET /trends/hiring` (cross-company ranked analytics, acceleration/volume/velocity/newest-signal sorts, snapshot-first with KV-mirror fallback, never live — see [Read-path resilience](#read-path-resilience-snapshots--kv-mirror)), `GET /facets` (60s KV cache), `GET /sources`, `GET /export/signals.csv` (2 000-row cap, `X-Export-Truncated` header), `GET /feed.rss` (RSS 2.0, 50-item cap, ETag/304 conditional requests). Three `POST /admin/*` pipeline triggers gated on bearer `HS_ADMIN_SECRET`. Middleware chain: request-id, client-IP (trusted-first CF-Connecting-IP extraction), security headers, circuit-breaker-wrapped D1 client, anti-abuse rate-limiting (SHA-256-hashed identifiers), free-read-tier enforcement, API error-rate metrics (Analytics Engine `API_METRICS` dataset with normalized route-shape cardinality). Background: 15-min cron scheduler → `INGEST_QUEUE` consumer with 5-retry exponential backoff, daily reconciliation cron (stale score recompute, company hiring velocity recompute, and signals/trends snapshot capture — see next section). |
 | `packages/domain/` | Core domain logic | **Complete** → Zod schemas, taxonomies, classification, lifecycle, signal scoring (v3), embedding-text, search-merge logic, and a platform-agnostic API-client core (request/error-envelope/query-serialization) shared by `apps/cli` and `apps/web`'s HTTP clients. |
 | `packages/adapters/` | ATS provider integrations | **7 providers** → AtsAdapter interface (spec 5.3). Implemented: greenhouse, lever, ashby, smartrecruiters, workable, recruitee, personio. (smartrecruiters was audited 2026-08-18 and kept — it had a real adapter bug, since fixed — see spec §4.1.) |
 | `packages/db/` | D1 database layer | **Complete** → D1 client + repository functions. Read paths: signals/companies/facets/export. Write paths: sources/jobs/signals. Company-role activity stats, signals-export repo. |
@@ -293,6 +294,47 @@ require Cloudflare billing/a credit card on the account.
 CI (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 typecheck + lint + domain/adapters pure-logic tests (~45s total).
 Live-D1/db/api suites are manual-only (require live `CF_TOKEN` against shared resources — see zero-mocks policy in `AGENTS.md`).
+
+---
+
+## Read-path resilience: snapshots + KV mirror
+
+`GET /signals` and `GET /trends/hiring` both survive a Cloudflare D1
+outage (including the free-tier account-wide daily row-read quota being
+exhausted) without 500ing to an empty UI — but they take **different
+routes to get there**, on purpose. Full design doc:
+[`snapshot-persistence-plan.md`](snapshot-persistence-plan.md).
+
+**The shared mechanism.** Once a day, the reconciliation cron
+(`0 6 * * *`, `apps/api/src/jobs/reconciliation.ts`'s
+`handleSnapshotCapture`) computes fresh trends/signals data and writes it
+to two places: a D1 table (`snapshots_current`, one row per
+`(domain, entity_key)`) and a mirror in KV with no TTL — the same payload,
+written immediately after the D1 write, always best-effort so a mirror
+failure never blocks the capture. This never runs on request traffic.
+KV has its own quota, entirely separate from D1's, so the mirror stays
+readable even during a full D1 outage.
+
+**Where the two routes diverge — first-rung choice:**
+
+| | `GET /trends/hiring` | `GET /signals` |
+|---|---|---|
+| Read order | D1 snapshot → KV mirror | **live D1 query** → D1 snapshot → KV mirror |
+| Live-query cost | Unbounded — scans every `jobs` row for the requested roles before `limit` applies | Bounded — indexed `WHERE ... LIMIT` against `signals` |
+| Why | That unbounded scan is what exhausted the D1 quota in the original incident; kept off request traffic entirely, confined to the once-a-day cron | Cheap regardless of traffic volume, and only the live path supports this route's real feature set |
+| What the snapshot can't do | Nothing lost — trends' own `since`/7-day window is already daily-granularity by design | Cursor pagination, full SQL `q` search, and the semantic/Vectorize hybrid leg are all live-only; the snapshot fallback (`filterSnapshotItems`) is a deliberately degraded single-page/substring-search view |
+
+In short: trends' live query is expensive and its snapshot loses nothing,
+so it's snapshot-only. Signals' live query is cheap and its snapshot
+loses real functionality, so it's live-first with snapshot/KV as a safety
+net. Both routes report how the response was served
+(`degraded`/`snapshotCapturedAt` on trends; `servedFromSnapshot`/
+`snapshotCapturedAt` on signals) so a client can tell "live/fresh" apart
+from "served from a fallback."
+
+`GET /facets` is **not** on this system yet — it still uses the original
+short-TTL (60s) KV cache with an unguarded live D1 call underneath. Open
+follow-up, tracked in `snapshot-persistence-plan.md` §9.
 
 ---
 

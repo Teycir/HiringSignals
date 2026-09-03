@@ -17,7 +17,9 @@ import {
   updateCompanyVelocityScore,
   updateSignalScore,
   writeSignalsFeedSnapshot,
+  writeSignalsFeedSnapshotMirror,
   writeTrendsSnapshot,
+  writeTrendsSnapshotMirror,
 } from "@hiring-signals/db";
 import type { Bindings } from "../bindings";
 
@@ -182,7 +184,7 @@ export async function handleReconciliation(
 
   await handleVelocityRecompute(client, touchedCompanyIds, now);
   await handleStillActive(client, now);
-  await handleSnapshotCapture(client, now);
+  await handleSnapshotCapture(client, env.CACHE, now);
 }
 
 /**
@@ -217,6 +219,7 @@ export async function handleReconciliation(
  */
 async function handleSnapshotCapture(
   client: ReturnType<typeof createD1Client>,
+  cache: KVNamespace,
   now: Date,
 ): Promise<void> {
   const capturedAt = now.toISOString();
@@ -230,6 +233,26 @@ async function handleSnapshotCapture(
         sort: "acceleration_desc",
       });
       await writeTrendsSnapshot(client, {
+        roleCategory: roleCategory as RoleCategory,
+        companies,
+        capturedAt,
+      });
+
+      // KV mirror (2026-09-03 prod incident follow-up,
+      // lib/kv/snapshot-mirror.ts via packages/db/src/snapshot-repo.ts):
+      // snapshots_current is still a D1 row, so an account-wide D1
+      // quota exhaustion (not just a live jobs/companies-sized query)
+      // can still make the READ side of trends.ts throw, even though
+      // this write path is cheap and this data changes once a day. KV
+      // has its own, entirely separate quota from D1's -- mirroring the
+      // just-written snapshot here means trends.ts can fall back to a
+      // copy that doesn't share any failure mode with D1 at all, not
+      // just a smaller D1 query. No TTL: same "served indefinitely
+      // until the next successful capture overwrites it" philosophy as
+      // snapshots_current itself. Always best-effort internally
+      // (writeTrendsSnapshotMirror never throws) so it can never fail
+      // this capture pass or skip the D1 write above.
+      await writeTrendsSnapshotMirror(cache, {
         roleCategory: roleCategory as RoleCategory,
         companies,
         capturedAt,
@@ -250,6 +273,18 @@ async function handleSnapshotCapture(
       limit: SNAPSHOT_SIGNALS_CAP,
     });
     await writeSignalsFeedSnapshot(client, { items: feed.items, capturedAt });
+
+    // KV mirror -- same reasoning as the trends mirror write above:
+    // signals.ts's existing D1-snapshot fallback (readSignalsFeedSnapshot)
+    // has the identical structural gap trends.ts had before the
+    // 2026-09-03 fix -- it's still a D1 read, so an account-wide quota
+    // exhaustion can take out both the live query AND this fallback in
+    // the same failure mode. Mirrored here, once a day, alongside the D1
+    // write, so signals.ts can fall back to a copy with no D1 dependency
+    // at all. Always best-effort (writeSignalsFeedSnapshotMirror never
+    // throws) so it can never fail this capture pass or skip the D1
+    // write above.
+    await writeSignalsFeedSnapshotMirror(cache, { items: feed.items, capturedAt });
   } catch (error) {
     console.error("signals_snapshot_capture_failed", {
       error_code: error instanceof Error ? error.name : "UnknownError",

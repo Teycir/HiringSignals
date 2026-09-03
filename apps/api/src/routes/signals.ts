@@ -15,6 +15,7 @@ import {
   InvalidCursorError,
   listSignals,
   readSignalsFeedSnapshot,
+  readSignalsFeedSnapshotMirror,
   toListItem,
   type SignalListItem,
 } from "@hiring-signals/db";
@@ -31,6 +32,49 @@ import {
 // same schema this route enforces without risking drift between the two.
 export { signalsQuerySchema };
 
+/**
+ * Read-path shape (2026-09-03 prod incident follow-up): live D1 query
+ * FIRST, snapshot-fallback chain only on failure -- the opposite order
+ * from trends.ts, and deliberately so, not an inconsistency. The two
+ * routes were evaluated against the same question ("should this read
+ * traffic ever touch a live table, or only the daily snapshot?") and
+ * came out with different answers because their live-query costs and
+ * product requirements are genuinely different, not because one got
+ * updated and the other didn't:
+ *
+ *   - Cost: listSignals' live query (signals-repo.ts) is a bounded,
+ *     indexed WHERE + LIMIT read against `signals` -- cheap regardless
+ *     of request volume. getHiringTrends (trends-repo.ts), by contrast,
+ *     unconditionally scans every row of `jobs` matching the requested
+ *     roles to compute new/active/n14/n56 counts BEFORE `limit` ever
+ *     applies -- that unbounded scan is what exhausted the D1 free-tier
+ *     daily row-read quota in the first place (see reconciliation.ts's
+ *     handleSnapshotCapture header comment). Putting it on every
+ *     request would reintroduce exactly the failure this whole
+ *     snapshot/KV-mirror system exists to prevent; keeping it to once a
+ *     day, off request traffic, in the cron is the fix that already
+ *     shipped and stays in place.
+ *   - Product fidelity: this route's core capabilities -- cursor-based
+ *     keyset pagination, full SQL `q` search, the semantic/Vectorize
+ *     hybrid leg (see servedFromSnapshot gating below) -- only exist on
+ *     the live path. filterSnapshotItems (below) is a deliberately
+ *     degraded single-page/substring-search fallback, not a full
+ *     reimplementation, so serving live by default is what makes this
+ *     route's actual feature set available on the common path rather
+ *     than the exception path. Trends' snapshot is not a degraded
+ *     version of anything -- its own `since`/7-day-window semantics are
+ *     already daily-granularity by design, so reading the snapshot by
+ *     default costs it nothing extra in fidelity.
+ *
+ * Net effect: live-first here trades a small, bounded amount of D1
+ * quota (this query was already cheap) for freshness + full
+ * search/pagination fidelity; live-first on trends would trade a large,
+ * unbounded amount of quota for a freshness gain the product doesn't
+ * need. Same fallback chain shape either way once D1 is unreachable
+ * (D1 snapshot -> KV mirror, see readSignalsFeedSnapshotMirror below
+ * and trends.ts's readTrendsSnapshotsMirror) -- only the FIRST rung
+ * differs between the two routes, and it differs on purpose.
+ */
 export const signalsRoute = new Hono<AppEnv>();
 signalsRoute.use("*", freeReadTier());
 
@@ -151,14 +195,17 @@ signalsRoute.get("/", async (c) => {
     try {
       snapshot = await readSignalsFeedSnapshot(client);
     } catch (snapshotErr) {
-      // The fallback itself is unreachable (e.g. snapshots_current
-      // doesn't exist yet -- migration not applied -- or any other D1
-      // failure reading the snapshot table). There is genuinely nothing
-      // to serve: rethrow the ORIGINAL live-query error, not this one,
-      // so the response/logs point at the real underlying cause (D1
-      // outage) rather than the secondary fallback failure.
-      console.error("Snapshot fallback also failed for signals:", snapshotErr);
-      throw err;
+      // The D1 snapshot read itself failed too -- same account-wide D1
+      // outage that broke the live query above can just as easily break
+      // this fallback, since both are D1 reads (2026-09-03 prod
+      // incident, same structural gap trends.ts had). Drop to the KV
+      // mirror next (packages/db/src/snapshot-repo.ts via
+      // lib/kv/snapshot-mirror.ts) -- written once a day alongside the
+      // D1 snapshot by reconciliation.ts's handleSnapshotCapture, with
+      // its own quota entirely separate from D1's. Only when THIS also
+      // comes back empty is there genuinely nothing to serve.
+      console.error("Snapshot fallback also failed for signals, trying KV mirror:", snapshotErr);
+      snapshot = await readSignalsFeedSnapshotMirror(c.env.CACHE);
     }
     if (!snapshot) throw err;
 

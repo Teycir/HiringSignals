@@ -1,10 +1,16 @@
 import type { RoleCategory } from "@hiring-signals/domain";
 import type { D1Client } from "./d1-client";
+import type { KVNamespace } from "@cloudflare/workers-types";
 import {
   writeSnapshot as writeSnapshotGeneric,
   readSnapshot as readSnapshotGeneric,
   readSnapshotsForDomain as readSnapshotsForDomainGeneric,
 } from "../../../lib/d1/snapshot-store";
+import {
+  writeSnapshotMirror as writeSnapshotMirrorGeneric,
+  readSnapshotMirror as readSnapshotMirrorGeneric,
+  readSnapshotMirrorsForDomain as readSnapshotMirrorsForDomainGeneric,
+} from "../../../lib/kv/snapshot-mirror";
 import type { SignalListItem, HiringTrendCompany } from "./types";
 
 /**
@@ -101,5 +107,75 @@ export async function readTrendsSnapshots(
   // entity_key -- safe to widen to RoleCategory here since every write
   // path (writeTrendsSnapshot above) only ever writes a real
   // RoleCategory as the key.
+  return raw as Map<RoleCategory, { payload: TrendsSnapshotPayload; capturedAt: string }>;
+}
+
+/**
+ * KV-mirror counterparts of the four D1 functions above (2026-09-03
+ * prod incident follow-up, ../../../lib/kv/snapshot-mirror.ts). Same
+ * (domain, entity_key) keys, same payload types -- a route's fallback
+ * chain is: live query -> D1 snapshot (readSignalsFeedSnapshot /
+ * readTrendsSnapshots above) -> this KV mirror. Every writeXSnapshot
+ * call site pairs 1:1 with a writeXSnapshotMirror call, same
+ * capturedAt, written immediately alongside (see reconciliation.ts's
+ * handleSnapshotCapture) -- never a separate/delayed sync step.
+ */
+
+/** Writes the signals domain's default-feed snapshot to the KV mirror.
+ * Always best-effort (see writeSnapshotMirrorGeneric); a failure here
+ * must never fail the D1 write it accompanies. */
+export async function writeSignalsFeedSnapshotMirror(
+  cache: KVNamespace,
+  params: { items: SignalListItem[]; capturedAt: string },
+): Promise<void> {
+  await writeSnapshotMirrorGeneric<SignalsFeedSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_SIGNALS,
+    entityKey: SIGNALS_DEFAULT_FEED_KEY,
+    payload: { items: params.items },
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads the signals domain's default-feed snapshot from the KV mirror.
+ * Null if never mirrored yet or the KV read itself fails -- never
+ * throws (see readSnapshotMirrorGeneric). */
+export async function readSignalsFeedSnapshotMirror(
+  cache: KVNamespace,
+): Promise<{ payload: SignalsFeedSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotMirrorGeneric<SignalsFeedSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_SIGNALS,
+    entityKey: SIGNALS_DEFAULT_FEED_KEY,
+  });
+}
+
+/** Writes one trends domain snapshot for a single role_category to the
+ * KV mirror. Always best-effort, same reasoning as
+ * writeSignalsFeedSnapshotMirror above. */
+export async function writeTrendsSnapshotMirror(
+  cache: KVNamespace,
+  params: { roleCategory: RoleCategory; companies: HiringTrendCompany[]; capturedAt: string },
+): Promise<void> {
+  await writeSnapshotMirrorGeneric<TrendsSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_TRENDS,
+    entityKey: params.roleCategory,
+    payload: { companies: params.companies },
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads trends domain snapshots from the KV mirror for the given role
+ * categories. Unlike readTrendsSnapshots (D1), roleCategories is
+ * required here -- KV has no efficient "list every entity_key under
+ * this domain" query (see readSnapshotMirrorsForDomainGeneric's own
+ * comment) -- callers needing every role should pass ROLE_CATEGORIES
+ * explicitly. */
+export async function readTrendsSnapshotsMirror(
+  cache: KVNamespace,
+  params: { roleCategories: RoleCategory[] },
+): Promise<Map<RoleCategory, { payload: TrendsSnapshotPayload; capturedAt: string }>> {
+  const raw = await readSnapshotMirrorsForDomainGeneric<TrendsSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_TRENDS,
+    entityKeys: params.roleCategories,
+  });
   return raw as Map<RoleCategory, { payload: TrendsSnapshotPayload; capturedAt: string }>;
 }
