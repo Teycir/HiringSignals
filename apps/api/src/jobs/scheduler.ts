@@ -87,39 +87,54 @@ export async function handleScheduled(
   });
 
   for (const source of dueSources) {
-    // 2026-08-13 incident fix (see RUNNING_RUN_STALE_AFTER_MINUTES's own
-    // comment): a source whose runs never reach success has
-    // next_poll_at permanently NULL, so it's re-selected by
-    // getDueSources above on every tick -- skip enqueueing a duplicate
-    // run while a recent one is still (or plausibly still) in flight,
-    // rather than stacking overlapping runs for the same source.
-    const alreadyRunning = await hasRecentRunningRun(
-      client,
-      source.id,
-      now.toISOString(),
-      RUNNING_RUN_STALE_AFTER_MINUTES,
-    );
-    if (alreadyRunning) {
-      console.warn("scheduler_skip_already_running", { sourceId: source.id });
-      continue;
+    try {
+      // 2026-08-13 incident fix (see RUNNING_RUN_STALE_AFTER_MINUTES's own
+      // comment): a source whose runs never reach success has
+      // next_poll_at permanently NULL, so it's re-selected by
+      // getDueSources above on every tick -- skip enqueueing a duplicate
+      // run while a recent one is still (or plausibly still) in flight,
+      // rather than stacking overlapping runs for the same source.
+      const alreadyRunning = await hasRecentRunningRun(
+        client,
+        source.id,
+        now.toISOString(),
+        RUNNING_RUN_STALE_AFTER_MINUTES,
+      );
+      if (alreadyRunning) {
+        console.warn("scheduler_skip_already_running", { sourceId: source.id });
+        continue;
+      }
+
+      const jitterSeconds = jitterSecondsForSource(source.id);
+      const requestedAt = new Date(now.getTime() + jitterSeconds * 1000).toISOString();
+
+      const message: IngestMessage = {
+        version: 1,
+        sourceId: source.id,
+        runId: crypto.randomUUID(),
+        requestedAt,
+        attempt: 1,
+        chunkOffset: 0,
+      };
+
+      // Queue send delaySeconds spreads actual dequeue timing to match the
+      // jitter, not just the requestedAt field value -- otherwise every
+      // due source's message would still be pulled off the queue in the
+      // same burst even though requestedAt differs.
+      await env.INGEST_QUEUE.send(message, { delaySeconds: jitterSeconds });
+    } catch (error) {
+      // One source's check/enqueue failing (a D1 hiccup on
+      // hasRecentRunningRun, or a queue-send error) must not abort the
+      // rest of this tick's due sources -- same per-item isolation
+      // reconciliation.ts's loops already use, so a single bad source
+      // doesn't take enqueueing down for every other unrelated due
+      // source this tick (they'd still get picked up next tick either
+      // way, but no reason to make them wait on an unrelated failure).
+      console.error("scheduler_enqueue_failed", {
+        sourceId: source.id,
+        error_code: error instanceof Error ? error.name : "UnknownError",
+        error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+      });
     }
-
-    const jitterSeconds = jitterSecondsForSource(source.id);
-    const requestedAt = new Date(now.getTime() + jitterSeconds * 1000).toISOString();
-
-    const message: IngestMessage = {
-      version: 1,
-      sourceId: source.id,
-      runId: crypto.randomUUID(),
-      requestedAt,
-      attempt: 1,
-      chunkOffset: 0,
-    };
-
-    // Queue send delaySeconds spreads actual dequeue timing to match the
-    // jitter, not just the requestedAt field value -- otherwise every
-    // due source's message would still be pulled off the queue in the
-    // same burst even though requestedAt differs.
-    await env.INGEST_QUEUE.send(message, { delaySeconds: jitterSeconds });
   }
 }

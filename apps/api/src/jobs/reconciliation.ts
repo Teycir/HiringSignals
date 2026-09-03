@@ -81,10 +81,28 @@ export async function handleReconciliation(
     now.getTime() - STALE_SIGNAL_AFTER_HOURS * 60 * 60 * 1000,
   ).toISOString();
 
-  const signals = await listSignalsNeedingReconciliation(client, {
-    staleBefore,
-    limit: MAX_SIGNALS_PER_RUN,
-  });
+  let signals: Awaited<ReturnType<typeof listSignalsNeedingReconciliation>> = [];
+  try {
+    signals = await listSignalsNeedingReconciliation(client, {
+      staleBefore,
+      limit: MAX_SIGNALS_PER_RUN,
+    });
+  } catch (error) {
+    // Independent of the other three passes below (velocity recompute,
+    // still-active, snapshot capture) -- a failure here (most commonly
+    // the free tier's daily D1 row-read quota) must not prevent them
+    // from running. In particular handleSnapshotCapture's own header
+    // comment already promises "a read-path failure can never be the
+    // thing that skips a capture"; before this fix that promise didn't
+    // actually hold, since an unguarded throw here propagated straight
+    // out of handleReconciliation (apps/api/src/index.ts's scheduled()
+    // handler wraps the whole call in ctx.waitUntil() with no try/catch
+    // of its own), skipping every later pass including the capture.
+    console.error("signal_reconciliation_query_failed", {
+      error_code: error instanceof Error ? error.name : "UnknownError",
+      error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+    });
+  }
 
   // Q.2: companies whose signal got a real score recompute this run --
   // fed to handleVelocityRecompute below so the velocity pass only
@@ -325,13 +343,26 @@ async function handleStillActive(
   ).toISOString();
   const todayStart = startOfUtcDay(now);
 
-  const candidates = await listStillActiveCandidates(client, {
-    now: observedAt,
-    staleBefore,
-    todayStart,
-    lookbackMultiplier: STILL_ACTIVE_LOOKBACK_MULTIPLIER,
-    limit: MAX_STILL_ACTIVE_PER_RUN,
-  });
+  let candidates: Awaited<ReturnType<typeof listStillActiveCandidates>> = [];
+  try {
+    candidates = await listStillActiveCandidates(client, {
+      now: observedAt,
+      staleBefore,
+      todayStart,
+      lookbackMultiplier: STILL_ACTIVE_LOOKBACK_MULTIPLIER,
+      limit: MAX_STILL_ACTIVE_PER_RUN,
+    });
+  } catch (error) {
+    // Same reasoning as handleReconciliation's own
+    // listSignalsNeedingReconciliation guard above: this call sits
+    // ahead of handleSnapshotCapture in the caller's sequence, so an
+    // unguarded failure here would skip the snapshot capture too, not
+    // just this pass.
+    console.error("still_active_query_failed", {
+      error_code: error instanceof Error ? error.name : "UnknownError",
+      error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+    });
+  }
 
   for (const candidate of candidates) {
     try {

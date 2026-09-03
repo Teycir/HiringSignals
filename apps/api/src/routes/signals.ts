@@ -147,7 +147,19 @@ signalsRoute.get("/", async (c) => {
     // deploy) -- there is genuinely nothing to serve at that point.
     console.error("D1 query failed for signals (falling back to snapshot):", err);
 
-    const snapshot = await readSignalsFeedSnapshot(client);
+    let snapshot;
+    try {
+      snapshot = await readSignalsFeedSnapshot(client);
+    } catch (snapshotErr) {
+      // The fallback itself is unreachable (e.g. snapshots_current
+      // doesn't exist yet -- migration not applied -- or any other D1
+      // failure reading the snapshot table). There is genuinely nothing
+      // to serve: rethrow the ORIGINAL live-query error, not this one,
+      // so the response/logs point at the real underlying cause (D1
+      // outage) rather than the secondary fallback failure.
+      console.error("Snapshot fallback also failed for signals:", snapshotErr);
+      throw err;
+    }
     if (!snapshot) throw err;
 
     result = {
