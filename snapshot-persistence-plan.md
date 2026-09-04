@@ -220,3 +220,9 @@ explosion §1/§7 rejected. `lib/kv/snapshot-mirror.ts` never throws
 internally (best-effort read/write) so callers can treat a failed mirror
 lookup the same as "not found" rather than a new exception type to
 handle.
+
+**Operational follow-up:** interrupted test runs during this same
+incident left test-fixture rows in production D1 (a *write*-side
+problem, distinct from this section's read-side fix) -- see
+`prod-test-data-incident-2026-09-03.md` at repo root for root cause,
+full scope (399 companies), the cleanup route, and current status.
