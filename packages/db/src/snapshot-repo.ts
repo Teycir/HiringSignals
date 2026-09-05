@@ -11,7 +11,14 @@ import {
   readSnapshotMirror as readSnapshotMirrorGeneric,
   readSnapshotMirrorsForDomain as readSnapshotMirrorsForDomainGeneric,
 } from "../../../lib/kv/snapshot-mirror";
-import type { SignalListItem, HiringTrendCompany } from "./types";
+import type {
+  CompanyRecentSignal,
+  CompanySummary,
+  Facets,
+  HiringTrendCompany,
+  SignalDetail,
+  SignalListItem,
+} from "./types";
 
 /**
  * Project-typed wrapper over ../../../lib/d1/snapshot-store.ts (the
@@ -29,6 +36,12 @@ import type { SignalListItem, HiringTrendCompany } from "./types";
 
 export const SNAPSHOT_DOMAIN_SIGNALS = "signals";
 export const SNAPSHOT_DOMAIN_TRENDS = "trends";
+// read-path-hardening-plan.md §4.1/§4.2/§4.4: three more domains, same
+// generic (domain, entity_key) mechanism, no new migration -- see that
+// plan's §3 for why the existing store already supports this.
+export const SNAPSHOT_DOMAIN_SIGNAL_DETAIL = "signal_detail";
+export const SNAPSHOT_DOMAIN_COMPANY_DETAIL = "company_detail";
+export const SNAPSHOT_DOMAIN_FACETS = "facets";
 
 /**
  * Entity key for the signals domain's snapshot (ROADMAP.md /
@@ -51,6 +64,44 @@ export interface SignalsFeedSnapshotPayload {
 /** Payload shape captured for one trends domain entity_key (one role_category). */
 export interface TrendsSnapshotPayload {
   companies: HiringTrendCompany[];
+}
+
+/**
+ * Facets has no per-caller variation (unlike signals/trends' own
+ * filters) -- it's one global aggregate over all active signals/jobs,
+ * so it gets a single fixed entity_key, same pattern as
+ * SIGNALS_DEFAULT_FEED_KEY above (read-path-hardening-plan.md §4.4,
+ * closing the gap snapshot-persistence-plan.md §9 left open).
+ */
+export const FACETS_CURRENT_KEY = "current";
+
+/** Payload shape captured for the facets domain's single snapshot. */
+export interface FacetsSnapshotPayload {
+  facets: Facets;
+}
+
+/**
+ * Payload shape captured for one signal_detail domain entity_key (one
+ * signal's UUID) -- read-path-hardening-plan.md §4.1. Unlike
+ * signals/trends, this domain has no bounded, enumerable key space to
+ * eagerly capture ahead of time (a signal ID space is unbounded and
+ * most signals are never viewed) -- see writeSignalDetailSnapshot's own
+ * comment for the lazy, write-through-on-success capture strategy this
+ * implies.
+ */
+export interface SignalDetailSnapshotPayload {
+  detail: SignalDetail;
+}
+
+/**
+ * Payload shape captured for one company_detail domain entity_key (one
+ * company's slug) -- read-path-hardening-plan.md §4.2. Same lazy,
+ * write-through-on-success capture strategy as signal_detail above, for
+ * the same reason (unbounded slug space).
+ */
+export interface CompanyDetailSnapshotPayload {
+  company: CompanySummary;
+  recentSignals: CompanyRecentSignal[];
 }
 
 /** Writes the signals domain's default-feed snapshot (called only by
@@ -111,14 +162,128 @@ export async function readTrendsSnapshots(
 }
 
 /**
- * KV-mirror counterparts of the four D1 functions above (2026-09-03
- * prod incident follow-up, ../../../lib/kv/snapshot-mirror.ts). Same
- * (domain, entity_key) keys, same payload types -- a route's fallback
- * chain is: live query -> D1 snapshot (readSignalsFeedSnapshot /
- * readTrendsSnapshots above) -> this KV mirror. Every writeXSnapshot
- * call site pairs 1:1 with a writeXSnapshotMirror call, same
- * capturedAt, written immediately alongside (see reconciliation.ts's
- * handleSnapshotCapture) -- never a separate/delayed sync step.
+ * Writes the facets domain's single snapshot (read-path-hardening-plan.md
+ * §4.4). Called only by the daily reconciliation cron, alongside the
+ * existing trends/signals captures -- never on request traffic.
+ */
+export async function writeFacetsSnapshot(
+  client: D1Client,
+  params: { facets: Facets; capturedAt: string },
+): Promise<void> {
+  await writeSnapshotGeneric(client, {
+    domain: SNAPSHOT_DOMAIN_FACETS,
+    entityKey: FACETS_CURRENT_KEY,
+    payload: { facets: params.facets } satisfies FacetsSnapshotPayload,
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads the facets domain's single snapshot. Null if never captured yet
+ * (e.g. reconciliation hasn't run once since deploy). */
+export async function readFacetsSnapshot(
+  client: D1Client,
+): Promise<{ payload: FacetsSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotGeneric<FacetsSnapshotPayload>(client, {
+    domain: SNAPSHOT_DOMAIN_FACETS,
+    entityKey: FACETS_CURRENT_KEY,
+  });
+}
+
+/**
+ * Writes one signal's detail snapshot (read-path-hardening-plan.md
+ * §4.1). Unlike writeSignalsFeedSnapshot/writeTrendsSnapshot (cron-only,
+ * bounded/enumerable key space), this is called from the route handler
+ * itself (signals.ts's GET /:signalId), write-through, immediately
+ * after a successful LIVE read -- signal IDs are an unbounded space and
+ * most are never viewed, so eagerly capturing every one ahead of time
+ * the way the daily cron does for the 10 trends role_categories or the
+ * one default_feed key isn't practical. A signal's own first successful
+ * view is what seeds its fallback; the route handler calls this and its
+ * KV-mirror counterpart best-effort (never blocking or failing the
+ * response the caller is already waiting on -- same "must never fail
+ * the real write/response it accompanies" discipline the reconciliation
+ * cron's own mirror writes already follow, just triggered from a
+ * different place).
+ */
+export async function writeSignalDetailSnapshot(
+  client: D1Client,
+  params: { signalId: string; detail: SignalDetail; capturedAt: string },
+): Promise<void> {
+  await writeSnapshotGeneric(client, {
+    domain: SNAPSHOT_DOMAIN_SIGNAL_DETAIL,
+    entityKey: params.signalId,
+    payload: { detail: params.detail } satisfies SignalDetailSnapshotPayload,
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads one signal's detail snapshot. Null if this signal has never
+ * been successfully viewed live (no snapshot seeded yet) -- equivalent
+ * to "reconciliation hasn't run yet" for the cron-captured domains. */
+export async function readSignalDetailSnapshot(
+  client: D1Client,
+  params: { signalId: string },
+): Promise<{ payload: SignalDetailSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotGeneric<SignalDetailSnapshotPayload>(client, {
+    domain: SNAPSHOT_DOMAIN_SIGNAL_DETAIL,
+    entityKey: params.signalId,
+  });
+}
+
+/**
+ * Writes one company's detail snapshot (read-path-hardening-plan.md
+ * §4.2). Same lazy, write-through-on-a-successful-live-read strategy as
+ * writeSignalDetailSnapshot above, same reasoning (unbounded slug
+ * space, first successful view seeds the fallback).
+ */
+export async function writeCompanyDetailSnapshot(
+  client: D1Client,
+  params: {
+    slug: string;
+    company: CompanySummary;
+    recentSignals: CompanyRecentSignal[];
+    capturedAt: string;
+  },
+): Promise<void> {
+  await writeSnapshotGeneric(client, {
+    domain: SNAPSHOT_DOMAIN_COMPANY_DETAIL,
+    entityKey: params.slug,
+    payload: {
+      company: params.company,
+      recentSignals: params.recentSignals,
+    } satisfies CompanyDetailSnapshotPayload,
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads one company's detail snapshot. Null if this company has never
+ * been successfully viewed live. */
+export async function readCompanyDetailSnapshot(
+  client: D1Client,
+  params: { slug: string },
+): Promise<{ payload: CompanyDetailSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotGeneric<CompanyDetailSnapshotPayload>(client, {
+    domain: SNAPSHOT_DOMAIN_COMPANY_DETAIL,
+    entityKey: params.slug,
+  });
+}
+
+/**
+ * KV-mirror counterparts of the D1 functions above (2026-09-03 prod
+ * incident follow-up for signals/trends,
+ * ../../../lib/kv/snapshot-mirror.ts; read-path-hardening-plan.md §4.1/
+ * §4.2/§4.4 extends the same mirror treatment to signal_detail/
+ * company_detail/facets). Same (domain, entity_key) keys, same payload
+ * types -- a route's fallback chain is: live query -> D1 snapshot
+ * (readSignalsFeedSnapshot / readTrendsSnapshots / readFacetsSnapshot /
+ * readSignalDetailSnapshot / readCompanyDetailSnapshot above) -> this KV
+ * mirror. Every writeXSnapshot call site pairs 1:1 with a
+ * writeXSnapshotMirror call, same capturedAt, written immediately
+ * alongside -- for signals/trends/facets that's reconciliation.ts's
+ * handleSnapshotCapture (cron); for signal_detail/company_detail that's
+ * the route handler itself, right after a successful live read (see
+ * writeSignalDetailSnapshot's own comment) -- never a separate/delayed
+ * sync step either way.
  */
 
 /** Writes the signals domain's default-feed snapshot to the KV mirror.
@@ -178,4 +343,97 @@ export async function readTrendsSnapshotsMirror(
     entityKeys: params.roleCategories,
   });
   return raw as Map<RoleCategory, { payload: TrendsSnapshotPayload; capturedAt: string }>;
+}
+
+/** Writes the facets domain's single snapshot to the KV mirror. Always
+ * best-effort, same reasoning as writeSignalsFeedSnapshotMirror above. */
+export async function writeFacetsSnapshotMirror(
+  cache: KVNamespace,
+  params: { facets: Facets; capturedAt: string },
+): Promise<void> {
+  await writeSnapshotMirrorGeneric<FacetsSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_FACETS,
+    entityKey: FACETS_CURRENT_KEY,
+    payload: { facets: params.facets },
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads the facets domain's single snapshot from the KV mirror. Null if
+ * never mirrored yet or the KV read itself fails -- never throws (see
+ * readSnapshotMirrorGeneric). */
+export async function readFacetsSnapshotMirror(
+  cache: KVNamespace,
+): Promise<{ payload: FacetsSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotMirrorGeneric<FacetsSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_FACETS,
+    entityKey: FACETS_CURRENT_KEY,
+  });
+}
+
+/**
+ * Writes one signal's detail snapshot to the KV mirror, called from the
+ * same route-handler write-through as writeSignalDetailSnapshot (D1) --
+ * always best-effort, never blocking or failing the response the route
+ * is already returning.
+ */
+export async function writeSignalDetailSnapshotMirror(
+  cache: KVNamespace,
+  params: { signalId: string; detail: SignalDetail; capturedAt: string },
+): Promise<void> {
+  await writeSnapshotMirrorGeneric<SignalDetailSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_SIGNAL_DETAIL,
+    entityKey: params.signalId,
+    payload: { detail: params.detail },
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads one signal's detail snapshot from the KV mirror. Null if never
+ * mirrored yet (signal never successfully viewed live) or the KV read
+ * itself fails. */
+export async function readSignalDetailSnapshotMirror(
+  cache: KVNamespace,
+  params: { signalId: string },
+): Promise<{ payload: SignalDetailSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotMirrorGeneric<SignalDetailSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_SIGNAL_DETAIL,
+    entityKey: params.signalId,
+  });
+}
+
+/**
+ * Writes one company's detail snapshot to the KV mirror, called from
+ * the same route-handler write-through as writeCompanyDetailSnapshot
+ * (D1) -- always best-effort, same reasoning as
+ * writeSignalDetailSnapshotMirror above.
+ */
+export async function writeCompanyDetailSnapshotMirror(
+  cache: KVNamespace,
+  params: {
+    slug: string;
+    company: CompanySummary;
+    recentSignals: CompanyRecentSignal[];
+    capturedAt: string;
+  },
+): Promise<void> {
+  await writeSnapshotMirrorGeneric<CompanyDetailSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_COMPANY_DETAIL,
+    entityKey: params.slug,
+    payload: { company: params.company, recentSignals: params.recentSignals },
+    capturedAt: params.capturedAt,
+  });
+}
+
+/** Reads one company's detail snapshot from the KV mirror. Null if never
+ * mirrored yet (company never successfully viewed live) or the KV read
+ * itself fails. */
+export async function readCompanyDetailSnapshotMirror(
+  cache: KVNamespace,
+  params: { slug: string },
+): Promise<{ payload: CompanyDetailSnapshotPayload; capturedAt: string } | null> {
+  return readSnapshotMirrorGeneric<CompanyDetailSnapshotPayload>(cache, {
+    domain: SNAPSHOT_DOMAIN_COMPANY_DETAIL,
+    entityKey: params.slug,
+  });
 }

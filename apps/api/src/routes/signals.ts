@@ -14,9 +14,13 @@ import {
   getSignalStats,
   InvalidCursorError,
   listSignals,
+  readSignalDetailSnapshot,
+  readSignalDetailSnapshotMirror,
   readSignalsFeedSnapshot,
   readSignalsFeedSnapshotMirror,
   toListItem,
+  writeSignalDetailSnapshot,
+  writeSignalDetailSnapshotMirror,
   type SignalListItem,
 } from "@hiring-signals/db";
 import { freeReadTier } from "../middleware/anti-abuse";
@@ -370,7 +374,72 @@ signalsRoute.get("/:signalId", async (c) => {
   // validation gap the spec calls out.
   const { signalId } = signalIdParamSchema.parse({ signalId: c.req.param("signalId") });
   const client = createD1Client(c.env.DB);
-  const detail = await getSignalDetail(client, signalId);
+
+  // D1-outage fallback (read-path-hardening-plan.md §4.1), same
+  // live-first shape as GET / above and for the same reason: a single
+  // indexed row lookup + evidence join is cheap regardless of request
+  // volume, so live-first is still the right default here. This route
+  // previously had NO fallback at all -- any D1 failure 500'd
+  // immediately, which is the root cause of the evidence/detail page
+  // intermittently showing "Something went wrong processing the
+  // request." Falls back to a per-signal D1 snapshot -> KV mirror, same
+  // two-rung chain GET / already uses for its own default-feed
+  // snapshot.
+  let detail;
+  let servedFromSnapshot = false;
+  let snapshotCapturedAt: string | null = null;
+  try {
+    detail = await getSignalDetail(client, signalId);
+
+    // Write-through on a successful live read: unlike the default-feed/
+    // trends snapshots (captured once a day by the reconciliation cron
+    // over a bounded, enumerable key space), a signal ID space is
+    // unbounded and most signals are never viewed, so there is no
+    // equivalent daily capture step for this domain. Seeding the
+    // snapshot here means the very first successful view of a signal is
+    // what backs its own fallback. Awaited (not fire-and-forget) so the
+    // write is guaranteed to complete before the Worker's response
+    // finishes -- same as every other D1/KV call in this file -- but a
+    // write failure here must never fail the response the caller is
+    // already waiting on, hence its own try/catch distinct from the
+    // live-read try/catch this sits inside.
+    if (detail) {
+      const capturedAt = new Date().toISOString();
+      try {
+        await writeSignalDetailSnapshot(client, { signalId, detail, capturedAt });
+      } catch (writeErr) {
+        console.error("signal_detail_snapshot_write_failed", { signalId, error: writeErr });
+      }
+      try {
+        await writeSignalDetailSnapshotMirror(c.env.CACHE, { signalId, detail, capturedAt });
+      } catch (writeErr) {
+        console.error("signal_detail_snapshot_mirror_write_failed", { signalId, error: writeErr });
+      }
+    }
+  } catch (err) {
+    // Same reasoning as GET /'s own D1-outage fallback: log, then try
+    // the D1 snapshot before falling back further to the KV mirror.
+    console.error("D1 query failed for signal detail (falling back to snapshot):", err);
+
+    let snapshot;
+    try {
+      snapshot = await readSignalDetailSnapshot(client, { signalId });
+    } catch (snapshotErr) {
+      console.error(
+        "Snapshot fallback also failed for signal detail, trying KV mirror:",
+        snapshotErr,
+      );
+      snapshot = await readSignalDetailSnapshotMirror(c.env.CACHE, { signalId });
+    }
+    // No snapshot to fall back to (this signal was never successfully
+    // viewed live before) -- rethrow and let errorHandler's generic 500
+    // apply, same as GET /'s own "genuinely nothing to serve" case.
+    if (!snapshot) throw err;
+
+    detail = snapshot.payload.detail;
+    servedFromSnapshot = true;
+    snapshotCapturedAt = snapshot.capturedAt;
+  }
 
   if (!detail) {
     return c.json(
@@ -385,7 +454,17 @@ signalsRoute.get("/:signalId", async (c) => {
     );
   }
 
-  return c.json({ data: detail, meta: { requestId: c.get("requestId") } });
+  return c.json({
+    data: detail,
+    meta: {
+      requestId: c.get("requestId"),
+      // Same meaning as GET /'s servedFromSnapshot/snapshotCapturedAt:
+      // true when the live D1 read failed and this response was served
+      // from this signal's own last-known-good snapshot instead.
+      servedFromSnapshot,
+      snapshotCapturedAt,
+    },
+  });
 });
 
 /**

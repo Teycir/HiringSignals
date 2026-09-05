@@ -10,7 +10,11 @@ import {
   getCompanyRoleActivity,
   getRecentSignalsForCompany,
   listJobsForCompany,
+  readCompanyDetailSnapshot,
+  readCompanyDetailSnapshotMirror,
   searchCompanies,
+  writeCompanyDetailSnapshot,
+  writeCompanyDetailSnapshotMirror,
 } from "@hiring-signals/db";
 import {
   HIRING_VELOCITY_DISCLAIMER,
@@ -73,6 +77,16 @@ companiesRoute.get("/", async (c) => {
 });
 
 // Company detail + recent signals (spec 9.2, company page in 10.5 trend block).
+//
+// D1-outage fallback (read-path-hardening-plan.md §4.2), same live-first
+// shape as signals.ts's GET /:signalId and for the same reason: a single
+// indexed slug lookup + a small recent-signals join is cheap regardless
+// of request volume, so live-first is still the right default. Falls
+// back to a per-company D1 snapshot -> KV mirror, same two-rung chain
+// signals.ts's own signal_detail snapshot uses -- see
+// writeCompanyDetailSnapshot's header comment (packages/db/src/
+// snapshot-repo.ts) for why this is a write-through-on-success capture
+// (unbounded slug space) rather than a daily cron capture.
 companiesRoute.get("/:slug", async (c) => {
   // Spec §16.3 "all API input is schema-validated" -- see
   // companySlugParamSchema's own header comment (packages/domain/src/
@@ -80,7 +94,64 @@ companiesRoute.get("/:slug", async (c) => {
   // security fix (getCompanyBySlug already parameterizes its query).
   const { slug } = companySlugParamSchema.parse({ slug: c.req.param("slug") });
   const client = createD1Client(c.env.DB);
-  const company = await getCompanyBySlug(client, slug);
+
+  let company;
+  let recentSignals;
+  let servedFromSnapshot = false;
+  let snapshotCapturedAt: string | null = null;
+  try {
+    company = await getCompanyBySlug(client, slug);
+    if (company) {
+      recentSignals = await getRecentSignalsForCompany(client, company.id);
+
+      // Write-through on a successful live read, same reasoning as
+      // signals.ts's own write-through: no daily cron captures every
+      // company slug ahead of time, so a company's own first successful
+      // view is what seeds its fallback. Best-effort -- a write failure
+      // here must never fail the response the caller is already
+      // waiting on.
+      const capturedAt = new Date().toISOString();
+      try {
+        await writeCompanyDetailSnapshot(client, { slug, company, recentSignals, capturedAt });
+      } catch (writeErr) {
+        console.error("company_detail_snapshot_write_failed", { slug, error: writeErr });
+      }
+      try {
+        await writeCompanyDetailSnapshotMirror(c.env.CACHE, {
+          slug,
+          company,
+          recentSignals,
+          capturedAt,
+        });
+      } catch (writeErr) {
+        console.error("company_detail_snapshot_mirror_write_failed", { slug, error: writeErr });
+      }
+    }
+  } catch (err) {
+    // Same reasoning as signals.ts's own D1-outage fallback: log, then
+    // try the D1 snapshot before falling back further to the KV mirror.
+    console.error("D1 query failed for company detail (falling back to snapshot):", err);
+
+    let snapshot;
+    try {
+      snapshot = await readCompanyDetailSnapshot(client, { slug });
+    } catch (snapshotErr) {
+      console.error(
+        "Snapshot fallback also failed for company detail, trying KV mirror:",
+        snapshotErr,
+      );
+      snapshot = await readCompanyDetailSnapshotMirror(c.env.CACHE, { slug });
+    }
+    // No snapshot to fall back to (this company was never successfully
+    // viewed live before) -- rethrow and let errorHandler's generic 500
+    // apply, same as signals.ts's own "genuinely nothing to serve" case.
+    if (!snapshot) throw err;
+
+    company = snapshot.payload.company;
+    recentSignals = snapshot.payload.recentSignals;
+    servedFromSnapshot = true;
+    snapshotCapturedAt = snapshot.capturedAt;
+  }
 
   if (!company) {
     return c.json(
@@ -95,13 +166,16 @@ companiesRoute.get("/:slug", async (c) => {
     );
   }
 
-  const recentSignals = await getRecentSignalsForCompany(client, company.id);
-
   return c.json({
-    data: { ...company, recentSignals },
+    data: { ...company, recentSignals: recentSignals ?? [] },
     meta: {
       requestId: c.get("requestId"),
       hiringVelocityDisclaimer: HIRING_VELOCITY_DISCLAIMER,
+      // Same meaning as signals.ts's GET /:signalId: true when the live
+      // D1 read failed and this response was served from this
+      // company's own last-known-good snapshot instead.
+      servedFromSnapshot,
+      snapshotCapturedAt,
     },
   });
 });
@@ -157,13 +231,28 @@ companiesRoute.get("/:slug/timeline", async (c) => {
   }
   const { since, until } = window;
 
-  const buckets = await getCompanyHiringTimeline(client, {
-    companyId: company.id,
-    roleCategoryFilter: parsed.roles,
-    since,
-    until,
-    bucketDays: parsed.bucketDays,
-  });
+  // D1-outage guard (read-path-hardening-plan.md §4.3): no snapshot
+  // fallback here, deliberately -- this query is parameterized by
+  // since/until/bucketDays/roles, the same unbounded-key-space reasoning
+  // trends.ts already gives for why getHiringTrends' own scan can't be
+  // snapshotted per-request-shape (snapshot-persistence-plan.md, this
+  // file's own header). A D1 failure is mapped to a clean 503 instead of
+  // an opaque 500, so the client's Retry button behaves predictably --
+  // same posture InvalidCursorError already gets mapped to 400 for a
+  // client-side fault.
+  let buckets;
+  try {
+    buckets = await getCompanyHiringTimeline(client, {
+      companyId: company.id,
+      roleCategoryFilter: parsed.roles,
+      since,
+      until,
+      bucketDays: parsed.bucketDays,
+    });
+  } catch (err) {
+    console.error("D1 query failed for company timeline:", err);
+    throw new HTTPException(503, { message: "Company timeline is temporarily unavailable." });
+  }
 
   return c.json({
     data: { company, buckets },
@@ -205,10 +294,20 @@ companiesRoute.get("/:slug/role-activity", async (c) => {
     );
   }
 
-  const buckets = await getCompanyRoleActivity(client, {
-    companyId: company.id,
-    roleCategory: parsed.role,
-  });
+  // D1-outage guard, same reasoning as /:slug/timeline above: no
+  // snapshot fallback (parameterized by role, unbounded across every
+  // (company, role) pair) -- a D1 failure maps to a clean 503 instead
+  // of an opaque 500.
+  let buckets;
+  try {
+    buckets = await getCompanyRoleActivity(client, {
+      companyId: company.id,
+      roleCategory: parsed.role,
+    });
+  } catch (err) {
+    console.error("D1 query failed for company role activity:", err);
+    throw new HTTPException(503, { message: "Company role activity is temporarily unavailable." });
+  }
 
   return c.json({
     data: { company: { slug: company.slug, displayName: company.displayName }, role: parsed.role, buckets },
@@ -260,9 +359,17 @@ companiesRoute.get("/:slug/jobs", async (c) => {
     });
   } catch (err) {
     if (err instanceof InvalidJobsCursorError) {
+      // A stale/malformed cursor is a client mistake, not a server
+      // fault -- map to 400 like the sibling signals-list route does.
       throw new HTTPException(400, { message: err.message });
     }
-    throw err;
+    // D1-outage guard, same reasoning as /:slug/timeline and
+    // /:slug/role-activity above: no snapshot fallback (cursor-paginated,
+    // same unbounded-key-space reasoning GET /api/v1/signals gives for
+    // why its own snapshot is default-feed-only, not per-filter-combo).
+    // A genuine D1 failure maps to a clean 503 instead of an opaque 500.
+    console.error("D1 query failed for company jobs:", err);
+    throw new HTTPException(503, { message: "Company jobs listing is temporarily unavailable." });
   }
 
   return c.json({

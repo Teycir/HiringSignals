@@ -9,6 +9,7 @@ import {
   createD1Client,
   getCompanyActivityStats,
   getCompanyRoleActivityStats,
+  getFacets,
   getHiringTrends,
   listSignals,
   listSignalsNeedingReconciliation,
@@ -16,6 +17,8 @@ import {
   markSignalStillActive,
   updateCompanyVelocityScore,
   updateSignalScore,
+  writeFacetsSnapshot,
+  writeFacetsSnapshotMirror,
   writeSignalsFeedSnapshot,
   writeSignalsFeedSnapshotMirror,
   writeTrendsSnapshot,
@@ -287,6 +290,27 @@ async function handleSnapshotCapture(
     await writeSignalsFeedSnapshotMirror(cache, { items: feed.items, capturedAt });
   } catch (error) {
     console.error("signals_snapshot_capture_failed", {
+      error_code: error instanceof Error ? error.name : "UnknownError",
+      error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
+    });
+  }
+
+  try {
+    const facets = await getFacets(client);
+    await writeFacetsSnapshot(client, { facets, capturedAt });
+
+    // KV mirror -- same reasoning as the trends/signals mirror writes
+    // above (read-path-hardening-plan.md §4.4): facets.ts's own D1
+    // fallback (readFacetsSnapshot) is still a D1 read, so an
+    // account-wide quota exhaustion can take out both the live query AND
+    // this fallback in the same failure mode. Mirrored here, once a day,
+    // alongside the D1 write, so facets.ts can fall back to a copy with
+    // no D1 dependency at all. Always best-effort
+    // (writeFacetsSnapshotMirror never throws) so it can never fail this
+    // capture pass or skip the writes above.
+    await writeFacetsSnapshotMirror(cache, { facets, capturedAt });
+  } catch (error) {
+    console.error("facets_snapshot_capture_failed", {
       error_code: error instanceof Error ? error.name : "UnknownError",
       error_message_safe: error instanceof Error ? error.message.slice(0, 300) : "Unknown error",
     });
